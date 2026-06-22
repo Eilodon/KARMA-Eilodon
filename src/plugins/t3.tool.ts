@@ -12,7 +12,6 @@ import {
   DelegationCustodialClient,
   buildDelegationCredential,
   buildPayrollDirectInvocation,
-  PAYROLL_FUNCTIONS_V1,
   b64uEncodeBytes,
   createOrgDataClientFromSession,
   revokeDelegation,
@@ -236,7 +235,7 @@ export function createT3Tools(): ToolDefinition[] {
 
         const now = Date.now();
         identitySessions.set(agent_id, {
-          did,
+          did: String(did), // Did is a branded string; store the plain string form
           address, // bind the session to the verified wallet (audit FM3)
           verifiedAt: now,
           expiresAt: now + SESSION_TTL_MS,
@@ -353,7 +352,7 @@ export function createT3Tools(): ToolDefinition[] {
           outcome: outcome.status,
           reputation,
           threshold,
-          message: `Dual-layer trust verified: T3N identity (${did}) + KARMA reputation (${reputation}/${threshold}).`,
+          message: `Dual-layer trust verified: T3N identity (${String(did)}) + KARMA reputation (${reputation}/${threshold}).`,
         };
         return {
           structuredContent: result,
@@ -509,7 +508,7 @@ export function createT3Tools(): ToolDefinition[] {
         }
 
         const timestamp = Date.now();
-        const payload = `KARMA job commitment: job_id=${job_id}, skill_id=${skill_id}, did=${did}, ts=${timestamp}`;
+        const payload = `KARMA job commitment: job_id=${job_id}, skill_id=${skill_id}, did=${String(did)}, ts=${timestamp}`;
         const msgBytes = new TextEncoder().encode(payload);
 
         // T3N SDK: compute EIP-191 digest of the commitment payload.
@@ -657,7 +656,7 @@ export function createT3Tools(): ToolDefinition[] {
           grant_provisioning_error: null as string | null,
           invocation_attempted: false,
           invocation_succeeded: false,
-          invocation_result: null as unknown,
+          invocation_result: null,
           invocation_error: null as string | null,
         };
 
