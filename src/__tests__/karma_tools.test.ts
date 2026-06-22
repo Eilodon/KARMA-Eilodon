@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/unbound-method -- svc.* are vi.fn() mocks; `this` binding is irrelevant */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createKarmaTools } from "../plugins/karma.tool.js";
 import type { KarmaService, OnchainSkill } from "../lib/karma_service.js";
 import type { ToolDefinition } from "../mcp/adapter/tool_registry.js";
 import { markTrustedRuntime } from "../core/runtime_identity.js";
 import { withRequestContext } from "../security/context.js";
+import { identitySessions, SESSION_FRESH_MAX_AGE_MS } from "../lib/identity_session.js";
 
 const ALPHA = "0x857c2F11E9EDDdC7DDc03d035B0998De3c7677ec" as const;
 const TXH = "0xabc123" as const;
@@ -29,6 +30,7 @@ const skill = (over: Partial<OnchainSkill> = {}): OnchainSkill => ({
   active: true,
   registeredAt: 1n,
   minReputationToInvoke: 0n,
+  identityPolicy: 0,
   ...over,
 });
 
@@ -51,6 +53,7 @@ function fakeService(over: Partial<KarmaService> = {}): KarmaService {
     disputeResult: vi.fn(async () => confirmed),
     claimAfterReview: vi.fn(async () => confirmed),
     setMinReputation: vi.fn(async () => confirmed),
+    setIdentityPolicy: vi.fn(async () => confirmed),
     getAgentReputation: vi.fn(async () => 50),
     getAgentSkills: vi.fn(async () => [7n]),
     getProviderJobs: vi.fn(async () => [4n, 9n]),
@@ -201,6 +204,19 @@ describe("P6 KARMA tools", () => {
     });
   });
 
+  it("register_skill: passes identityPolicy into the index doc (P0)", async () => {
+    await call(tool(tools, "register_skill"), {
+      agentId: "agent-alpha",
+      name: "payroll",
+      description: "enterprise",
+      mcpEndpoint: "http://localhost/mcp",
+      pricePerCallWei: "1000",
+      identityPolicy: 1,
+    });
+    expect((svc.registerSkill as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({ identityPolicy: 1 });
+    expect((svc.indexUpsert as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ identity_policy: 1 });
+  });
+
   it("create_job: Trust Gate rejects a requester below the skill threshold (no escrow)", async () => {
     svc = fakeService({
       readSkill: vi.fn(async () => skill({ minReputationToInvoke: 70n })),
@@ -235,6 +251,81 @@ describe("P6 KARMA tools", () => {
     await call(tool(tools, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
     expect(svc.getAgentReputation).not.toHaveBeenCalled();
     expect(svc.createJob).toHaveBeenCalledTimes(1);
+  });
+
+  // ── P0 Identity Gate: create_job enforces on-chain identityPolicy (INV-1) ──
+  describe("create_job identity gate", () => {
+    const DID = "did:t3n:test";
+    const liveSession = (over: Record<string, unknown> = {}) => {
+      const now = Date.now();
+      identitySessions.set("agent-beta", {
+        did: DID, address: ALPHA, verifiedAt: now, expiresAt: now + 600_000, ...over,
+      } as never);
+    };
+    beforeEach(() => identitySessions.clear());
+    afterEach(() => identitySessions.clear());
+
+    it("policy 1 with NO session → rejected identity_required, no escrow", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 1 })) });
+      const t = createKarmaTools(s);
+      const res = await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect((res.structuredContent as { reason?: string }).reason).toBe("identity_required");
+      expect(s.createJob).not.toHaveBeenCalled();
+    });
+
+    it("policy 1 with a valid bound session → proceeds", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 1 })) });
+      const t = createKarmaTools(s);
+      liveSession();
+      await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect(s.createJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("policy 1 with a session bound to a DIFFERENT address → rejected (FM3)", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 1 })) });
+      const t = createKarmaTools(s);
+      liveSession({ address: "0x000000000000000000000000000000000000dEaD" });
+      const res = await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect((res.structuredContent as { reason?: string }).reason).toBe("identity_required");
+      expect(s.createJob).not.toHaveBeenCalled();
+    });
+
+    it("policy 2 with a STALE (live but old) session → rejected identity_stale", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 2 })) });
+      const t = createKarmaTools(s);
+      liveSession({ verifiedAt: Date.now() - SESSION_FRESH_MAX_AGE_MS - 5_000 });
+      const res = await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect((res.structuredContent as { reason?: string }).reason).toBe("identity_stale");
+      expect(s.createJob).not.toHaveBeenCalled();
+    });
+
+    it("policy 2 with a FRESH session → proceeds", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 2 })) });
+      const t = createKarmaTools(s);
+      liveSession();
+      await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect(s.createJob).toHaveBeenCalledTimes(1);
+    });
+
+    it("unknown policy 3 → rejected identity_policy_unknown (INV-3 fail-closed)", async () => {
+      const s = fakeService({ readSkill: vi.fn(async () => skill({ identityPolicy: 3 })) });
+      const t = createKarmaTools(s);
+      liveSession(); // even a valid session must not satisfy an unknown policy
+      const res = await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect((res.structuredContent as { reason?: string }).reason).toBe("identity_policy_unknown");
+      expect(s.createJob).not.toHaveBeenCalled();
+    });
+
+    it("existing-job retry short-circuits BEFORE identity even with no session (L7 ordering)", async () => {
+      const s = fakeService({
+        readSkill: vi.fn(async () => skill({ identityPolicy: 1 })),
+        findExistingJob: vi.fn(async () => 5n),
+      });
+      const t = createKarmaTools(s);
+      const res = await call(tool(t, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+      expect((res.structuredContent as { status?: string }).status).toBe("exists");
+      expect(s.createJob).not.toHaveBeenCalled();
+    });
   });
 
   it("get_agent_reputation: surfaces the aggregate agentReputation the gate checks", async () => {

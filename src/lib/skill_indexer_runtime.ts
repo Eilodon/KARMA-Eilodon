@@ -40,6 +40,7 @@ export function skillDocFromChain(skillId: bigint, s: OnchainSkill, repOverride?
     reputation_score: Number(repOverride ?? s.reputationScore),
     owner_address: s.owner,
     active: s.active,
+    identity_policy: s.identityPolicy,
   };
 }
 

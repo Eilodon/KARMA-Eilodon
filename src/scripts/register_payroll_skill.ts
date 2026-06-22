@@ -29,6 +29,7 @@ const { skillId, outcome } = await realKarmaService.registerSkill(account, {
   mcpEndpoint: process.env.MCP_ENDPOINT ?? "https://karma.example.com/mcp",
   pricePerCall: 1_000_000_000_000_000n, // 0.001 PHRS
   minReputationToInvoke: 55n,
+  identityPolicy: 1, // T3N_VERIFIED — enforced in create_job (the description's claim is now real)
 });
 
 console.log(`payroll_hr_transfer registered: skillId=${skillId?.toString()}, status=${outcome.status}`);

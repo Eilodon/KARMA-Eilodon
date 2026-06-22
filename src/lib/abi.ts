@@ -18,6 +18,9 @@ export const agentSkillRegistryAbi = [
   { type: "function", name: "REPUTATION_STEP", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
   { type: "function", name: "REVIEW_WINDOW", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
   { type: "function", name: "BOND_UNLOCK_COOLDOWN", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "IDENTITY_POLICY_NONE", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+  { type: "function", name: "IDENTITY_POLICY_T3N", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+  { type: "function", name: "IDENTITY_POLICY_T3N_FRESH", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
 
   // ── public array-mapping getters (index access) ──
   { type: "function", name: "agentProviderJobs", stateMutability: "view", inputs: [{ name: "", type: "address" }, { name: "", type: "uint256" }], outputs: [{ name: "", type: "uint256" }] },
@@ -32,8 +35,9 @@ export const agentSkillRegistryAbi = [
 
   // ── skill lifecycle ──
   { type: "function", name: "deactivateSkill", stateMutability: "nonpayable", inputs: [{ name: "skillId", type: "uint256" }], outputs: [] },
-  { type: "function", name: "registerSkill", stateMutability: "nonpayable", inputs: [{ name: "name", type: "string" }, { name: "description", type: "string" }, { name: "mcpEndpoint", type: "string" }, { name: "pricePerCall", type: "uint256" }, { name: "minReputationToInvoke", type: "uint256" }], outputs: [{ name: "skillId", type: "uint256" }] },
+  { type: "function", name: "registerSkill", stateMutability: "nonpayable", inputs: [{ name: "name", type: "string" }, { name: "description", type: "string" }, { name: "mcpEndpoint", type: "string" }, { name: "pricePerCall", type: "uint256" }, { name: "minReputationToInvoke", type: "uint256" }, { name: "identityPolicy", type: "uint8" }], outputs: [{ name: "skillId", type: "uint256" }] },
   { type: "function", name: "setMinReputation", stateMutability: "nonpayable", inputs: [{ name: "skillId", type: "uint256" }, { name: "minReputation", type: "uint256" }], outputs: [] },
+  { type: "function", name: "setIdentityPolicy", stateMutability: "nonpayable", inputs: [{ name: "skillId", type: "uint256" }, { name: "policy", type: "uint8" }], outputs: [] },
 
   // ── job resolution (v2) ──
   { type: "function", name: "claimAfterReview", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
@@ -78,6 +82,7 @@ export const agentSkillRegistryAbi = [
       { name: "active", type: "bool" },
       { name: "registeredAt", type: "uint256" },
       { name: "minReputationToInvoke", type: "uint256" },
+      { name: "identityPolicy", type: "uint8" },
     ],
   },
 
@@ -102,6 +107,7 @@ export const agentSkillRegistryAbi = [
   { type: "event", name: "JobRefunded", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "ResultDisputed", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "MinReputationSet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "minReputation", type: "uint256", indexed: false }] },
+  { type: "event", name: "IdentityPolicySet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "policy", type: "uint8", indexed: false }] },
   { type: "event", name: "Withdrawn", inputs: [{ name: "who", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "BondUpdated", inputs: [{ name: "agent", type: "address", indexed: true }, { name: "bondedAmount", type: "uint256", indexed: false }, { name: "seedEligible", type: "uint256", indexed: false }] },
 ] as const;

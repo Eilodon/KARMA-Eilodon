@@ -6,6 +6,7 @@ import { realKarmaService, type KarmaService } from "../lib/karma_service.js";
 import { isTrustedRuntime } from "../core/runtime_identity.js";
 import { getRequestContext } from "../security/context.js";
 import { getKarmaIndexerHealth } from "../lib/skill_indexer_runtime.js";
+import { identitySessions, SESSION_FRESH_MAX_AGE_MS } from "../lib/identity_session.js";
 import { ENV } from "../config/env.js";
 import type { JobDetail, JobStatus, SocialGraphFullResult } from "../lib/types.js";
 
@@ -242,6 +243,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       pricePerCallWei: WEI.describe("Price per call in wei, as a base-10 string."),
       minReputationToInvoke: z.number().int().min(0).max(100).default(0)
         .describe("Trust Gate: min requester reputation (0..100) to invoke this skill. 0 = open. App-layer only (Phase 1)."),
+      identityPolicy: z.number().int().min(0).max(255).default(0)
+        .describe("Identity Gate (P0): 0 = open, 1 = require a verified did:t3n, 2 = require a FRESH did:t3n. On-chain + enforced in create_job."),
     },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -256,6 +259,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         mcpEndpoint: z.string().default(""),
         pricePerCallWei: WEI,
         minReputationToInvoke: z.number().int().min(0).max(100).default(0),
+        identityPolicy: z.number().int().min(0).max(255).default(0),
       }).parse(args);
       const { tenantId } = getRequestContext();
       const account = svc.account(a.agentId, tenantId);
@@ -265,6 +269,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         mcpEndpoint: a.mcpEndpoint,
         pricePerCall: BigInt(a.pricePerCallWei),
         minReputationToInvoke: BigInt(a.minReputationToInvoke), // v2: authoritative on-chain threshold
+        identityPolicy: a.identityPolicy, // P0: on-chain Identity Gate policy
       });
       if (outcome.status === "pending" || skillId == null) {
         return reply(`[KARMA] register_skill broadcast; receipt pending tx=${outcome.hash}`, {
@@ -283,6 +288,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         owner_address: account.address,
         active: true,
         min_reputation_to_invoke: a.minReputationToInvoke,
+        identity_policy: a.identityPolicy,
       });
       return reply(`[KARMA] registered skill #${skillId} tx=${outcome.hash}`, {
         status: "confirmed",
@@ -394,6 +400,37 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
           jobId: existing,
         });
       }
+
+      // Identity Gate (P0, INV-1): enforce the skill's on-chain identityPolicy. A did:t3n cannot be
+      // verified on-chain, so THIS server-side check is the enforcement point — the on-chain flag is
+      // declarative policy. Runs AFTER the existing-job short-circuit (audit L7) so retrying an
+      // already-created job is never rejected for a lapsed session. Fails closed on an absent/expired/
+      // address-mismatched session (audit FM2/FM3) and on an unknown policy value (INV-3).
+      const policy = skill.identityPolicy ?? 0;
+      if (policy !== 0) {
+        const session = identitySessions.get(a.agentId);
+        if (session == null || session.address.toLowerCase() !== requester.toLowerCase()) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} requires a verified Terminal3 identity ` +
+              `(policy ${policy}). Call t3_verify_identity for '${a.agentId}' first.`,
+            { status: "rejected", reason: "identity_required", skillId, identityPolicy: policy },
+          );
+        }
+        if (policy === 2 && Date.now() - session.verifiedAt > SESSION_FRESH_MAX_AGE_MS) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} requires a FRESH Terminal3 identity ` +
+              `(re-verify via t3_verify_identity).`,
+            { status: "rejected", reason: "identity_stale", skillId, identityPolicy: policy },
+          );
+        }
+        if (policy > 2) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} declares an unknown identity policy ${policy}.`,
+            { status: "rejected", reason: "identity_policy_unknown", skillId, identityPolicy: policy },
+          );
+        }
+      }
+
       const { jobId, outcome } = await svc.createJob(account, {
         skillId,
         taskHash,

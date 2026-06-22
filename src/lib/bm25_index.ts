@@ -24,6 +24,7 @@ const STORE_FIELDS = [
   "owner_address",
   "active",
   "min_reputation_to_invoke",
+  "identity_policy",
 ] as const;
 
 /** True for control / zero-width / bidi-override / BOM code points (tab/newline/CR excepted). */

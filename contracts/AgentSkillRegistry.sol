@@ -19,6 +19,13 @@ contract AgentSkillRegistry is ReentrancyGuard {
         bool active;
         uint256 registeredAt;
         uint256 minReputationToInvoke; // Trust Gate (on-chain, PD-005): 0 = open
+        // Identity Gate (P0): DECLARATIVE policy for a skill. A did:t3n cannot be verified on-chain
+        // (it is proven off-chain via SIWE/WASM), so this field is NOT enforced here — the trusted
+        // in-process KARMA server enforces it in create_job. Published on-chain so the requirement is
+        // composable + credibly committed (not a server-mutable secret). Server semantics:
+        //   0 = NONE (open) · 1 = T3N_VERIFIED (live session) · 2 = T3N_VERIFIED_FRESH (recent session)
+        //   ≥3 = unknown → the server fails closed (rejects). uint8 leaves room for future issuers/tiers.
+        uint8 identityPolicy;
     }
 
     struct Job {
@@ -60,6 +67,10 @@ contract AgentSkillRegistry is ReentrancyGuard {
     ///         PD-007). Capital must stay locked across the cooldown, so a Sybil cannot lock-seed-
     ///         unlock in a flash — bonded capital is committed, not flash-rentable.
     uint256 public constant BOND_UNLOCK_COOLDOWN = 7 days;
+    // Identity Gate (P0): named policy values for the off-chain enforcer (documentation; not enforced here).
+    uint8 public constant IDENTITY_POLICY_NONE = 0;
+    uint8 public constant IDENTITY_POLICY_T3N = 1;
+    uint8 public constant IDENTITY_POLICY_T3N_FRESH = 2;
 
     // ── State ──────────────────────────────────────────────────
     uint256 private _skillIdCounter;
@@ -91,6 +102,7 @@ contract AgentSkillRegistry is ReentrancyGuard {
     event JobRefunded(uint256 indexed jobId, address indexed requester, uint256 amount);
     event ResultDisputed(uint256 indexed jobId, address indexed requester, uint256 amount);
     event MinReputationSet(uint256 indexed skillId, uint256 minReputation);
+    event IdentityPolicySet(uint256 indexed skillId, uint8 policy);
     event Withdrawn(address indexed who, uint256 amount);
     /// @param seedEligible bonded amount that currently counts as a flow-reputation seed (0 while
     ///        cooling down). The off-chain indexer mirrors this into FlowReputationParams.seeds.
@@ -114,7 +126,8 @@ contract AgentSkillRegistry is ReentrancyGuard {
         string calldata description,
         string calldata mcpEndpoint,
         uint256 pricePerCall,
-        uint256 minReputationToInvoke
+        uint256 minReputationToInvoke,
+        uint8 identityPolicy
     ) external returns (uint256 skillId) {
         require(bytes(name).length > 0, "name required");
         require(minReputationToInvoke <= MAX_REPUTATION, "bad threshold");
@@ -129,7 +142,8 @@ contract AgentSkillRegistry is ReentrancyGuard {
             totalInvocations: 0,
             active: true,
             registeredAt: block.timestamp,
-            minReputationToInvoke: minReputationToInvoke
+            minReputationToInvoke: minReputationToInvoke,
+            identityPolicy: identityPolicy
         });
         agentSkills[msg.sender].push(skillId);
         emit SkillRegistered(skillId, msg.sender, name, pricePerCall);
@@ -150,6 +164,15 @@ contract AgentSkillRegistry is ReentrancyGuard {
         require(minReputation <= MAX_REPUTATION, "bad threshold");
         s.minReputationToInvoke = minReputation;
         emit MinReputationSet(skillId, minReputation);
+    }
+
+    /// @notice Owner sets the Identity Gate policy for a skill (P0). Declarative: the off-chain KARMA
+    ///         server enforces it (a did:t3n cannot be verified on-chain). Published for composability.
+    function setIdentityPolicy(uint256 skillId, uint8 policy) external {
+        Skill storage s = skills[skillId];
+        require(s.owner == msg.sender, "not skill owner");
+        s.identityPolicy = policy;
+        emit IdentityPolicySet(skillId, policy);
     }
 
     // ── Agent reputation (PD-005) ──────────────────────────────

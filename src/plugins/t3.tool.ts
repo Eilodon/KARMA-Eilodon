@@ -12,7 +12,6 @@ import {
   DelegationCustodialClient,
   buildDelegationCredential,
   buildPayrollDirectInvocation,
-  PAYROLL_FUNCTIONS_V1,
   b64uEncodeBytes,
   createOrgDataClientFromSession,
   revokeDelegation,
@@ -24,6 +23,7 @@ import {
 } from "@terminal3/t3n-sdk";
 import { keystoreManager } from "../lib/keystore.js";
 import { realKarmaService } from "../lib/karma_service.js";
+import { identitySessions, SESSION_TTL_MS } from "../lib/identity_session.js";
 import { ENV } from "../config/env.js";
 import type { ToolDefinition } from "../mcp/adapter/tool_registry.js";
 
@@ -33,9 +33,9 @@ import type { ToolDefinition } from "../mcp/adapter/tool_registry.js";
 // T3N_NODE_URL still overrides this in buildT3nClient. See PATTERN-DEBT-T3N-004.
 setEnvironment("testnet");
 
-// Module-level DID cache: agentId → verified did:t3n:... DID.
-// Populated by t3_verify_identity, read by t3_create_verified_job.
-const verifiedDids = new Map<string, Did>();
+// DID sessions live in the SHARED IdentitySessionStore (src/lib/identity_session.ts) so create_job
+// (Layer 1) can enforce a skill's identityPolicy without a backwards Layer1→Layer3 dependency. This
+// also closes the volatile module-level cache (PATTERN-DEBT-T3N-001) — sessions are TTL'd + address-bound.
 
 // Module-level issued-credential cache: agentId → last DelegationCredential JCS bytes + vc_id.
 // Populated by t3_authorize_payroll_agent, read by t3_revoke_payroll_authorization. Demo-scoped
@@ -148,13 +148,13 @@ async function createAuthenticatedClient(agentId: string): Promise<{ client: T3n
 
 // Exported for tests — resets module-level state between test cases.
 export function clearVerifiedDidsForTest(): void {
-  verifiedDids.clear();
+  identitySessions.clear();
   issuedCredentials.clear();
   wasmComponent = null;
 }
 
 export function getVerifiedDid(agentId: string): Did | undefined {
-  return verifiedDids.get(agentId);
+  return identitySessions.get(agentId)?.did as Did | undefined;
 }
 
 export function createT3Tools(): ToolDefinition[] {
@@ -233,7 +233,13 @@ export function createT3Tools(): ToolDefinition[] {
         const authInput = createEthAuthInput(address);
         const did = await client.authenticate(authInput);
 
-        verifiedDids.set(agent_id, did);
+        const now = Date.now();
+        identitySessions.set(agent_id, {
+          did: String(did), // Did is a branded string; store the plain string form
+          address, // bind the session to the verified wallet (audit FM3)
+          verifiedAt: now,
+          expiresAt: now + SESSION_TTL_MS,
+        });
 
         const result = {
           verified: true,
@@ -252,7 +258,9 @@ export function createT3Tools(): ToolDefinition[] {
     {
       name: "t3_create_verified_job",
       description:
-        "Create a KARMA job for a high-threshold skill, enforcing dual-layer trust: " +
+        "[DEPRECATED — prefer create_job: identity is now enforced there for any skill whose on-chain " +
+        "identityPolicy is ≥1, so a separate verified-job tool is no longer required. Retained for " +
+        "back-compat.] Create a KARMA job for a high-threshold skill, enforcing dual-layer trust: " +
         "(1) T3N identity gate — agent must have a verified DID from t3_verify_identity, " +
         "(2) On-chain reputation gate — agent reputation must meet the skill's minReputationToInvoke. " +
         "Use this for enterprise skills like payroll_hr_transfer where anonymity is unacceptable.",
@@ -289,7 +297,7 @@ export function createT3Tools(): ToolDefinition[] {
         };
 
         // Gate 1: T3N identity must be verified.
-        const did = verifiedDids.get(agent_id);
+        const did = getVerifiedDid(agent_id);
         if (!did) {
           throw new Error(
             `[T3N] Identity gate: agent '${agent_id}' has no verified DID. ` +
@@ -344,7 +352,7 @@ export function createT3Tools(): ToolDefinition[] {
           outcome: outcome.status,
           reputation,
           threshold,
-          message: `Dual-layer trust verified: T3N identity (${did}) + KARMA reputation (${reputation}/${threshold}).`,
+          message: `Dual-layer trust verified: T3N identity (${String(did)}) + KARMA reputation (${reputation}/${threshold}).`,
         };
         return {
           structuredContent: result,
@@ -378,7 +386,7 @@ export function createT3Tools(): ToolDefinition[] {
       handler: async (args) => {
         const { agent_id } = args as { agent_id: string };
 
-        const cachedDid = verifiedDids.get(agent_id);
+        const cachedDid = getVerifiedDid(agent_id);
         if (!cachedDid) {
           throw new Error(
             `[T3N] Agent '${agent_id}' not T3N-verified. Call t3_verify_identity first.`,
@@ -426,7 +434,7 @@ export function createT3Tools(): ToolDefinition[] {
       handler: async (args) => {
         const { agent_id } = args as { agent_id: string };
 
-        const cachedDid = verifiedDids.get(agent_id);
+        const cachedDid = getVerifiedDid(agent_id);
         if (!cachedDid) {
           throw new Error(
             `[T3N] Agent '${agent_id}' not T3N-verified. Call t3_verify_identity first.`,
@@ -488,7 +496,7 @@ export function createT3Tools(): ToolDefinition[] {
           skill_id: string;
         };
 
-        const did = verifiedDids.get(agent_id);
+        const did = getVerifiedDid(agent_id);
         if (!did) {
           throw new Error(
             `[T3N] Agent '${agent_id}' not T3N-verified. Call t3_verify_identity first.`,
@@ -500,7 +508,7 @@ export function createT3Tools(): ToolDefinition[] {
         }
 
         const timestamp = Date.now();
-        const payload = `KARMA job commitment: job_id=${job_id}, skill_id=${skill_id}, did=${did}, ts=${timestamp}`;
+        const payload = `KARMA job commitment: job_id=${job_id}, skill_id=${skill_id}, did=${String(did)}, ts=${timestamp}`;
         const msgBytes = new TextEncoder().encode(payload);
 
         // T3N SDK: compute EIP-191 digest of the commitment payload.
@@ -593,7 +601,7 @@ export function createT3Tools(): ToolDefinition[] {
         };
         const functions = (args as { functions?: string[] }).functions ?? ["validate-credentials"];
 
-        const cachedDid = verifiedDids.get(agent_id);
+        const cachedDid = getVerifiedDid(agent_id);
         if (!cachedDid) {
           throw new Error(
             `[T3N] Agent '${agent_id}' not T3N-verified. Call t3_verify_identity first.`,
@@ -648,7 +656,7 @@ export function createT3Tools(): ToolDefinition[] {
           grant_provisioning_error: null as string | null,
           invocation_attempted: false,
           invocation_succeeded: false,
-          invocation_result: null as unknown,
+          invocation_result: null,
           invocation_error: null as string | null,
         };
 

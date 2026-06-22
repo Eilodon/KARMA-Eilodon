@@ -25,6 +25,7 @@ const skill = (over: Partial<OnchainSkill> = {}): OnchainSkill => ({
   active: true,
   registeredAt: 1n,
   minReputationToInvoke: 0n,
+  identityPolicy: 0,
   ...over,
 });
 
