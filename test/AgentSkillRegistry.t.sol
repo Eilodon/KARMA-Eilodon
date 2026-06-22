@@ -26,12 +26,12 @@ contract AgentSkillRegistryTest is Test {
 
     function _registerSkill() internal returns (uint256 skillId) {
         vm.prank(alpha);
-        skillId = reg.registerSkill("search", "paid discover_skills", "mcp://alpha", PRICE, 0);
+        skillId = reg.registerSkill("search", "paid discover_skills", "mcp://alpha", PRICE, 0, 0);
     }
 
     function _registerSkillGated(uint256 minRep) internal returns (uint256 skillId) {
         vm.prank(alpha);
-        skillId = reg.registerSkill("premium", "institutional", "mcp://alpha", PRICE, minRep);
+        skillId = reg.registerSkill("premium", "institutional", "mcp://alpha", PRICE, minRep, 0);
     }
 
     function _openJob(uint256 skillId) internal returns (uint256 jobId) {
@@ -55,7 +55,7 @@ contract AgentSkillRegistryTest is Test {
         reg.withdraw();
         assertEq(alpha.balance, balBefore + PRICE, "provider paid escrow");
 
-        (, , , , , uint256 reputation, uint256 invocations, , , ) = reg.skills(skillId);
+        (, , , , , uint256 reputation, uint256 invocations, , , , ) = reg.skills(skillId);
         assertEq(reputation, 55, "skill reputation +5 from base 50");
         assertEq(invocations, 1, "one invocation");
 
@@ -232,14 +232,40 @@ contract AgentSkillRegistryTest is Test {
 
         vm.prank(alpha);
         reg.setMinReputation(skillId, 70);
-        (, , , , , , , , , uint256 minRep) = reg.skills(skillId);
+        (, , , , , , , , , uint256 minRep, ) = reg.skills(skillId);
         assertEq(minRep, 70, "owner updated threshold");
+    }
+
+    // ── P0: on-chain identityPolicy (declarative; enforced server-side) ──
+    function test_IdentityPolicy_DefaultsToNoneAndOwnerCanSet() public {
+        uint256 skillId = _registerSkill(); // registered with policy 0
+        (, , , , , , , , , , uint8 pol) = reg.skills(skillId);
+        assertEq(pol, 0, "defaults to NONE");
+
+        vm.prank(alpha);
+        reg.setIdentityPolicy(skillId, 1);
+        (, , , , , , , , , , uint8 pol2) = reg.skills(skillId);
+        assertEq(pol2, 1, "owner set policy to T3N_VERIFIED");
+    }
+
+    function test_SetIdentityPolicy_OwnerOnly() public {
+        uint256 skillId = _registerSkill();
+        vm.prank(beta);
+        vm.expectRevert(bytes("not skill owner"));
+        reg.setIdentityPolicy(skillId, 1);
+    }
+
+    function test_RegisterSkill_PersistsIdentityPolicy() public {
+        vm.prank(alpha);
+        uint256 skillId = reg.registerSkill("s", "d", "mcp://a", PRICE, 0, 2);
+        (, , , , , , , , , , uint8 pol) = reg.skills(skillId);
+        assertEq(pol, 2, "registered with T3N_VERIFIED_FRESH policy");
     }
 
     // ── Abductive-2 + Tier-0: self-deal must not farm ANY trust signal (both completion paths) ──
     function test_SelfDeal_NoRepFarm() public {
         vm.prank(alpha);
-        uint256 skillId = reg.registerSkill("self", "self", "mcp://alpha", PRICE, 0);
+        uint256 skillId = reg.registerSkill("self", "self", "mcp://alpha", PRICE, 0, 0);
 
         // Path 1: confirmCompletion on a self-job (alpha requester == provider).
         vm.prank(alpha);
@@ -263,7 +289,7 @@ contract AgentSkillRegistryTest is Test {
         // Tier-0: neither self-deal path may inflate the skill's discovery signals. reputationScore
         // drives the off-chain BM25 boost (1.0..2.0x); totalInvocations is shown as social proof.
         // Both stay at base despite two completed self-jobs — escrow settled, no trust manufactured.
-        (, , , , , uint256 reputation, uint256 invocations, , , ) = reg.skills(skillId);
+        (, , , , , uint256 reputation, uint256 invocations, , , , ) = reg.skills(skillId);
         assertEq(reputation, 50, "self-deal must not inflate skill reputation (BM25 boost input)");
         assertEq(invocations, 0, "self-deal must not inflate invocation count");
     }
@@ -274,7 +300,7 @@ contract AgentSkillRegistryTest is Test {
     // capital. Now self-deals earn nothing, so the rank cannot be pumped from a closed Sybil set.
     function test_SelfDeal_NoDiscoveryRankPump() public {
         vm.prank(alpha);
-        uint256 skillId = reg.registerSkill("pump", "pump", "mcp://alpha", 0, 0); // price 0 = zero capital
+        uint256 skillId = reg.registerSkill("pump", "pump", "mcp://alpha", 0, 0, 0); // price 0 = zero capital
 
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(alpha);
@@ -285,7 +311,7 @@ contract AgentSkillRegistryTest is Test {
             reg.confirmCompletion(jobId);
         }
 
-        (, , , , , uint256 reputation, uint256 invocations, , , ) = reg.skills(skillId);
+        (, , , , , uint256 reputation, uint256 invocations, , , , ) = reg.skills(skillId);
         assertEq(reputation, 50, "5 self-deals cannot raise skill reputation above base");
         assertEq(invocations, 0, "self-deals never count as invocations");
     }
@@ -343,7 +369,7 @@ contract AgentSkillRegistryTest is Test {
     function test_Constructor_ConfiguredWindowDrivesDisputeBoundary() public {
         AgentSkillRegistry r = new AgentSkillRegistry(1 hours);
         vm.prank(alpha);
-        uint256 skillId = r.registerSkill("s", "d", "mcp://a", PRICE, 0);
+        uint256 skillId = r.registerSkill("s", "d", "mcp://a", PRICE, 0, 0);
         vm.prank(beta);
         uint256 jobId = r.createJob{value: PRICE}(skillId, TASK_HASH, DEADLINE_SECS);
         vm.prank(alpha);
@@ -478,7 +504,7 @@ contract ReentrantProvider {
     }
 
     function register(uint256 price) external returns (uint256) {
-        return reg.registerSkill("evil", "reentrant", "mcp://evil", price, 0);
+        return reg.registerSkill("evil", "reentrant", "mcp://evil", price, 0, 0);
     }
 
     function deliver(uint256 jobId, bytes32 resultHash) external {
