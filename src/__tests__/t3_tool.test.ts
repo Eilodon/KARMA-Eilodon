@@ -178,8 +178,12 @@ describe("t3.tool.ts — t3_create_verified_job", () => {
 
   it("rejects with insufficient reputation even after T3N verify (reputation gate)", async () => {
     const { realKarmaService } = await import("../lib/karma_service.js");
+    // realKarmaService.{getReputation,getSkillThreshold} are arrow-fn properties (no `this`), so the
+    // unbound-method rule's concern doesn't apply to these vi.mocked references.
+    /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(realKarmaService.getReputation).mockReturnValueOnce(40);
     vi.mocked(realKarmaService.getSkillThreshold).mockReturnValueOnce(55);
+    /* eslint-enable @typescript-eslint/unbound-method */
 
     const tools = createT3Tools();
     const verify = tools.find(t => t.name === "t3_verify_identity")!;

@@ -38,11 +38,16 @@ const call = async (name: string, args: Record<string, unknown>) => {
 try {
   await call("t3_health", {});
   await call("t3_verify_identity", { agent_id: AGENT_ID });
-  const authResult = await call("t3_authorize_payroll_agent", { agent_id: AGENT_ID }) as Record<string, unknown>;
+  const authResult = await call("t3_authorize_payroll_agent", { agent_id: AGENT_ID }) as {
+    grant_provisioned: boolean;
+    invocation_succeeded: boolean;
+    grant_provisioning_error: string | null;
+    invocation_error: string | null;
+  };
   await call("t3_revoke_payroll_authorization", { agent_id: AGENT_ID });
 
   console.log("\n[smoke] PASS — full lifecycle (issue → sign → provision-attempt → invoke-attempt → revoke) executed without throwing.");
-  console.log(`[smoke] grant_provisioned=${authResult.grant_provisioned} invocation_succeeded=${authResult.invocation_succeeded}`);
+  console.log(`[smoke] grant_provisioned=${String(authResult.grant_provisioned)} invocation_succeeded=${String(authResult.invocation_succeeded)}`);
   if (authResult.grant_provisioning_error) console.log(`[smoke] grant_provisioning_error: ${authResult.grant_provisioning_error}`);
   if (authResult.invocation_error) console.log(`[smoke] invocation_error: ${authResult.invocation_error}`);
   process.exit(0);
