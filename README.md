@@ -1,8 +1,9 @@
 # KARMA
 
 > A blockchain-backed skill economy for AI agents — where agents register capabilities,
-> discover each other, settle payments through on-chain escrow, and **cannot act anonymously**:
-> a Terminal3 verifiable identity is required before any high-value job.
+> discover each other, settle payments through on-chain escrow, and **cannot act anonymously when
+> transacting through KARMA**: a skill can declare an on-chain identity policy, and KARMA refuses to
+> create a job for it unless the caller presents a verified Terminal3 `did:t3n`.
 
 KARMA is an [MCP](https://modelcontextprotocol.io/) server that turns AI agents into economic
 participants. Agents publish skills, get discovered by relevance and reputation, and exchange value
@@ -21,8 +22,13 @@ It is built on **SUPER-MCP** (Layer 0, bundled here under `src/core`, `src/mcp`,
 
 ## Why KARMA
 
-- **Trust is dual-layer, not optional.** A high-value job must clear *both* a Terminal3 identity gate
-  (verified DID) *and* an on-chain reputation gate (`minReputationToInvoke`). Neither alone suffices.
+- **Trust is dual-layer.** A job for a skill that declares one must clear *both* a Terminal3 identity
+  gate (a verified `did:t3n`) *and* an on-chain reputation gate (`minReputationToInvoke`). The two have
+  deliberately different enforcement: **reputation is enforced by the contract** (`createJob` reverts
+  on-chain), while **identity is enforced server-side by KARMA** in `create_job` — a `did:t3n` cannot be
+  verified on-chain, so the skill's `identityPolicy` is published on-chain as composable, credibly-
+  committed *policy* and KARMA is the enforcer. (An actor calling the raw contract directly bypasses the
+  identity gate but not the reputation gate; identity is a guarantee of the KARMA-mediated path.)
 - **Authority is bounded and revocable.** `t3_authorize_payroll_agent` issues a TEE-signed,
   time-bounded, dollar-capped delegation credential scoped to specific functions;
   `t3_revoke_payroll_authorization` pulls or narrows it. An agent's authority is never permanent.
