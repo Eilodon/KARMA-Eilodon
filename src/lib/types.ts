@@ -104,4 +104,10 @@ export interface SkillDocument {
    * BM25SkillIndex.upsert. Undefined / 0 ⇒ no gate. Phase 2 moves this on-chain.
    */
   min_reputation_to_invoke?: number;
+  /**
+   * Identity Gate (P0): on-chain policy declaring whether invoking this skill requires a verified
+   * Terminal3 identity. 0/undefined = none · 1 = T3N_VERIFIED · 2 = T3N_VERIFIED_FRESH · ≥3 unknown
+   * (server fails closed). Hydrated from chain by skillDocFromChain; enforced server-side in create_job.
+   */
+  identity_policy?: number;
 }

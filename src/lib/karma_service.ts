@@ -31,6 +31,7 @@ export interface OnchainSkill {
   active: boolean;
   registeredAt: bigint;
   minReputationToInvoke: bigint; // Trust Gate threshold (v2, on-chain)
+  identityPolicy: number; // Identity Gate policy (P0): 0 none · 1 T3N · 2 T3N-fresh · ≥3 unknown(fail-closed)
 }
 
 export interface OnchainJob {
@@ -53,7 +54,7 @@ export interface KarmaService {
   addressOf(agentId: string, tenantId: string): Address;
   registerSkill(
     account: Account,
-    p: { name: string; description: string; mcpEndpoint: string; pricePerCall: bigint; minReputationToInvoke: bigint },
+    p: { name: string; description: string; mcpEndpoint: string; pricePerCall: bigint; minReputationToInvoke: bigint; identityPolicy: number },
   ): Promise<{ skillId: bigint | null; outcome: WriteOutcome }>;
   readSkill(skillId: bigint): Promise<OnchainSkill>;
   readJob(jobId: bigint): Promise<OnchainJob>;
@@ -71,6 +72,8 @@ export interface KarmaService {
   claimAfterReview(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
   /** Owner adjusts a skill's on-chain Trust Gate threshold (v2). */
   setMinReputation(account: Account, p: { skillId: bigint; minReputation: number }): Promise<WriteOutcome>;
+  /** Owner sets a skill's on-chain Identity Gate policy (P0). Declarative; server-enforced. */
+  setIdentityPolicy(account: Account, p: { skillId: bigint; policy: number }): Promise<WriteOutcome>;
   /** On-chain earned agent reputation (lazy base-50). Authoritative source for the Trust Gate (v2). */
   getAgentReputation(addr: Address): Promise<number>;
   getAgentSkills(addr: Address): Promise<readonly bigint[]>;
@@ -131,7 +134,7 @@ export const realKarmaService: KarmaService = {
   async registerSkill(account, p) {
     const outcome = await writeContractBounded(account, {
       functionName: "registerSkill",
-      args: [p.name, p.description, p.mcpEndpoint, p.pricePerCall, p.minReputationToInvoke],
+      args: [p.name, p.description, p.mcpEndpoint, p.pricePerCall, p.minReputationToInvoke, p.identityPolicy],
     });
     return { skillId: extractId(outcome, "SkillRegistered", "skillId"), outcome };
   },
@@ -149,6 +152,7 @@ export const realKarmaService: KarmaService = {
       active: t[7] as boolean,
       registeredAt: t[8] as bigint,
       minReputationToInvoke: t[9] as bigint,
+      identityPolicy: Number(t[10]),
     };
   },
 
@@ -198,6 +202,9 @@ export const realKarmaService: KarmaService = {
 
   setMinReputation: (account, p) =>
     writeContractBounded(account, { functionName: "setMinReputation", args: [p.skillId, BigInt(p.minReputation)] }),
+
+  setIdentityPolicy: (account, p) =>
+    writeContractBounded(account, { functionName: "setIdentityPolicy", args: [p.skillId, p.policy] }),
 
   async getAgentReputation(addr) {
     return Number(await read<bigint>("agentReputation", [addr]));
