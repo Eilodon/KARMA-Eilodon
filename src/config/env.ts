@@ -117,6 +117,10 @@ const EnvSchema = z.object({
 
   // T3ADK: Terminal3 node URL. If unset, uses the SDK built-in testnet URL via getNodeUrl().
   T3N_NODE_URL: z.string().url().optional(),
+  // P0 (identity gate): how long a verified did:t3n session is honored before re-verification (D3).
+  T3N_SESSION_TTL_SECS: z.number().int().min(30).max(86400).default(600),
+  // P0: max session age accepted for a policy=2 (T3N_VERIFIED_FRESH) skill — high-assurance tier (D3).
+  T3N_SESSION_FRESH_MAX_AGE_SECS: z.number().int().min(10).max(3600).default(120),
 });
 
 const DEV_ENCRYPTION_KEYS = new Set([
@@ -230,6 +234,8 @@ function loadEnv() {
     MCP_TASK_POLL_INTERVAL_MS: parseIntEnv(process.env.MCP_TASK_POLL_INTERVAL_MS),
     MCP_PROTOCOL_MODE: process.env.MCP_PROTOCOL_MODE,
     T3N_NODE_URL: process.env.T3N_NODE_URL || undefined,
+    T3N_SESSION_TTL_SECS: parseIntEnv(process.env.T3N_SESSION_TTL_SECS),
+    T3N_SESSION_FRESH_MAX_AGE_SECS: parseIntEnv(process.env.T3N_SESSION_FRESH_MAX_AGE_SECS),
   };
 
   const parsed = EnvSchema.safeParse(rawEnv);
