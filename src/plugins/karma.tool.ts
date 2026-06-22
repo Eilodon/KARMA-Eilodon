@@ -6,6 +6,7 @@ import { realKarmaService, type KarmaService } from "../lib/karma_service.js";
 import { isTrustedRuntime } from "../core/runtime_identity.js";
 import { getRequestContext } from "../security/context.js";
 import { getKarmaIndexerHealth } from "../lib/skill_indexer_runtime.js";
+import { identitySessions, SESSION_FRESH_MAX_AGE_MS } from "../lib/identity_session.js";
 import { ENV } from "../config/env.js";
 import type { JobDetail, JobStatus, SocialGraphFullResult } from "../lib/types.js";
 
@@ -394,6 +395,37 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
           jobId: existing,
         });
       }
+
+      // Identity Gate (P0, INV-1): enforce the skill's on-chain identityPolicy. A did:t3n cannot be
+      // verified on-chain, so THIS server-side check is the enforcement point — the on-chain flag is
+      // declarative policy. Runs AFTER the existing-job short-circuit (audit L7) so retrying an
+      // already-created job is never rejected for a lapsed session. Fails closed on an absent/expired/
+      // address-mismatched session (audit FM2/FM3) and on an unknown policy value (INV-3).
+      const policy = skill.identityPolicy ?? 0;
+      if (policy !== 0) {
+        const session = identitySessions.get(a.agentId);
+        if (session == null || session.address.toLowerCase() !== requester.toLowerCase()) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} requires a verified Terminal3 identity ` +
+              `(policy ${policy}). Call t3_verify_identity for '${a.agentId}' first.`,
+            { status: "rejected", reason: "identity_required", skillId, identityPolicy: policy },
+          );
+        }
+        if (policy === 2 && Date.now() - session.verifiedAt > SESSION_FRESH_MAX_AGE_MS) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} requires a FRESH Terminal3 identity ` +
+              `(re-verify via t3_verify_identity).`,
+            { status: "rejected", reason: "identity_stale", skillId, identityPolicy: policy },
+          );
+        }
+        if (policy > 2) {
+          return reply(
+            `[KARMA] create_job rejected: skill #${skillId} declares an unknown identity policy ${policy}.`,
+            { status: "rejected", reason: "identity_policy_unknown", skillId, identityPolicy: policy },
+          );
+        }
+      }
+
       const { jobId, outcome } = await svc.createJob(account, {
         skillId,
         taskHash,
