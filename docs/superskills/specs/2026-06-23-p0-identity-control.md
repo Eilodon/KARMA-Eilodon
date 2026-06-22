@@ -56,9 +56,14 @@ A `did:t3n` cannot be verified on-chain (it is T3N state proven via SIWE/WASM). 
      let the indexer hydrate via `readSkill` (existing pattern). *(Decision: avoid churning the
      indexed event; indexer already re-reads full skill state on `SkillRegistered`.)*
    - No on-chain enforcement of identity (cannot verify a DID on-chain). Reputation gate unchanged.
-2. **`IdentitySessionStore` (P0-b):** new interface + memory/fs/redis parity behind the storage
-   factory. Stores `agentId → { did, verifiedAt, expiresAt }`. Replaces the volatile module-level
-   `verifiedDids` Map (closes PATTERN-DEBT-T3N-001). Config: `T3N_SESSION_TTL_SECS` (default 600).
+2. **`IdentitySessionStore` (P0-b):** a **shared** module both `karma.tool.ts` (Layer 1) and
+   `t3.tool.ts` (Layer 3) import — so `create_job` can enforce identity without a backwards
+   Layer1→Layer3 dependency. Stores `agentId → { did, address, verifiedAt, expiresAt }`. Replaces the
+   volatile module-level `verifiedDids` Map (closes PATTERN-DEBT-T3N-001). Config:
+   `T3N_SESSION_TTL_SECS` (default 600), `T3N_SESSION_FRESH_MAX_AGE_SECS` (default 120, for policy=2).
+   **This cycle:** interface + in-memory TTL impl, fully tested (sufficient for the current
+   single-process deployment). **Redis-backed parity** is required only for multi-replica and
+   therefore travels with the gated multi-replica deploy (audit L2) — not this cycle.
 3. **`create_job` unification:** read `skill.identityPolicy`; enforce per the table above against the
    session store before the reputation gate. Structured rejection (`reason: "identity_required"` /
    `"identity_stale"` / `"identity_policy_unknown"`) — same shape as the existing reputation
