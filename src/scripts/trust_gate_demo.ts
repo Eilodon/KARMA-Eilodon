@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     throw new Error(`Expected rejected, got: ${JSON.stringify(job)}`);
   }
 
-  console.log(`\n  ${C.red("✗ REJECTED")} ${C.bold("by on-chain consensus")} — ${job.reason}`);
+  console.log(`\n  ${C.red("✗ REJECTED")} ${C.bold("by on-chain consensus")} — ${String(job.reason)}`);
   console.log(C.dim(`  Beta agentReputation (${betaRep}) < minReputationToInvoke (${gate})`));
   console.log(C.dim("  No escrow locked. Zero PHRS spent. Contract enforces the same rule."));
   console.log(ok("Consensus-enforced trust gate — not app-layer opinion"));

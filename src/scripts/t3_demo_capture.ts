@@ -37,9 +37,11 @@ const tool = (name: string) => {
   if (!t) throw new Error(`missing tool ${name}`);
   return t;
 };
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const run = async (name: string, args: Record<string, unknown>): Promise<any> =>
-  (await tool(name).handler(args, {} as never, undefined, undefined)).structuredContent;
+const run = async <T = Record<string, unknown>>(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<T> =>
+  (await tool(name).handler(args, {} as never, undefined, undefined)).structuredContent as T;
 
 async function main(): Promise<void> {
   markTrustedRuntime();
@@ -52,10 +54,10 @@ async function main(): Promise<void> {
   // ── SCENE 1 ───────────────────────────────────────────────────────────────
   console.log(banner("Scene 1 — Identity gate (live)"));
   console.log(step(1, 4, "A real decentralized identity from the Terminal3 TEE"));
-  const health = await run("t3_health", {});
+  const health = await run<{ nodeUrl: string; wasmLoaded: boolean }>("t3_health", {});
   console.log(kv("t3n node", C.cyan(health.nodeUrl)));
   console.log(kv("wasm", health.wasmLoaded ? C.green("loaded") : C.red("FAILED")));
-  const id1 = await run("t3_verify_identity", { agent_id: ALPHA });
+  const id1 = await run<{ did: unknown }>("t3_verify_identity", { agent_id: ALPHA });
   console.log(ok("SIWE / EIP-191 handshake — private key never left the keystore"));
   console.log(kv("DID", C.green(C.bold(didStr(id1.did)))));
   await sleep(HOLD);
@@ -75,9 +77,9 @@ async function main(): Promise<void> {
   await sleep(HOLD);
 
   console.log(step(2, 4, "Verify identity, then both gates clear → escrow on-chain"));
-  const id2 = await run("t3_verify_identity", { agent_id: BETA });
+  const id2 = await run<{ did: unknown }>("t3_verify_identity", { agent_id: BETA });
   console.log(kv("verified DID", C.green(didStr(id2.did))));
-  const job = await run("t3_create_verified_job", {
+  const job = await run<{ jobId: string | number; reputation: number; threshold: number }>("t3_create_verified_job", {
     agent_id: BETA, skill_id: SKILL_ID, deadline_secs: 3600, value_wei: VALUE_WEI,
   });
   console.log(ok(`dual-gate PASSED — job ${C.cyan("#" + job.jobId)}  (identity ✓  reputation ${job.reputation} ≥ ${job.threshold} ✓)`));
@@ -87,9 +89,19 @@ async function main(): Promise<void> {
   // ── SCENE 3 ───────────────────────────────────────────────────────────────
   console.log(banner("Scene 3 — FLAGSHIP: bounded, revocable delegation (TEE-signed)"));
   console.log(step(3, 4, "The funded agent issues a Terminal3 delegation credential"));
-  const id3 = await run("t3_verify_identity", { agent_id: T3N });
+  const id3 = await run<{ did: unknown }>("t3_verify_identity", { agent_id: T3N });
   console.log(kv("agent DID", C.green(didStr(id3.did))));
-  const auth = await run("t3_authorize_payroll_agent", {
+  const auth = await run<{
+    credential_issued: boolean;
+    functions_authorised: string[];
+    not_before: string;
+    not_after: string;
+    batch_cap_cents: string;
+    vc_id_b64u: string;
+    user_sig_hex: string;
+    grant_provisioned: boolean;
+    invocation_succeeded: boolean;
+  }>("t3_authorize_payroll_agent", {
     agent_id: T3N, functions: ["validate-credentials"], ttl_secs: 3600, batch_cap_cents: "100000",
   });
   console.log(ok(C.bold("credential_issued: " + C.green(String(auth.credential_issued)))));
@@ -108,7 +120,7 @@ async function main(): Promise<void> {
   // ── SCENE 4 ───────────────────────────────────────────────────────────────
   console.log(banner("Scene 4 — Authority is temporary"));
   console.log(step(4, 4, "Revoke the very same credential — full issue → sign → revoke lifecycle"));
-  const rev = await run("t3_revoke_payroll_authorization", { agent_id: T3N });
+  const rev = await run<{ revoked_entirely: boolean; vc_id: string }>("t3_revoke_payroll_authorization", { agent_id: T3N });
   console.log(ok(C.bold("revoked_entirely: " + C.green(String(rev.revoked_entirely)))));
   const matches = rev.vc_id === auth.vc_id_b64u;
   console.log(kv("vc_id", `${C.cyan(rev.vc_id)}  ${matches ? C.green("✓ matches Scene 3") : C.red("✗ mismatch")}`));
