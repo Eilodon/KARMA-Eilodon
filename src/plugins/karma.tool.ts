@@ -243,6 +243,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       pricePerCallWei: WEI.describe("Price per call in wei, as a base-10 string."),
       minReputationToInvoke: z.number().int().min(0).max(100).default(0)
         .describe("Trust Gate: min requester reputation (0..100) to invoke this skill. 0 = open. App-layer only (Phase 1)."),
+      identityPolicy: z.number().int().min(0).max(255).default(0)
+        .describe("Identity Gate (P0): 0 = open, 1 = require a verified did:t3n, 2 = require a FRESH did:t3n. On-chain + enforced in create_job."),
     },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -257,6 +259,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         mcpEndpoint: z.string().default(""),
         pricePerCallWei: WEI,
         minReputationToInvoke: z.number().int().min(0).max(100).default(0),
+        identityPolicy: z.number().int().min(0).max(255).default(0),
       }).parse(args);
       const { tenantId } = getRequestContext();
       const account = svc.account(a.agentId, tenantId);
@@ -266,6 +269,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         mcpEndpoint: a.mcpEndpoint,
         pricePerCall: BigInt(a.pricePerCallWei),
         minReputationToInvoke: BigInt(a.minReputationToInvoke), // v2: authoritative on-chain threshold
+        identityPolicy: a.identityPolicy, // P0: on-chain Identity Gate policy
       });
       if (outcome.status === "pending" || skillId == null) {
         return reply(`[KARMA] register_skill broadcast; receipt pending tx=${outcome.hash}`, {
@@ -284,6 +288,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         owner_address: account.address,
         active: true,
         min_reputation_to_invoke: a.minReputationToInvoke,
+        identity_policy: a.identityPolicy,
       });
       return reply(`[KARMA] registered skill #${skillId} tx=${outcome.hash}`, {
         status: "confirmed",

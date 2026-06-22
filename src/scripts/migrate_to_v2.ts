@@ -116,6 +116,7 @@ async function main(): Promise<void> {
       mcpEndpoint: item.mcpEndpoint,
       pricePerCall: item.pricePerCall,
       minReputationToInvoke: item.minReputationToInvoke,
+      identityPolicy: 0, // v1/v2 skills carried no identity policy → open
     });
     console.log(`  v1 #${item.oldSkillId} → v2 #${skillId ?? "(pending)"} tx=${outcome.hash}`);
   }

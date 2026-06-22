@@ -204,6 +204,19 @@ describe("P6 KARMA tools", () => {
     });
   });
 
+  it("register_skill: passes identityPolicy into the index doc (P0)", async () => {
+    await call(tool(tools, "register_skill"), {
+      agentId: "agent-alpha",
+      name: "payroll",
+      description: "enterprise",
+      mcpEndpoint: "http://localhost/mcp",
+      pricePerCallWei: "1000",
+      identityPolicy: 1,
+    });
+    expect((svc.registerSkill as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({ identityPolicy: 1 });
+    expect((svc.indexUpsert as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ identity_policy: 1 });
+  });
+
   it("create_job: Trust Gate rejects a requester below the skill threshold (no escrow)", async () => {
     svc = fakeService({
       readSkill: vi.fn(async () => skill({ minReputationToInvoke: 70n })),

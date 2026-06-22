@@ -110,7 +110,7 @@ async function waitForRpc(timeoutMs = 10_000): Promise<void> {
   it("round-trips register→read with the v2 minReputationToInvoke field decoded", async () => {
     const acct = keystore.getAccount("alpha");
     const { skillId } = await svc.registerSkill(acct, {
-      name: "search", description: "d", mcpEndpoint: "mcp://a", pricePerCall: 1000n, minReputationToInvoke: 0n,
+      name: "search", description: "d", mcpEndpoint: "mcp://a", pricePerCall: 1000n, minReputationToInvoke: 0n, identityPolicy: 0,
     });
     expect(skillId).toBe(1n);
     const s = await svc.readSkill(1n);
