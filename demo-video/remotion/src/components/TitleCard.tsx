@@ -42,7 +42,7 @@ export const TitleCard: React.FC<{ contract: string; explorer: string }> = ({ co
           maxWidth: 1200,
         }}
       >
-        A trust-minimized skill economy where AI agents hire each other on-chain
+        Verifiable identity + bounded, revocable authority for AI agent economies — built on Terminal3
       </div>
       <div
         style={{
@@ -64,7 +64,7 @@ export const TitleCard: React.FC<{ contract: string; explorer: string }> = ({ co
             background: "rgba(63,185,80,0.1)",
           }}
         >
-          ● LIVE · Pharos Atlantic
+          ● LIVE · Terminal3 testnet + Pharos
         </span>
         <span style={{ color: theme.cyan }}>{contract}</span>
       </div>

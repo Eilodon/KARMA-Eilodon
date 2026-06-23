@@ -53,10 +53,10 @@ export const Outro: React.FC<{ contract: string; explorer: string }> = ({ contra
       </div>
 
       <div style={{ marginTop: 36, display: "flex", flexDirection: "column", gap: 16 }}>
-        <Feature text="On-chain reputation & social graph" delay={8} />
-        <Feature text="Exactly-once execution (taskHash dedup)" delay={16} />
-        <Feature text="Prompt-injection-safe skill discovery" delay={24} />
-        <Feature text="Consensus-enforced trust gates" delay={32} />
+        <Feature text="Verifiable DID identity — SIWE / EIP-191" delay={8} />
+        <Feature text="TEE-signed, bounded, revocable delegation" delay={16} />
+        <Feature text="Dual-layer trust — identity + on-chain reputation" delay={24} />
+        <Feature text="8 T3N tools · ~23 SDK surfaces · 457 tests green" delay={32} />
       </div>
 
       <div
@@ -69,9 +69,9 @@ export const Outro: React.FC<{ contract: string; explorer: string }> = ({ contra
           textAlign: "center",
         }}
       >
-        <div style={{ color: theme.dim, fontSize: 22, marginBottom: 8 }}>Verify everything on Pharos Atlantic</div>
+        <div style={{ color: theme.dim, fontSize: 22, marginBottom: 8 }}>Built on Terminal3 · verifiable on-chain</div>
         {contract}
-        <div style={{ color: theme.dim, fontSize: 22, marginTop: 8 }}>{explorer.replace(/^https?:\/\//, "")}</div>
+        <div style={{ color: theme.dim, fontSize: 22, marginTop: 8 }}>github.com/Eilodon/KARMA · @terminal3/t3n-sdk</div>
       </div>
 
       <div

@@ -27,6 +27,9 @@ const titleFor = (id: string): string => {
     "trust-gate": "agent ~ pnpm demo:trust-gate",
     demo: "agent ~ pnpm demo",
     verify: "agent ~ pnpm demo:verify",
+    flagship: "karma ~ t3_demo_capture  ·  Terminal3 testnet",
+    economy: "karma ~ pnpm demo  ·  Pharos Atlantic",
+    depth: "karma ~ pnpm demo:discover",
   };
   return map[id] ?? `agent ~ ${id}`;
 };
@@ -59,6 +62,10 @@ export const TerminalSegment: React.FC<{ seg: Segment; txs: Tx[]; explorer: stri
   const frame = useCurrentFrame();
   const [idx, total] = chapterPos(seg.id);
   const WIN_W = 1380;
+  // If narration is much longer than the clip, stretch playback to fill (slow, readable scroll)
+  // instead of a long static freeze. Very short clips still play 1x then freeze their last frame.
+  const stretch = seg.clip ? seg.clipFrames / seg.durationInFrames : 1;
+  const useStretch = Boolean(seg.clip) && stretch >= 0.35 && stretch < 0.95;
 
   return (
     <AbsoluteFill
@@ -71,7 +78,13 @@ export const TerminalSegment: React.FC<{ seg: Segment; txs: Tx[]; explorer: stri
       <div style={{ marginTop: -40 }}>
         <TerminalWindow title={titleFor(seg.id)} width={WIN_W}>
           {seg.clip ? (
-            frame < seg.clipFrames ? (
+            useStretch ? (
+              <OffthreadVideo
+                src={staticFile(seg.clip)}
+                playbackRate={stretch}
+                style={{ width: WIN_W, display: "block" }}
+              />
+            ) : frame < seg.clipFrames ? (
               <OffthreadVideo
                 src={staticFile(seg.clip)}
                 style={{ width: WIN_W, display: "block" }}
@@ -92,8 +105,8 @@ export const TerminalSegment: React.FC<{ seg: Segment; txs: Tx[]; explorer: stri
       </Sequence>
 
       {seg.showTxs ? (
-        // Reveal the hash summary on the freeze-frame tail, so it never covers live output.
-        <Sequence from={Math.max(20, seg.clipFrames)} name="tx-panel">
+        // Reveal the real on-chain hash summary partway through, kept on screen to the end.
+        <Sequence from={Math.round(seg.durationInFrames * 0.45)} name="tx-panel">
           <TxPanel txs={txs} explorer={explorer} />
         </Sequence>
       ) : null}

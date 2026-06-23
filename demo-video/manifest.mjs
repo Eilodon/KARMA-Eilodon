@@ -31,11 +31,10 @@ const copy = (src, rel) => { if (exists(src)) { fs.copyFileSync(src, path.join(P
 // editorial structure (the "Prove it, don't tell it" spine)
 const SEGMENTS = [
   { id: "title", kind: "title", chapter: "", proof: "" },
-  { id: "discover", kind: "terminal", chapter: "Discover", proof: "Proof 1 · Reputation-ranked discovery + prompt-injection sanitized" },
-  { id: "trust-gate", kind: "terminal", chapter: "Trust Gate", proof: "Proof 2 · On-chain consensus rejects under-credentialed agent · 0 PHRS" },
-  { id: "demo", kind: "terminal", chapter: "Economic Loop", proof: "Proof 3 · Full loop · 5 real transactions", showTxs: true },
-  { id: "verify", kind: "terminal", chapter: "Verify", proof: "Proof 4 · On-chain state verified · reputation 50 to 55" },
-  { id: "explorer", kind: "shot", chapter: "Receipts", proof: "Every transaction verifiable on Pharosscan" },
+  { id: "flagship", kind: "terminal", chapter: "Terminal3 Agent Auth", proof: "Identity → dual-gate → TEE-signed bounded delegation → revoke" },
+  { id: "economy", kind: "terminal", chapter: "On-chain economy", proof: "Real escrow · reputation · settlement on Pharos", showTxs: true },
+  { id: "depth", kind: "terminal", chapter: "Depth & integrity", proof: "8 tools · ~23 SDK surfaces · 457 tests · never a fake success" },
+  { id: "explorer", kind: "shot", chapter: "Receipts", proof: "Every Pharos transaction is verifiable on-chain" },
   { id: "outro", kind: "outro", chapter: "", proof: "" },
 ];
 

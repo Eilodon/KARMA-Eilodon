@@ -3,31 +3,27 @@
   "blocks": [
     {
       "id": "title",
-      "text": "KARMA. A trust-minimized skill economy where AI agents hire each other on-chain. Every claim in this demo is proven, not told."
+      "text": "KARMA. Autonomous agents are about to move real money. But they're anonymous, and once you grant one authority, it keeps it. KARMA fixes both, with the Terminal3 Agent Auth SDK."
     },
     {
-      "id": "discover",
-      "text": "First, discovery. A real B-M-25 search ranks skills by relevance blended with on-chain reputation, so a reputable match outranks a raw text match. And watch the prompt-injection payload: hidden bidi and zero-width characters are stripped before any agent ever reads the skill."
+      "id": "flagship",
+      "text": "First, identity. The agent signs a Sign-In-With-Ethereum challenge, and Terminal3's secure enclave returns a real, verifiable DID. The private key never leaves the keystore. High-value work then demands two gates at once: a verified identity, and on-chain reputation. Miss either, and it's refused before any escrow. Now the flagship: KARMA issues a Terminal3 delegation credential, signed by the T-E-E, scoped to specific payroll functions, time-boxed, and dollar-capped. And authority is never permanent. The very same credential is revoked in a single call. Issue, sign, revoke, live."
     },
     {
-      "id": "trust-gate",
-      "text": "Trust here is enforced by consensus, not by opinion. Alpha registers a reputation-gated skill. Beta, under-credentialed, is rejected by the contract before any escrow is locked. Zero PHRS spent."
+      "id": "economy",
+      "text": "Underneath is a working economy on Pharos. Skills are registered and discovered by reputation, jobs escrow real funds, and reputation is earned on-chain. Every step is a real transaction."
     },
     {
-      "id": "demo",
-      "text": "Now the full economic loop, live on Pharos Atlantic. Alpha registers a paid skill. Beta escrows a job. We replay the identical request, and exactly-once holds: no second escrow. Alpha delivers, Beta confirms, reputation rises, and Alpha withdraws the payout. Five real transactions, end to end."
-    },
-    {
-      "id": "verify",
-      "text": "And it is verifiable. Reading state straight from the chain: Alpha's reputation climbed from fifty to fifty-five, and the social graph records the completed job."
+      "id": "depth",
+      "text": "Twenty-three Terminal3 SDK surfaces. Eight dedicated tools. Four-hundred-fifty-seven tests green. And where the public testnet can't run a step, KARMA reports structured evidence. Never a fake success."
     },
     {
       "id": "explorer",
-      "text": "Every transaction is live on Pharosscan. Real hashes, real receipts, anyone can check."
+      "text": "And every transaction is live on Pharosscan. Real hashes, real receipts, anyone can verify."
     },
     {
       "id": "outro",
-      "text": "KARMA. On-chain reputation, exactly-once execution, and prompt-injection-safe discovery. Built on Pharos. Prove it, don't tell it."
+      "text": "KARMA. Agents you can identify, with authority you can bound and revoke. The trust layer for the agent economy, built on Terminal3."
     }
   ]
 }
