@@ -9,6 +9,7 @@ import { protectedResourceMetadata, resourceMetadataPath } from "./http/oauth_me
 import { protocolHeaderValidation } from "./middlewares/protocol_header.js";
 import { createStdioTransport, loadHttpServerAdapters } from "./mcp/adapter/mcp_protocol_adapter.js";
 import { startKarmaIndexer, stopKarmaIndexer } from "./lib/skill_indexer_runtime.js";
+import { registerConfiguredPaymentPlugins } from "./lib/payment/boot.js";
 
 let runtime: SuperMcpRuntime;
 
@@ -37,6 +38,17 @@ function jsonRpcError(code: number, message: string) {
 }
 
 async function main() {
+  // Register IPaymentPlugin implementations (P1 T7/T11) BEFORE loading karma.tool so the
+  // create_job handler can resolve `paymentPlugins.resolve("x402", network)` at invoke time.
+  // Each rail is env-gated — see src/lib/payment/boot.ts.
+  const payments = registerConfiguredPaymentPlugins();
+  if (payments.registered.length > 0) {
+    console.error(`[KARMA] Payment plugins registered: ${payments.registered.join(", ")}`);
+  }
+  for (const s of payments.skipped) {
+    console.error(`[KARMA] Payment plugin skipped: ${s.id} (${s.reason})`);
+  }
+
   const tools = await PluginLoader.loadAll();
   runtime = new SuperMcpRuntime("1.0.0", tools);
   await runtime.initialize();

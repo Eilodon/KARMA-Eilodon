@@ -121,6 +121,13 @@ const EnvSchema = z.object({
   T3N_SESSION_TTL_SECS: z.number().int().min(30).max(86400).default(600),
   // P0: max session age accepted for a policy=2 (T3N_VERIFIED_FRESH) skill — high-assurance tier (D3).
   T3N_SESSION_FRESH_MAX_AGE_SECS: z.number().int().min(10).max(3600).default(120),
+
+  // P1 (Stellar/Casper x402 plugins) — setting either URL registers the matching IPaymentPlugin
+  // at boot. Leave both unset to disable the x402 rail (create_job will reject with
+  // payment_plugin_not_registered). Defaults below match the buildathon-time facilitator URLs;
+  // override per-deploy as the live facilitator endpoints settle.
+  KARMA_X402_STELLAR_FACILITATOR_URL: z.string().url().optional(),
+  KARMA_X402_CASPER_FACILITATOR_URL: z.string().url().optional(),
 });
 
 const DEV_ENCRYPTION_KEYS = new Set([
