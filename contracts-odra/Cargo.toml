@@ -1,0 +1,28 @@
+[package]
+name = "karma-odra"
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+description = "KARMA AgentSkillRegistry — Odra port for Casper Network (Casper Agentic Buildathon T9)."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+odra = { version = "2.2.0", default-features = false }
+
+[dev-dependencies]
+odra-test = "2.2.0"
+
+# `cargo odra build` (WASM compilation for Casper deployment) needs the `odra-build` crate
+# wired through `bin/build_contract.rs` and `bin/build_schema.rs`. Those entry points are
+# scaffolded in `bin/` for the deployment path but kept out of `cargo test` (the TDD loop)
+# to avoid pulling `odra-build` into the regular link graph — Odra's CLI invokes them via
+# its own cargo profile when the WASM artifact is needed.
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+[profile.dev.package."*"]
+opt-level = 3
