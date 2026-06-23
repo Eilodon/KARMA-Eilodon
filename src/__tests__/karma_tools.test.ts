@@ -254,29 +254,11 @@ describe("P6 KARMA tools", () => {
     expect(svc.createJob).toHaveBeenCalledTimes(1);
   });
 
-  // ── Phase 0 (Stellar/Casper roadmap): settlement_rail param ─
+  // ── Stellar/Casper roadmap: settlement_rail param (T3 surface + T7/T11 wiring) ─
   it('create_job: settlement_rail defaults to "escrow" and routes through Pharos', async () => {
     // No settlement_rail in args ⇒ schema default kicks in and the escrow path is taken.
     await call(tool(tools, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
     expect(svc.createJob).toHaveBeenCalledTimes(1);
-  });
-
-  it('create_job: settlement_rail="x402" returns settlement_rail_not_implemented (Phase 0 stub)', async () => {
-    const res = await call(tool(tools, "create_job"), {
-      agentId: "agent-beta",
-      skillId: "7",
-      idempotencyNonce: 1,
-      settlement_rail: "x402",
-    });
-    expect(res.structuredContent).toMatchObject({
-      status: "rejected",
-      reason: "settlement_rail_not_implemented",
-      skillId: "7",
-      settlementRail: "x402",
-    });
-    expect(svc.createJob).not.toHaveBeenCalled();
-    // also skips the identity/reputation/idempotency seams entirely (rail rejected upfront)
-    expect(svc.findExistingJob).not.toHaveBeenCalled();
   });
 
   it('create_job: explicit settlement_rail="escrow" matches the default behaviour', async () => {
@@ -287,6 +269,136 @@ describe("P6 KARMA tools", () => {
       settlement_rail: "escrow",
     });
     expect(svc.createJob).toHaveBeenCalledTimes(1);
+  });
+
+  describe('create_job settlement_rail="x402" (T7/T11 IPaymentPlugin wiring)', () => {
+    // Each test owns the paymentPlugins singleton — reset to empty before/after so the suite
+    // can run in any order against the in-process registry.
+    beforeEach(async () => {
+      const { paymentPlugins } = await import("../lib/payment/registry.js");
+      paymentPlugins.clear();
+    });
+    afterEach(async () => {
+      const { paymentPlugins } = await import("../lib/payment/registry.js");
+      paymentPlugins.clear();
+    });
+
+    it("rejects when the x402 block is missing", async () => {
+      const res = await call(tool(tools, "create_job"), {
+        agentId: "agent-beta", skillId: "7", idempotencyNonce: 1, settlement_rail: "x402",
+      });
+      expect(res.structuredContent).toMatchObject({
+        status: "rejected", reason: "x402_params_required",
+        skillId: "7", settlementRail: "x402",
+      });
+      expect(svc.createJob).not.toHaveBeenCalled();
+      expect(svc.findExistingJob).not.toHaveBeenCalled();
+    });
+
+    it("rejects when no IPaymentPlugin is registered for the requested network", async () => {
+      const res = await call(tool(tools, "create_job"), {
+        agentId: "agent-beta", skillId: "7", idempotencyNonce: 1,
+        settlement_rail: "x402",
+        x402: { network: "stellar:testnet", payee: "GD-FAKE" },
+      });
+      expect(res.structuredContent).toMatchObject({
+        status: "rejected", reason: "payment_plugin_not_registered",
+        skillId: "7", settlementRail: "x402", network: "stellar:testnet",
+      });
+      expect(svc.createJob).not.toHaveBeenCalled();
+    });
+
+    it("routes through the registered plugin and returns a paid receipt", async () => {
+      const { paymentPlugins } = await import("../lib/payment/registry.js");
+      const fakeReceipt = {
+        rail: "x402" as const,
+        network: "stellar:testnet",
+        payer: "G-PAYER",
+        payee: "G-PAYEE",
+        amount: "100000",
+        asset: "USDC",
+        facilitatorRef: "https://fac.example",
+        txHash: "0xabc",
+      };
+      const pay = vi.fn(async () => fakeReceipt);
+      paymentPlugins.register({
+        id: "x402-test-stellar",
+        rail: "x402",
+        networks: ["stellar:testnet"],
+        quote: vi.fn(async () => ({ rail: "x402" as const, network: "stellar:testnet", asset: "USDC", price: "100000" })),
+        pay,
+        verify: vi.fn(async () => true),
+      });
+
+      const res = await call(tool(tools, "create_job"), {
+        agentId: "agent-beta", skillId: "7", idempotencyNonce: 1,
+        settlement_rail: "x402",
+        x402: { network: "stellar:testnet", payee: "G-PAYEE", price: "0.01", asset: "USDC" },
+      });
+      expect(pay).toHaveBeenCalledWith(
+        { skillId: "7", price: "0.01", asset: "USDC", payTo: "G-PAYEE", network: "stellar:testnet" },
+        { agentId: "agent-beta" },
+      );
+      expect(res.structuredContent).toMatchObject({
+        status: "paid",
+        skillId: "7",
+        settlementRail: "x402",
+        pluginId: "x402-test-stellar",
+        receipt: {
+          rail: "x402",
+          network: "stellar:testnet",
+          payer: "G-PAYER",
+          payee: "G-PAYEE",
+          amount: "100000",
+          asset: "USDC",
+          facilitatorRef: "https://fac.example",
+          txHash: "0xabc",
+        },
+      });
+      expect(svc.createJob).not.toHaveBeenCalled();
+      // x402 path skips the escrow-only idempotency probe.
+      expect(svc.findExistingJob).not.toHaveBeenCalled();
+    });
+
+    it("falls back to skill.pricePerCall when price is omitted", async () => {
+      const { paymentPlugins } = await import("../lib/payment/registry.js");
+      const pay = vi.fn(async () => ({
+        rail: "x402" as const, network: "casper:mainnet", payer: "ah-A", payee: "ah-B",
+        amount: "1000", asset: "CSPR", facilitatorRef: "f",
+      }));
+      paymentPlugins.register({
+        id: "x402-test-casper", rail: "x402", networks: ["casper:mainnet"],
+        quote: vi.fn(), pay, verify: vi.fn(),
+      } as never);
+      await call(tool(tools, "create_job"), {
+        agentId: "agent-beta", skillId: "7", idempotencyNonce: 1,
+        settlement_rail: "x402",
+        x402: { network: "casper:mainnet", payee: "ah-B" },
+      });
+      // svc default pricePerCall = 1000n ⇒ String(1000n) = "1000".
+      expect(pay).toHaveBeenCalledWith(
+        expect.objectContaining({ price: "1000", asset: "" }),
+        expect.anything(),
+      );
+    });
+
+    it("surfaces a plugin pay() failure as x402_pay_failed (no escrow fallback)", async () => {
+      const { paymentPlugins } = await import("../lib/payment/registry.js");
+      paymentPlugins.register({
+        id: "x402-flaky", rail: "x402", networks: ["stellar:testnet"],
+        quote: vi.fn(), pay: vi.fn(async () => { throw new Error("facilitator 502"); }), verify: vi.fn(),
+      } as never);
+      const res = await call(tool(tools, "create_job"), {
+        agentId: "agent-beta", skillId: "7", idempotencyNonce: 1,
+        settlement_rail: "x402",
+        x402: { network: "stellar:testnet", payee: "G-X" },
+      });
+      expect(res.structuredContent).toMatchObject({
+        status: "rejected", reason: "x402_pay_failed",
+        skillId: "7", settlementRail: "x402", pluginId: "x402-flaky",
+      });
+      expect(svc.createJob).not.toHaveBeenCalled();
+    });
   });
 
   // ── P0 Identity Gate: create_job enforces on-chain identityPolicy (INV-1) ──

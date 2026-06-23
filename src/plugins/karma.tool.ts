@@ -8,6 +8,7 @@ import { getRequestContext } from "../security/context.js";
 import { getKarmaIndexerHealth } from "../lib/skill_indexer_runtime.js";
 import { identitySessions, SESSION_FRESH_MAX_AGE_MS } from "../lib/identity_session.js";
 import { ENV } from "../config/env.js";
+import { paymentPlugins } from "../lib/payment/registry.js";
 import type { JobDetail, JobStatus, SocialGraphFullResult } from "../lib/types.js";
 
 /**
@@ -340,14 +341,21 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       "returns the existing job instead of double-escrowing. To retry safely you MUST resend the SAME " +
       "idempotencyNonce — a status:\"pending\" result means the tx is already broadcast (NOT failed), so " +
       "never retry it with a fresh nonce or you will escrow a second, distinct job. " +
-      "settlement_rail (Phase 0) defaults to \"escrow\" (Pharos AgentSkillRegistry); \"x402\" is reserved " +
-      "for the Stellar/Casper plugins and currently returns a structured rejection until T7/T11 wire it.",
+      "settlement_rail defaults to \"escrow\" (Pharos AgentSkillRegistry). \"x402\" routes through " +
+      "a registered IPaymentPlugin (Stellar/Casper) and requires the `x402` block ({ network, payee, " +
+      "price?, asset? }); the plugin is resolved by (rail, network) via paymentPlugins.resolve().",
     inputSchema: {
       agentId: z.string().describe("Keystore agent id of the requester."),
       skillId: WEI.describe("Target skill id."),
       idempotencyNonce: z.number().int().positive().describe("Caller-chosen nonce. REUSE the same value to retry the same job exactly-once; a new value creates a new job."),
       deadlineSecs: z.number().int().positive().max(2_592_000).optional().describe("Seconds until refund deadline (default 86400)."),
-      settlement_rail: z.enum(["x402", "escrow"]).default("escrow").describe('"escrow" (default) settles via the Pharos AgentSkillRegistry escrow lifecycle. "x402" routes the job through a registered x402 plugin (Stellar/Casper) — Phase 0 stub: returns settlement_rail_not_implemented until T7/T11.'),
+      settlement_rail: z.enum(["x402", "escrow"]).default("escrow").describe('"escrow" (default) settles via the Pharos AgentSkillRegistry escrow lifecycle. "x402" routes the job through a registered IPaymentPlugin keyed by (rail, network) — see the `x402` param.'),
+      x402: z.object({
+        network: z.string().min(1).describe('CAIP-2-ish network id, e.g. "stellar:testnet" or "casper:mainnet". Matched exactly against IPaymentPlugin.networks.'),
+        payee: z.string().min(1).describe("Chain-native payee address (Stellar G-account, Casper account-hash-..., etc)."),
+        price: z.string().min(1).optional().describe("Decimal or smallest-unit amount string. Falls back to skill.pricePerCall when omitted."),
+        asset: z.string().optional().describe("Optional asset override (defaults: USDC on Stellar, CSPR on Casper)."),
+      }).optional().describe('Required when settlement_rail="x402". Carries the chain-specific routing the plugin needs.'),
     },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -361,6 +369,12 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         idempotencyNonce: z.number().int().positive(),
         deadlineSecs: z.number().int().positive().max(2_592_000).optional(),
         settlement_rail: z.enum(["x402", "escrow"]).default("escrow"),
+        x402: z.object({
+          network: z.string().min(1),
+          payee: z.string().min(1),
+          price: z.string().min(1).optional(),
+          asset: z.string().optional(),
+        }).optional(),
       }).parse(args);
       const { tenantId } = getRequestContext();
       const account = svc.account(a.agentId, tenantId);
@@ -369,26 +383,9 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       const skill = await svc.readSkill(skillId);
       if (!skill.active) throw new Error(`[KARMA] skill #${skillId} is inactive`);
 
-      // Phase 0 stub: the x402 rail is wired in T7 (Stellar) and T11 (Casper) — until a plugin is
-      // registered for the requested (rail, network) pair, decline cleanly so callers don't
-      // accidentally settle through the escrow path while requesting an inline-payment rail.
-      if (a.settlement_rail === "x402") {
-        return reply(
-          `[KARMA] create_job rejected: settlement_rail "x402" not implemented yet ` +
-            `(Phase 0 stub — wires up in T7/T11)`,
-          {
-            status: "rejected",
-            reason: "settlement_rail_not_implemented",
-            skillId,
-            settlementRail: a.settlement_rail,
-          },
-        );
-      }
-
-      // Trust Gate (v2, on-chain authoritative): preflight against the SAME on-chain values the
-      // contract's createJob require checks (skill.minReputationToInvoke + agentReputation), so we
-      // reject before broadcasting a tx that would revert. The on-chain require is the source of truth;
-      // simulate() would also catch it, but this returns a structured reason without a wasted round-trip.
+      // Reputation gate (preflight): rejects under-repped requesters before any expensive path
+      // (an x402 settle OR an escrow tx broadcast). Mirrors what the on-chain createJob require
+      // would catch — fail-fast saves a round-trip / a real payment.
       const requiredReputation = Number(skill.minReputationToInvoke);
       if (requiredReputation > 0) {
         const requesterReputation = await svc.getAgentReputation(requester);
@@ -407,31 +404,12 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         }
       }
 
-      // Exactly-once is enforced in THREE layers, all keyed by this deterministic taskHash =
-      // keccak(requester, skillId, idempotencyNonce):
-      //   1. MCP idempotency record (tenant+tool+args incl. nonce) — dedupes in-process retries.
-      //   2. findExistingJob() pre-check below — best-effort, has a TOCTOU window while the first tx
-      //      is still in the mempool (jobByTaskHash not yet written), so it is NOT the guarantee.
-      //   3. AUTHORITATIVE: the contract's `require(jobByTaskHash[taskHash] == 0)` (Fix 5). A racing
-      //      lost-ack retry that slips past (2) reverts on-chain and refunds msg.value — no double
-      //      escrow. This holds ONLY because the nonce (hence taskHash) is stable across retries.
-      const taskHash = svc.deriveTaskHash(requester, skillId, BigInt(a.idempotencyNonce));
-      const existing = await svc.findExistingJob(requester, taskHash);
-      if (existing != null) {
-        return reply(`[KARMA] create_job idempotent: existing job #${existing}`, {
-          status: "exists",
-          idempotent: true,
-          jobId: existing,
-        });
-      }
-
-      // Identity Gate (P0, INV-1): enforce the skill's on-chain identityPolicy. A did:t3n cannot be
-      // verified on-chain, so THIS server-side check is the enforcement point — the on-chain flag is
-      // declarative policy. Runs AFTER the existing-job short-circuit (audit L7) so retrying an
-      // already-created job is never rejected for a lapsed session. Fails closed on an absent/expired/
-      // address-mismatched session (audit FM2/FM3) and on an unknown policy value (INV-3).
-      const policy = skill.identityPolicy ?? 0;
-      if (policy !== 0) {
+      // Local helper — the skill's identityPolicy gate. Applied to escrow AFTER findExistingJob
+      // (audit L7: retries with a lapsed session must still return the existing job) and to x402
+      // BEFORE pay() (no idempotency layer there — running it pre-pay fails-fast on bad identity).
+      const enforceIdentityGate = (): ToolResult | null => {
+        const policy = skill.identityPolicy ?? 0;
+        if (policy === 0) return null;
         const session = identitySessions.get(a.agentId);
         if (session == null || session.address.toLowerCase() !== requester.toLowerCase()) {
           return reply(
@@ -453,7 +431,101 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
             { status: "rejected", reason: "identity_policy_unknown", skillId, identityPolicy: policy },
           );
         }
+        return null;
+      };
+
+      // ── x402 rail (T7 Stellar / T11 Casper) — IPaymentPlugin path ─────────────────────────
+      if (a.settlement_rail === "x402") {
+        if (!a.x402) {
+          return reply(
+            `[KARMA] create_job rejected: settlement_rail "x402" requires the 'x402' block ` +
+              `({ network, payee, price?, asset? })`,
+            {
+              status: "rejected", reason: "x402_params_required",
+              skillId, settlementRail: "x402",
+            },
+          );
+        }
+        const plugin = paymentPlugins.resolve("x402", a.x402.network);
+        if (!plugin) {
+          return reply(
+            `[KARMA] create_job rejected: no x402 IPaymentPlugin registered for network ` +
+              `'${a.x402.network}'. Set KARMA_X402_STELLAR_FACILITATOR_URL or ` +
+              `KARMA_X402_CASPER_FACILITATOR_URL and restart.`,
+            {
+              status: "rejected", reason: "payment_plugin_not_registered",
+              skillId, settlementRail: "x402", network: a.x402.network,
+            },
+          );
+        }
+        // Identity gate BEFORE plugin.pay() so a bad identity never burns USDC/CSPR.
+        const identityReject = enforceIdentityGate();
+        if (identityReject) return identityReject;
+
+        const price = a.x402.price ?? String(skill.pricePerCall);
+        const asset = a.x402.asset ?? "";
+        let receipt;
+        try {
+          receipt = await plugin.pay(
+            { skillId: String(skillId), price, asset, payTo: a.x402.payee, network: a.x402.network },
+            { agentId: a.agentId },
+          );
+        } catch (e) {
+          return reply(
+            `[KARMA] create_job rejected: x402 plugin '${plugin.id}' failed — ${e instanceof Error ? e.message : String(e)}`,
+            {
+              status: "rejected", reason: "x402_pay_failed",
+              skillId, settlementRail: "x402", pluginId: plugin.id,
+            },
+          );
+        }
+        return reply(
+          `[KARMA] create_job x402 settled via ${plugin.id} for skill #${skillId} ` +
+            `(${receipt.amount} ${receipt.asset || "(plugin-default)"} on ${receipt.network})`,
+          {
+            status: "paid",
+            skillId,
+            settlementRail: "x402",
+            pluginId: plugin.id,
+            receipt: {
+              rail: receipt.rail,
+              network: receipt.network,
+              payer: receipt.payer,
+              payee: receipt.payee,
+              amount: receipt.amount,
+              asset: receipt.asset,
+              facilitatorRef: receipt.facilitatorRef,
+              txHash: receipt.txHash,
+            },
+          },
+        );
       }
+
+      // ── escrow rail (Pharos AgentSkillRegistry) — original path ───────────────────────────
+      //
+      // Exactly-once is enforced in THREE layers, all keyed by this deterministic taskHash =
+      // keccak(requester, skillId, idempotencyNonce):
+      //   1. MCP idempotency record (tenant+tool+args incl. nonce) — dedupes in-process retries.
+      //   2. findExistingJob() pre-check below — best-effort, has a TOCTOU window while the first tx
+      //      is still in the mempool (jobByTaskHash not yet written), so it is NOT the guarantee.
+      //   3. AUTHORITATIVE: the contract's `require(jobByTaskHash[taskHash] == 0)` (Fix 5). A racing
+      //      lost-ack retry that slips past (2) reverts on-chain and refunds msg.value — no double
+      //      escrow. This holds ONLY because the nonce (hence taskHash) is stable across retries.
+      const taskHash = svc.deriveTaskHash(requester, skillId, BigInt(a.idempotencyNonce));
+      const existing = await svc.findExistingJob(requester, taskHash);
+      if (existing != null) {
+        return reply(`[KARMA] create_job idempotent: existing job #${existing}`, {
+          status: "exists",
+          idempotent: true,
+          jobId: existing,
+        });
+      }
+
+      // Identity Gate AFTER the existing-job short-circuit (audit L7) so retrying an already-
+      // created job is never rejected for a lapsed session. Fails closed on absent/expired/
+      // address-mismatched session (audit FM2/FM3) and unknown policy values (INV-3).
+      const identityReject = enforceIdentityGate();
+      if (identityReject) return identityReject;
 
       const { jobId, outcome } = await svc.createJob(account, {
         skillId,
