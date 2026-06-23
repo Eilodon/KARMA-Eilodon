@@ -1,0 +1,16 @@
+# Build artefacts (large; rebuild from source)
+build/
+ptau/*.ptau
+node_modules/
+bin/
+
+# Generated keys + witness (specific to a run)
+*.zkey
+*.wtns
+*.r1cs
+*.sym
+*_js/
+
+# Local environment overrides
+.env
+.env.local

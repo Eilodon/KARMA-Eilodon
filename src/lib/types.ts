@@ -1,5 +1,7 @@
 import type { Address } from "viem";
 import type { privateKeyToAccount } from "viem/accounts";
+import type { Keypair as StellarKeypair } from "@stellar/stellar-sdk";
+import type { PaymentOption } from "./payment/plugin.js";
 
 /** A viem local account with built-in nonce management. */
 export type ManagedAccount = ReturnType<typeof privateKeyToAccount>;
@@ -10,6 +12,13 @@ export interface AgentIdentity {
   account: ManagedAccount;
   /** Owning tenant, resolved at load: entry.tenant ?? default agent tenant (fail-closed binding). */
   tenant: string;
+  /**
+   * Stellar ed25519 keypair derived from the same secp256k1 key via HKDF (T6). Built at keystore
+   * load time while the raw key bytes are still in scope; the raw seed is consumed by Keypair
+   * construction and never exposed to outside callers (mirrors viem Account's "signs internally,
+   * key never leaves the class" invariant).
+   */
+  stellarKeypair: StellarKeypair;
 }
 
 /** Web3 Secret Storage v3 crypto block (scrypt KDF variant). */
@@ -110,4 +119,11 @@ export interface SkillDocument {
    * (server fails closed). Hydrated from chain by skillDocFromChain; enforced server-side in create_job.
    */
   identity_policy?: number;
+  /**
+   * Payment Layer (Phase 0 of the Stellar/Casper roadmap): rails through which this skill can be
+   * paid for. Surfaced verbatim in `discover_skills` so requesters can pick `settlement_rail` in
+   * `create_job`. Undefined ⇒ the indexer's default of `[{ rail: "escrow", network: "pharos:atlantic",
+   * asset: "PHRS" }]` (preserves existing behaviour for every shipped skill).
+   */
+  payment_options?: PaymentOption[];
 }

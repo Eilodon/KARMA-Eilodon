@@ -1,0 +1,17 @@
+{
+  "name": "karma-circuits",
+  "version": "0.1.0",
+  "description": "KARMA ZK circuits — Circom + Groth16 (Stellar ZK track)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "toolchain": "bash scripts/install-toolchain.sh",
+    "dummy:test": "node test/dummy_multiplier.test.mjs",
+    "credential:test": "node test/agent_credential.test.mjs"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.5"
+  }
+}

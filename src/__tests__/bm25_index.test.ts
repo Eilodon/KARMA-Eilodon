@@ -158,6 +158,29 @@ describe("P5.1 BM25SkillIndex", () => {
     expect(idx.size()).toBe(3);
     expect(loadPage).toHaveBeenCalledTimes(2);
   });
+
+  // ── Payment Layer (Phase 0: Stellar/Casper roadmap) ──────────
+  it("defaults payment_options to the Pharos escrow rail when unset", () => {
+    idx.upsert(mkSkill({ skill_id: 200, name: "default skill", description: "x" }));
+    const hit = idx.search("default")[0]!;
+    expect(hit.payment_options).toEqual([
+      { rail: "escrow", network: "pharos:atlantic", asset: "PHRS" },
+    ]);
+  });
+
+  it("preserves an explicitly-declared payment_options through search hits", () => {
+    idx.upsert({
+      ...mkSkill({ skill_id: 201, name: "fast skill", description: "x" }),
+      payment_options: [
+        { rail: "x402", network: "stellar:testnet", asset: "USDC" },
+        { rail: "escrow", network: "pharos:atlantic", asset: "PHRS" },
+      ],
+    });
+    const hit = idx.search("fast")[0]!;
+    expect(hit.payment_options).toHaveLength(2);
+    expect(hit.payment_options[0]?.rail).toBe("x402");
+    expect(hit.payment_options[0]?.network).toBe("stellar:testnet");
+  });
 });
 
 describe("sanitizeText", () => {
