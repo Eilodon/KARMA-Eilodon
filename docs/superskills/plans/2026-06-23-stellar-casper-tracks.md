@@ -459,7 +459,22 @@ with `txHash` + `facilitatorRef`.
 
 ENV: `CASPER_NETWORK` (`casper:testnet` | `casper:mainnet`), `CASPER_X402_FACILITATOR_URL`.
 
-- [ ] Step 1 failing tests → impl → PASS → commit `feat(payment): add x402Plugin/Casper (IPaymentPlugin)`.
+- [x] Step 1 failing tests → impl → PASS → commit `feat(payment): add x402Plugin/Casper (IPaymentPlugin) (T11)`.
+
+**Done-state notes (T11):**
+- `@x402/casper` is not yet published to npm (verified `npm view @x402/casper` → 404). The plugin
+  uses `@x402/core` types + builds the "exact" payment payload natively: canonical-JSON object,
+  SHA-256 + secp256k1, DER signature — the canonical pipeline the live Casper x402 Facilitator
+  (announced with the Casper AI Toolkit) verifies. Documented inline + in the test for the
+  facilitator-spec alignment owner-driven step in T13.
+- Default asset CSPR (9-decimal motes); `convertCsprToMotes` mirrors `@x402/stellar`'s
+  `convertToTokenAmount` policy. Pre-formatted smallest-unit strings pass through.
+- Signing payload includes `validAfter` / `validBefore` / `nonce` for replay protection on the
+  facilitator side (matches Coinbase "exact" scheme).
+- 22 tests (`src/__tests__/x402_casper.test.ts`): metadata, quote (4), pay (5 — receipt shape +
+  node:crypto-verified signature + fail-fast on unsupported network + lookup error propagation
+  + TTL window), verify (5), payment-option helper (2), canonicalize (1), signed-payload type
+  shape (1). Full suite 536 passed / 5 skipped; lint clean.
 
 ---
 
