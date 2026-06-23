@@ -122,14 +122,139 @@ describe("computeFlowReputation", () => {
     const r = ["0xr0", "0xr1", "0xr2", "0xr3", "0xr4"];
     for (const a of r) for (const b of r) if (a !== b) ring.push(edge(a, b, ETH));
 
-    const scores = computeFlowReputation([...payer, ...ring], NOW, params({ seeds: undefined }));
+    const scores = computeFlowReputation([...payer, ...ring], NOW, params({ seeds: undefined, concentrationCap: 1 }));
     const legitScore = scores.get("0xlegit") ?? 0;
     const ringMax = Math.max(...r.map((x) => scores.get(x) ?? 0));
 
     // Documented limitation: seedless mode is value/decay/saturation-weighted PageRank — a dense ring
     // is NOT crushed (it is competitive with a singly-endorsed provider). Full closure needs seeds
     // (Tier-2 bond). This test fails loudly if someone ever claims seedless mode is Sybil-proof.
+    // concentrationCap=1 disables the T0.2 K-distinct bound so we measure the bare seedless behavior.
     expect(ringMax).toBeGreaterThan(legitScore * 0.5);
+  });
+
+  // ── T0.1 P3-lite: dispute-rate soft penalty ───────────────────────────────
+  describe("dispute-rate penalty (T0.1 P3-lite)", () => {
+    const seeds = new Map([["0xseed", 1]]);
+
+    it("a heavily-disputed provider sees the penalty saturate at disputePenaltyCap (default 0.9)", () => {
+      // 1 small completion vs MANY disputes → dispute_rate ≈ 1 → penalty hits the cap (0.9).
+      // Score keeps the floor (1 - cap = 0.1 of original) so a recoverable provider isn't zero'd.
+      const baseEdges = [edge("0xseed", "0xL"), edge("0xseed", "0xBad", ETH, RECENT)];
+      const manyDisputes = Array.from({ length: 200 }, () => ({ provider: "0xBad", timestamp: RECENT }));
+      const before = computeFlowReputation(baseEdges, NOW, params({ seeds }));
+      const after = computeFlowReputation(baseEdges, NOW, params({ seeds, disputes: manyDisputes }));
+      const beforeBad = before.get("0xbad") ?? 0;
+      const afterBad = after.get("0xbad") ?? 0;
+      expect(beforeBad).toBeGreaterThan(0);
+      // Saturated penalty: at most 10% of original score survives (1 - disputePenaltyCap = 0.1).
+      expect(afterBad).toBeLessThanOrEqual(beforeBad * 0.12);
+      expect(afterBad).toBeGreaterThan(0); // floor stays alive (recovery possible)
+    });
+
+    it("a provider with high completions and few disputes is barely penalized", () => {
+      // 10 completions, 1 dispute → ~9% rate → ~9% score haircut.
+      const completions = Array.from({ length: 10 }, (_, i) => edge(`0xpayer${i}`, "0xGood", ETH, RECENT - i));
+      const before = computeFlowReputation(completions, NOW, params({ seeds: undefined }));
+      const after = computeFlowReputation(completions, NOW, params({
+        seeds: undefined,
+        disputes: [{ provider: "0xGood", timestamp: RECENT }],
+      }));
+      const ratio = (after.get("0xgood") ?? 0) / (before.get("0xgood") ?? 1);
+      expect(ratio).toBeGreaterThan(0.85); // small dent only
+      expect(ratio).toBeLessThan(1);        // but not zero penalty
+    });
+
+    it("old disputes decay the same as edges — months-old dispute weighs near-zero", () => {
+      const completions = [edge("0xpayer", "0xProvider", ETH, RECENT)];
+      const ancientTs = NOW - DEFAULT_FLOW_PARAMS.halfLifeSecs * 6; // ~1.5% weight
+      const recentDispute = computeFlowReputation(completions, NOW, params({
+        disputes: [{ provider: "0xProvider", timestamp: RECENT }],
+      }));
+      const ancientDispute = computeFlowReputation(completions, NOW, params({
+        disputes: [{ provider: "0xProvider", timestamp: ancientTs }],
+      }));
+      const r = recentDispute.get("0xprovider") ?? 0;
+      const a = ancientDispute.get("0xprovider") ?? 0;
+      expect(a).toBeGreaterThan(r); // ancient dispute → less penalty → higher remaining score
+    });
+
+    it("disputePenaltyCap = 0 disables the feedback entirely (parity with the legacy behavior)", () => {
+      const edges = [edge("0xseed", "0xBad", ETH, RECENT)];
+      const noCap = computeFlowReputation(edges, NOW, params({
+        seeds, disputePenaltyCap: 0,
+        disputes: [{ provider: "0xBad", timestamp: RECENT }],
+      }));
+      const noDisputes = computeFlowReputation(edges, NOW, params({ seeds }));
+      expect(noCap.get("0xbad")).toBe(noDisputes.get("0xbad"));
+    });
+
+    it("FlowReputationGraph.recordDispute feeds the penalty through computeBoosts", () => {
+      const g = new FlowReputationGraph({ ...DEFAULT_FLOW_PARAMS, seeds: new Map([["0xseed", 1]]) });
+      g.addEdge(edge("0xseed", "0xprov", ETH, RECENT));
+      const before = g.computeBoosts(NOW).get("0xprov") ?? 0;
+      g.recordDispute("0xprov", RECENT);
+      g.recordDispute("0xprov", RECENT);
+      g.recordDispute("0xprov", RECENT);
+      const after = g.computeBoosts(NOW).get("0xprov") ?? 0;
+      expect(after).toBeLessThan(before);
+    });
+  });
+
+  // ── T0.2 anti-wash: concentration cap on single-payer share ─────────────────
+  describe("concentration cap (T0.2 anti-wash)", () => {
+    it("DEFAULT_FLOW_PARAMS sets concentrationCap = 0.5 — requires ≥2 distinct payers", () => {
+      expect(DEFAULT_FLOW_PARAMS.concentrationCap).toBe(0.5);
+    });
+
+    it("a single bonded payer can no longer dominate a provider's score (forces real K≥2)", () => {
+      const seeds = new Map([["0xwhale", 1]]);
+      // Whale sends 100 large payments to provider P → would dominate without the cap.
+      const whalePaysP = Array.from({ length: 100 }, (_, i) => edge("0xwhale", "0xP", 100n * ETH, RECENT - i));
+      // Honest scenario: 2 distinct payers each contribute equally to a different provider Q.
+      const twoPayPayQ = [edge("0xwhale", "0xQ", ETH, RECENT), edge("0xother", "0xQ", ETH, RECENT)];
+      const seedsBoth = new Map([["0xwhale", 1], ["0xother", 1]]);
+      const capped = computeFlowReputation(
+        [...whalePaysP, ...twoPayPayQ], NOW,
+        params({ seeds: seedsBoth, concentrationCap: 0.5 }),
+      );
+      const uncapped = computeFlowReputation(
+        [...whalePaysP, ...twoPayPayQ], NOW,
+        params({ seeds: seedsBoth, concentrationCap: 1 }),
+      );
+      const pCappedRatio = (capped.get("0xp") ?? 0) / (capped.get("0xq") ?? 1);
+      const pUncappedRatio = (uncapped.get("0xp") ?? 0) / (uncapped.get("0xq") ?? 1);
+      // The cap MUST narrow P's relative advantage compared to the uncapped baseline.
+      expect(pCappedRatio).toBeLessThan(pUncappedRatio);
+    });
+
+    it("a K=2-wallet wash ring is bounded (single-payer share clipped to 50%)", () => {
+      // K=2 ring: A↔B paying each other a lot. Without the cap, the single-edge weight
+      // dominates; with cap=0.5 the share is clipped at 50% of each node's incoming.
+      const ring = [
+        edge("0xA", "0xB", 100n * ETH, RECENT),
+        edge("0xB", "0xA", 100n * ETH, RECENT),
+      ];
+      const honest = [edge("0xpayer1", "0xLegit", ETH), edge("0xpayer2", "0xLegit", ETH)];
+      const seeds = new Map([["0xpayer1", 1], ["0xpayer2", 1]]);
+      const capped = computeFlowReputation([...honest, ...ring], NOW, params({ seeds, concentrationCap: 0.5 }));
+      // Legit provider should not be drowned out by the ring (sanity); ring nodes get bounded
+      // single-payer contribution, so neither dominates the unseeded propagation in one shot.
+      const legitScore = capped.get("0xlegit") ?? 0;
+      const ringMax = Math.max(capped.get("0xa") ?? 0, capped.get("0xb") ?? 0);
+      expect(legitScore).toBeGreaterThan(0);
+      expect(ringMax).toBeLessThan(legitScore * 0.5); // ring without seed propagation → near-zero
+    });
+
+    it("concentrationCap = 1 disables the bound (parity with legacy behavior)", () => {
+      // A whales B (huge value), C contributes a token amount → A's incoming share ≫ 0.5.
+      // value_weight is log-compressed, so we need MASSIVE value disparity to push share past 0.5.
+      const edges = [edge("0xA", "0xB", 10n ** 12n * ETH, RECENT), edge("0xC", "0xB", ETH, RECENT)];
+      const seeds = new Map([["0xA", 1], ["0xC", 1]]);
+      const cap1 = computeFlowReputation(edges, NOW, params({ seeds, concentrationCap: 1 }));
+      const capDefault = computeFlowReputation(edges, NOW, params({ seeds, concentrationCap: 0.5 }));
+      expect((capDefault.get("0xb") ?? 0)).toBeLessThan((cap1.get("0xb") ?? 0));
+    });
   });
 });
 
