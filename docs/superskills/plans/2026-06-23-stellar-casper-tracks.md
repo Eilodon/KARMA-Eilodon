@@ -398,12 +398,25 @@ pub enum JobStatus {
 }
 ```
 
-- [ ] Step 1: write Odra tests mirroring the most critical Foundry tests (happy path, self-deal guard,
-      review window, dispute, claim_after_review, bond unlock cooldown).
-- [ ] Step 2: `cargo odra test` → FAIL.
-- [ ] Step 3: implement.
-- [ ] Step 4: → PASS.
-- [ ] Step 5: commit `feat(odra): port AgentSkillRegistry to Odra/Casper`.
+- [x] Step 1: write Odra tests mirroring the most critical Foundry tests (happy path, self-deal guard,
+      review window, dispute, claim_after_review, bond unlock cooldown) — `contracts-odra/src/agent_skill_registry/tests.rs` (32 tests).
+- [x] Step 2: `cargo test` → FAIL (compile errors: missing `#[odra::odra_type]` migration + `Vec<u8>` → `Bytes` for Casper bytesrepr).
+- [x] Step 3: implement — `contracts-odra/src/agent_skill_registry.rs` (~620 LoC, Solidity v4 mirror).
+- [x] Step 4: → PASS — 32 passed; 0 failed (`cargo +nightly test`, Odra 2.8 / Casper bytesrepr).
+- [x] Step 5: commit `feat(odra): port AgentSkillRegistry to Odra/Casper (T9)`.
+
+**Done-state notes (T9):**
+- `JobStatus` kept as a flat enum (no variant data) to stay on Casper's bytesrepr happy path; the
+  pattern-matched state-machine claim is still served by Rust's exhaustive `match` on every
+  state-transition guard. Moving result-hash/timestamps into variants is a follow-on once we have
+  more time with `OdraType` enums-with-data.
+- Casper convention: durations live in **milliseconds** (`MIN/MAX/DEFAULT_REVIEW_WINDOW`,
+  `BOND_UNLOCK_COOLDOWN`). Same boundary tests as Solidity (`1h`, `3d`, `30d`, `7d`) — verified.
+- Toolchain: `odra-macros 2.8.1` requires **nightly** (`#![feature(box_patterns)]`); deploy/build
+  needs `rustup toolchain install nightly`. `cargo +nightly test` is the local TDD loop.
+- WASM build (`cargo odra build`) deferred to T13's e2e demo — needs `wasm32-unknown-unknown` target
+  + the `cargo-odra` CLI. `bin/build_contract.rs` + `bin/build_schema.rs` are scaffolded but kept
+  out of the regular link graph until that path is exercised.
 
 ---
 
