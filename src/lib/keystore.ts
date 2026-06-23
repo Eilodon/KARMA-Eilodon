@@ -10,6 +10,7 @@ import { keccak256, type Address } from "viem";
 import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { ENV } from "../config/env.js";
 import type { AgentIdentity, CryptoV3, KeystoreFileV3 } from "./types.js";
+import { deriveStellarKeypair } from "./stellar/keypair.js";
 
 /**
  * Tenant an agent binds to when its keystore entry omits `tenant`. Fail-closed: an unmarked agent
@@ -54,11 +55,16 @@ export class KeystoreManager {
     for (const entry of file.agents) {
       const pk = await this.decryptV3(entry.crypto, password, entry.agentId);
       const account = privateKeyToAccount(pk, { nonceManager });
+      // T6: derive the Stellar ed25519 keypair from the same secp256k1 entropy while the raw
+      // bytes are still in scope. After this block the raw key is no longer referenced by us —
+      // only viem's Account closure + the Stellar Keypair retain their respective secrets.
+      const stellarKeypair = deriveStellarKeypair(Buffer.from(pk.replace(/^0x/, ""), "hex"));
       this.identities.set(entry.agentId, {
         agentId: entry.agentId,
         address: account.address,
         account,
         tenant: entry.tenant ?? DEFAULT_AGENT_TENANT,
+        stellarKeypair,
       });
     }
   }
@@ -104,6 +110,17 @@ export class KeystoreManager {
 
   getTenant(agentId: string): string {
     return this.requireIdentity(agentId).tenant;
+  }
+
+  /** Returns the Stellar Keypair (signs internally). Same security shape as `getAccount` — the
+   *  derived ed25519 seed never leaves this class. T6 of the Stellar/Casper roadmap. */
+  getStellarKeypair(agentId: string) {
+    return this.requireIdentity(agentId).stellarKeypair;
+  }
+
+  /** Convenience: agent's Stellar G-address (computed once at load time, cheap lookup). */
+  getStellarAddress(agentId: string): string {
+    return this.requireIdentity(agentId).stellarKeypair.publicKey();
   }
 
   has(agentId: string): boolean {
