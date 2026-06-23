@@ -11,6 +11,7 @@ import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { ENV } from "../config/env.js";
 import type { AgentIdentity, CryptoV3, KeystoreFileV3 } from "./types.js";
 import { deriveStellarKeypair } from "./stellar/keypair.js";
+import { deriveCasperPrivateKey } from "./casper/keypair.js";
 
 /**
  * Tenant an agent binds to when its keystore entry omits `tenant`. Fail-closed: an unmarked agent
@@ -58,13 +59,18 @@ export class KeystoreManager {
       // T6: derive the Stellar ed25519 keypair from the same secp256k1 entropy while the raw
       // bytes are still in scope. After this block the raw key is no longer referenced by us —
       // only viem's Account closure + the Stellar Keypair retain their respective secrets.
-      const stellarKeypair = deriveStellarKeypair(Buffer.from(pk.replace(/^0x/, ""), "hex"));
+      const pkBytes = Buffer.from(pk.replace(/^0x/, ""), "hex");
+      const stellarKeypair = deriveStellarKeypair(pkBytes);
+      // T10: same secp256k1 bytes seed Casper's signer too (Casper natively supports secp256k1, no
+      // HKDF). Built here so the raw bytes are consumed in the same in-scope window as Stellar's.
+      const casperKeypair = deriveCasperPrivateKey(pkBytes);
       this.identities.set(entry.agentId, {
         agentId: entry.agentId,
         address: account.address,
         account,
         tenant: entry.tenant ?? DEFAULT_AGENT_TENANT,
         stellarKeypair,
+        casperKeypair,
       });
     }
   }
@@ -121,6 +127,22 @@ export class KeystoreManager {
   /** Convenience: agent's Stellar G-address (computed once at load time, cheap lookup). */
   getStellarAddress(agentId: string): string {
     return this.requireIdentity(agentId).stellarKeypair.publicKey();
+  }
+
+  /** Returns the Casper PrivateKey wrapper (signs internally). Same in-class invariant as the
+   *  Stellar/viem signers — the raw bytes never leave this object. T10. */
+  getCasperKeypair(agentId: string) {
+    return this.requireIdentity(agentId).casperKeypair;
+  }
+
+  /** Convenience: agent's Casper tagged public-key hex (e.g. `02...`, 68 chars). */
+  getCasperPublicKeyHex(agentId: string): string {
+    return this.requireIdentity(agentId).casperKeypair.publicKey.toHex();
+  }
+
+  /** Convenience: agent's Casper account hash in the `account-hash-...` JSON-RPC form. */
+  getCasperAccountHash(agentId: string): string {
+    return this.requireIdentity(agentId).casperKeypair.publicKey.accountHash().toPrefixedString();
   }
 
   has(agentId: string): boolean {

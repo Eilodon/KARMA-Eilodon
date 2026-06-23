@@ -429,10 +429,21 @@ pub enum JobStatus {
 Casper supports secp256k1 — direct reuse of existing keystore. Adapter wraps Casper SDK signer
 around the existing `viem` account's raw private key path. No HKDF needed.
 
-- [ ] Step 1: failing tests — deterministic Casper public key from same seed; round-trip sign+verify
-      against `casper-js-sdk`.
-- [ ] Step 2: → FAIL. Step 3: implement. Step 4: → PASS.
-- [ ] Step 5: commit `feat(casper): expose Casper signer over KARMA keystore`.
+- [x] Step 1: failing tests — deterministic Casper public key from same seed; round-trip sign+verify
+      against `casper-js-sdk` — `src/__tests__/casper_keypair.test.ts` (12 tests).
+- [x] Step 2: → FAIL (module missing + Bytes import path).
+- [x] Step 3: implement — `src/lib/casper/keypair.ts` + wire `casperKeypair` into `AgentIdentity` +
+      `KeystoreManager.{getCasperKeypair, getCasperPublicKeyHex, getCasperAccountHash}`.
+- [x] Step 4: → PASS — 12/12; full suite 514 passed / 5 skipped; lint clean.
+- [x] Step 5: commit `feat(casper): expose Casper signer over KARMA keystore (T10)`.
+
+**Done-state notes (T10):**
+- No HKDF: Casper natively supports secp256k1, so the keystore's 32-byte private key is the
+  Casper signer's raw secret. Single backup-unit covers Ethereum + Stellar + Casper.
+- `casper-js-sdk@5.0.12` has a sign/verify format mismatch (sign → 64-byte compact, verifySignature
+  → DER only + skips SHA-256). Production sign path is fine; tests verify via `node:crypto.verify`
+  + `compactToDER` + PEM public-key for canonical secp256k1/SHA-256 + DER pipeline (matches what
+  the live Casper x402 facilitator expects). Documented inline in the test file.
 
 ---
 

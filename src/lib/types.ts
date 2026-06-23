@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import type { privateKeyToAccount } from "viem/accounts";
 import type { Keypair as StellarKeypair } from "@stellar/stellar-sdk";
+import type { PrivateKey as CasperPrivateKey } from "casper-js-sdk";
 import type { PaymentOption } from "./payment/plugin.js";
 
 /** A viem local account with built-in nonce management. */
@@ -19,6 +20,13 @@ export interface AgentIdentity {
    * key never leaves the class" invariant).
    */
   stellarKeypair: StellarKeypair;
+  /**
+   * Casper secp256k1 signer (T10) — direct reuse of the keystore's secp256k1 private key, wrapped
+   * in `casper-js-sdk`'s `PrivateKey`. No HKDF: Casper natively supports secp256k1, so the same
+   * backup unit covers Ethereum + Stellar + Casper. The wrapper signs internally; its bytes never
+   * leave this object (same "key never leaves the class" invariant as viem's Account).
+   */
+  casperKeypair: CasperPrivateKey;
 }
 
 /** Web3 Secret Storage v3 crypto block (scrypt KDF variant). */
