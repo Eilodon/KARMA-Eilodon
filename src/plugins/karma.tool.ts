@@ -339,12 +339,15 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       "Escrow a job against a skill. Exactly-once per (requester, skillId, idempotencyNonce): a repeat " +
       "returns the existing job instead of double-escrowing. To retry safely you MUST resend the SAME " +
       "idempotencyNonce — a status:\"pending\" result means the tx is already broadcast (NOT failed), so " +
-      "never retry it with a fresh nonce or you will escrow a second, distinct job.",
+      "never retry it with a fresh nonce or you will escrow a second, distinct job. " +
+      "settlement_rail (Phase 0) defaults to \"escrow\" (Pharos AgentSkillRegistry); \"x402\" is reserved " +
+      "for the Stellar/Casper plugins and currently returns a structured rejection until T7/T11 wire it.",
     inputSchema: {
       agentId: z.string().describe("Keystore agent id of the requester."),
       skillId: WEI.describe("Target skill id."),
       idempotencyNonce: z.number().int().positive().describe("Caller-chosen nonce. REUSE the same value to retry the same job exactly-once; a new value creates a new job."),
       deadlineSecs: z.number().int().positive().max(2_592_000).optional().describe("Seconds until refund deadline (default 86400)."),
+      settlement_rail: z.enum(["x402", "escrow"]).default("escrow").describe('"escrow" (default) settles via the Pharos AgentSkillRegistry escrow lifecycle. "x402" routes the job through a registered x402 plugin (Stellar/Casper) — Phase 0 stub: returns settlement_rail_not_implemented until T7/T11.'),
     },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -357,6 +360,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         skillId: WEI,
         idempotencyNonce: z.number().int().positive(),
         deadlineSecs: z.number().int().positive().max(2_592_000).optional(),
+        settlement_rail: z.enum(["x402", "escrow"]).default("escrow"),
       }).parse(args);
       const { tenantId } = getRequestContext();
       const account = svc.account(a.agentId, tenantId);
@@ -364,6 +368,22 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       const skillId = BigInt(a.skillId);
       const skill = await svc.readSkill(skillId);
       if (!skill.active) throw new Error(`[KARMA] skill #${skillId} is inactive`);
+
+      // Phase 0 stub: the x402 rail is wired in T7 (Stellar) and T11 (Casper) — until a plugin is
+      // registered for the requested (rail, network) pair, decline cleanly so callers don't
+      // accidentally settle through the escrow path while requesting an inline-payment rail.
+      if (a.settlement_rail === "x402") {
+        return reply(
+          `[KARMA] create_job rejected: settlement_rail "x402" not implemented yet ` +
+            `(Phase 0 stub — wires up in T7/T11)`,
+          {
+            status: "rejected",
+            reason: "settlement_rail_not_implemented",
+            skillId,
+            settlementRail: a.settlement_rail,
+          },
+        );
+      }
 
       // Trust Gate (v2, on-chain authoritative): preflight against the SAME on-chain values the
       // contract's createJob require checks (skill.minReputationToInvoke + agentReputation), so we

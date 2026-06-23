@@ -254,6 +254,41 @@ describe("P6 KARMA tools", () => {
     expect(svc.createJob).toHaveBeenCalledTimes(1);
   });
 
+  // ── Phase 0 (Stellar/Casper roadmap): settlement_rail param ─
+  it('create_job: settlement_rail defaults to "escrow" and routes through Pharos', async () => {
+    // No settlement_rail in args ⇒ schema default kicks in and the escrow path is taken.
+    await call(tool(tools, "create_job"), { agentId: "agent-beta", skillId: "7", idempotencyNonce: 1 });
+    expect(svc.createJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('create_job: settlement_rail="x402" returns settlement_rail_not_implemented (Phase 0 stub)', async () => {
+    const res = await call(tool(tools, "create_job"), {
+      agentId: "agent-beta",
+      skillId: "7",
+      idempotencyNonce: 1,
+      settlement_rail: "x402",
+    });
+    expect(res.structuredContent).toMatchObject({
+      status: "rejected",
+      reason: "settlement_rail_not_implemented",
+      skillId: "7",
+      settlementRail: "x402",
+    });
+    expect(svc.createJob).not.toHaveBeenCalled();
+    // also skips the identity/reputation/idempotency seams entirely (rail rejected upfront)
+    expect(svc.findExistingJob).not.toHaveBeenCalled();
+  });
+
+  it('create_job: explicit settlement_rail="escrow" matches the default behaviour', async () => {
+    await call(tool(tools, "create_job"), {
+      agentId: "agent-beta",
+      skillId: "7",
+      idempotencyNonce: 1,
+      settlement_rail: "escrow",
+    });
+    expect(svc.createJob).toHaveBeenCalledTimes(1);
+  });
+
   // ── P0 Identity Gate: create_job enforces on-chain identityPolicy (INV-1) ──
   describe("create_job identity gate", () => {
     const DID = "did:t3n:test";
