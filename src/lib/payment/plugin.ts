@@ -14,6 +14,13 @@
 
 export type SettlementRail = "x402" | "escrow";
 
+/** Per-skill advertised payment option — surfaced by `discover_skills` so requesters can pick a rail. */
+export interface PaymentOption {
+  rail: SettlementRail;
+  network: string;
+  asset: string;
+}
+
 /** Verifiable receipt returned by `pay`. Re-checked by `verify` (server-side gate on the provider). */
 export interface PaymentReceipt {
   rail: SettlementRail;

@@ -289,6 +289,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         active: true,
         min_reputation_to_invoke: a.minReputationToInvoke,
         identity_policy: a.identityPolicy,
+        // payment_options omitted ⇒ BM25 search() returns DEFAULT_PAYMENT_OPTIONS (Pharos escrow)
+        // until register_skill is extended (T2 follow-on) to accept declared rails per skill.
       });
       return reply(`[KARMA] registered skill #${skillId} tx=${outcome.hash}`, {
         status: "confirmed",
@@ -301,7 +303,9 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
 
   const discoverSkills: ToolDefinition = {
     name: "discover_skills",
-    description: "Search indexed skills by free text, ranked by relevance and on-chain reputation; optionally filter by max price (wei) and min reputation.",
+    description:
+      "Search indexed skills by free text, ranked by relevance and on-chain reputation; optionally filter by max price (wei) and min reputation. " +
+      "Each hit includes payment_options[] (rail + network + asset) — pick one for create_job's settlement_rail param (Phase 0).",
     inputSchema: {
       query: z.string(),
       maxPriceWei: WEI.optional(),

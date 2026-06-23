@@ -1,5 +1,13 @@
 import MiniSearch from "minisearch";
 import type { SkillDocument } from "./types.js";
+import type { PaymentOption } from "./payment/plugin.js";
+
+/** Default payment options for skills hydrated from chain without an explicit set. Matches the
+ *  Pharos-only behaviour every shipped skill has today; future on-chain payment metadata, or a
+ *  register_skill extension, will let owners declare richer options (e.g. x402 fast-lane). */
+export const DEFAULT_PAYMENT_OPTIONS: readonly PaymentOption[] = [
+  { rail: "escrow", network: "pharos:atlantic", asset: "PHRS" },
+] as const;
 
 /**
  * In-process BM25 skill discovery index (Layer 2).
@@ -25,6 +33,7 @@ const STORE_FIELDS = [
   "active",
   "min_reputation_to_invoke",
   "identity_policy",
+  "payment_options",
 ] as const;
 
 /** True for control / zero-width / bidi-override / BOM code points (tab/newline/CR excepted). */
@@ -77,6 +86,8 @@ export interface SkillSearchHit {
   reputation_score: number;
   owner_address: string;
   min_reputation_to_invoke: number; // Trust Gate threshold (0 = no gate)
+  /** Payment rails available for this skill (Phase 0). Defaults to DEFAULT_PAYMENT_OPTIONS. */
+  payment_options: PaymentOption[];
   score: number;
 }
 
@@ -209,6 +220,7 @@ export class BM25SkillIndex {
         reputation_score: row.reputation_score,
         owner_address: row.owner_address,
         min_reputation_to_invoke: row.min_reputation_to_invoke ?? 0,
+        payment_options: row.payment_options ?? [...DEFAULT_PAYMENT_OPTIONS],
         score: row.score,
       };
     });

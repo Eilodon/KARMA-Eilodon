@@ -1,5 +1,6 @@
 import type { Address } from "viem";
 import type { privateKeyToAccount } from "viem/accounts";
+import type { PaymentOption } from "./payment/plugin.js";
 
 /** A viem local account with built-in nonce management. */
 export type ManagedAccount = ReturnType<typeof privateKeyToAccount>;
@@ -110,4 +111,11 @@ export interface SkillDocument {
    * (server fails closed). Hydrated from chain by skillDocFromChain; enforced server-side in create_job.
    */
   identity_policy?: number;
+  /**
+   * Payment Layer (Phase 0 of the Stellar/Casper roadmap): rails through which this skill can be
+   * paid for. Surfaced verbatim in `discover_skills` so requesters can pick `settlement_rail` in
+   * `create_job`. Undefined ⇒ the indexer's default of `[{ rail: "escrow", network: "pharos:atlantic",
+   * asset: "PHRS" }]` (preserves existing behaviour for every shipped skill).
+   */
+  payment_options?: PaymentOption[];
 }

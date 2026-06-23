@@ -76,6 +76,7 @@ function fakeService(over: Partial<KarmaService> = {}): KarmaService {
         reputation_score: 55,
         owner_address: ALPHA,
         min_reputation_to_invoke: 0,
+        payment_options: [{ rail: "escrow" as const, network: "pharos:atlantic", asset: "PHRS" }],
         score: 1.23,
       },
     ]),

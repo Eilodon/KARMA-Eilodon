@@ -70,6 +70,13 @@ describe("skill_indexer_runtime", () => {
     expect(typeof doc.price_per_call_wei).toBe("string");
   });
 
+  it("skillDocFromChain defaults payment_options to the Pharos escrow rail (Phase 0)", () => {
+    const doc = skillDocFromChain(7n, skill());
+    expect(doc.payment_options).toEqual([
+      { rail: "escrow", network: "pharos:atlantic", asset: "PHRS" },
+    ]);
+  });
+
   it("SkillRegistered → hydrates via readSkill and upserts the full document", async () => {
     const svc = fakeService({ readSkill: vi.fn(async () => skill({ name: "hydrated" })) });
     const e: IndexedEvent = { type: "SkillRegistered", blockNumber: 10n, skillId: 7n, owner: ALPHA, name: "evt-name", pricePerCall: 1000n };

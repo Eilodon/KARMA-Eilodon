@@ -5,7 +5,7 @@ import {
   type SkillEventIndexer,
 } from "./contract.js";
 import { realKarmaService, type KarmaService, type OnchainSkill } from "./karma_service.js";
-import { skillIndex, legacyReputationBoost, type SkillBoost } from "./bm25_index.js";
+import { skillIndex, legacyReputationBoost, DEFAULT_PAYMENT_OPTIONS, type SkillBoost } from "./bm25_index.js";
 import { FlowBoostSource, type FlowEdge } from "./flow_reputation.js";
 import type { SkillDocument } from "./types.js";
 
@@ -41,6 +41,9 @@ export function skillDocFromChain(skillId: bigint, s: OnchainSkill, repOverride?
     owner_address: s.owner,
     active: s.active,
     identity_policy: s.identityPolicy,
+    // Phase 0: every chain-hydrated skill defaults to the Pharos escrow rail. x402 fast-lane options
+    // are added by register_skill (T2) once an owner declares them; chain-only metadata stays minimal.
+    payment_options: [...DEFAULT_PAYMENT_OPTIONS],
   };
 }
 
