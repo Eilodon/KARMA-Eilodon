@@ -42,9 +42,9 @@ It is built on **SUPER-MCP** (Layer 0, bundled here under `src/core`, `src/mcp`,
 | Layer | What | Status |
 |---|---|---|
 | **0 — SUPER-MCP runtime** | stdio/HTTP transports, native Tasks, durable storage, auth, governance, output firewall, plugin isolation | Shipped |
-| **1 — KARMA plugin** (`karma.tool.ts`) | 13 in-process tools: skill registration, BM25 discovery, escrow job lifecycle, reputation, social graph, withdrawals | Shipped |
-| **2 — `AgentSkillRegistry` contract (v3)** | Solidity escrow + reputation + on-chain Trust Gate, live on Pharos Atlantic | Live |
-| **3 — Terminal3 Agent Auth SDK** (`t3.tool.ts`) | 8 in-process tools: identity, delegated authority, org-grant provisioning, business-contract invocation, revocation | Shipped, auth verified live |
+| **1 — KARMA plugin** (`karma.tool.ts`) | 13 in-process tools: skill registration, BM25 discovery, escrow job lifecycle, reputation, social graph, withdrawals. `create_job` is the single gate enforcing both identity + reputation | Shipped |
+| **2 — `AgentSkillRegistry` contract** | Solidity escrow + reputation + on-chain Trust Gate + identity-policy flag. **v3 live** on Pharos Atlantic; **v4** (adds `identityPolicy`) is in-repo, redeploy pending | v3 Live / v4 pending |
+| **3 — Terminal3 Agent Auth SDK** (`t3.tool.ts`) | 8 in-process tools: identity, delegated authority, org-grant provisioning, business-contract invocation, revocation (`t3_create_verified_job` deprecated — `create_job` now enforces identity) | Shipped, auth verified live |
 
 ---
 
@@ -75,12 +75,15 @@ AgentSkillRegistry.sol v3  ── Layer 2 ── Pharos Atlantic (chainId 688689
 
 ```text
 t3_verify_identity ─► T3nClient.handshake() ─► authenticate()  (SIWE / EIP-191 via viem)
-   └─► did:t3n:… cached in process
+   └─► did:t3n:… stored in a shared, TTL'd, address-bound session store
             │
-   create_job / t3_create_verified_job
-            ├─ Gate 1: verified DID present            (Terminal3 identity)
-            └─ Gate 2: agentReputation ≥ threshold     (on-chain reputation)
+   create_job   (single enforcement path; t3_create_verified_job is now a deprecated alias)
+            ├─ Gate 1: skill.identityPolicy ≥ 1 ⇒ live address-bound did:t3n session  (server-enforced*)
+            └─ Gate 2: agentReputation ≥ skill.minReputationToInvoke                  (contract-enforced)
                      └─► AgentSkillRegistry.createJob   (escrow on Pharos)
+
+  * identity is server-enforced because a did:t3n cannot be verified on-chain; the skill's
+    identityPolicy is published on-chain as composable, credibly-committed policy.
 
 t3_authorize_payroll_agent
    buildDelegationCredential ─► DelegationCustodialClient.signCustodial  (TEE-signed)
@@ -97,9 +100,9 @@ t3_authorize_payroll_agent
 | Tool | Kind | Purpose |
 |---|---|---|
 | `karma_health` | read | Runtime canary; RPC/contract env presence + skill-indexer health. |
-| `register_skill` | write | Register a skill on-chain (name, price, endpoint, optional Trust-Gate threshold) + BM25 upsert. |
+| `register_skill` | write | Register a skill on-chain (name, price, endpoint, optional reputation Trust-Gate + `identityPolicy`) + BM25 upsert. |
 | `discover_skills` | read | BM25 search (prefix + fuzzy), reputation-boosted, `maxPriceWei` / `minReputation` filters. |
-| `create_job` | write | Idempotent escrow via `taskHash`; Trust-Gate preflight; `exists` on replay. |
+| `create_job` | write | Idempotent escrow via `taskHash`; enforces the skill's identity + reputation gates (single path); `exists` on replay. |
 | `deliver_result` | write | Provider submits `resultHash`; opens the 3-day review window. |
 | `complete_job` | write | Requester confirms; releases escrow + bumps reputation (arm's-length only). |
 | `dispute_result` | write | Requester rejects within the window → refund + `Disputed`. |
@@ -157,7 +160,7 @@ goes through viem `Account.signMessage` or the TEE-side custodial signer.
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 457 passed, 1 skipped
+pnpm test          # 470 passed, 1 skipped
 pnpm build
 ```
 
@@ -261,14 +264,16 @@ Notes for integrators:
   verification and usage reads are free.
 
 Residual gaps tracked as `PATTERN-DEBT-T3N-00x` in [docs/RUNTIME.md](docs/RUNTIME.md) and the
-app-layer pattern-debt registry: the session DID cache is process-scoped (volatile on restart).
+app-layer pattern-debt registry: the DID session store is now shared + TTL'd + address-bound (closes the
+ad-hoc cache), but still in-memory ⇒ single-process/restart-volatile until a redis-backed parity is added
+for multi-replica.
 
 ---
 
 ## Testing
 
 ```bash
-pnpm test            # full Vitest suite (457 passed, 1 skipped)
+pnpm test            # full Vitest suite (470 passed, 1 skipped)
 pnpm typecheck       # tsc --noEmit
 pnpm test:contract   # Foundry tests for AgentSkillRegistry.sol (requires forge)
 pnpm test:enterprise # Layer-0 runtime hardening suites
