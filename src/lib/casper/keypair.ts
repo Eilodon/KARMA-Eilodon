@@ -1,5 +1,14 @@
 import { Buffer } from "node:buffer";
-import { KeyAlgorithm, PrivateKey } from "casper-js-sdk";
+// `casper-js-sdk` ships as a webpack-bundled CJS module (no `type: module`), so Node's ESM
+// loader can't statically resolve its named exports — `tsx` and similar CLIs fail with
+// "does not provide an export named 'PrivateKey'". Vitest re-bundles via Vite which patches
+// this, but the production demo scripts run under `tsx`. The CJS-interop-safe form is:
+// default-import the module object, then pull names off it. The runtime fields ARE present;
+// only the static ESM analyser couldn't see them.
+import casperSdk from "casper-js-sdk";
+import type { PrivateKey as CasperPrivateKey } from "casper-js-sdk";
+const { KeyAlgorithm, PrivateKey } = casperSdk;
+export type { CasperPrivateKey as PrivateKey };
 
 /**
  * Casper keypair adapter (T10) — direct reuse of KARMA's existing secp256k1 keystore.
@@ -26,7 +35,7 @@ import { KeyAlgorithm, PrivateKey } from "casper-js-sdk";
 const SECP256K1_PRIVATE_KEY_LEN = 32;
 
 /** Pure adapter: secp256k1 private key bytes → casper-js-sdk PrivateKey (signs internally). */
-export function deriveCasperPrivateKey(secp256k1PrivKey: Uint8Array): PrivateKey {
+export function deriveCasperPrivateKey(secp256k1PrivKey: Uint8Array): CasperPrivateKey {
   if (secp256k1PrivKey.length !== SECP256K1_PRIVATE_KEY_LEN) {
     throw new Error(`[KARMA] expected ${SECP256K1_PRIVATE_KEY_LEN}-byte secp256k1 key, got ${secp256k1PrivKey.length}`);
   }
@@ -35,12 +44,12 @@ export function deriveCasperPrivateKey(secp256k1PrivKey: Uint8Array): PrivateKey
 }
 
 /** Casper public key in tagged hex form (e.g. `02xxx...` for secp256k1). 68 chars. */
-export function casperPublicKeyHex(pk: PrivateKey): string {
+export function casperPublicKeyHex(pk: CasperPrivateKey): string {
   return pk.publicKey.toHex();
 }
 
 /** Casper account-hash hex string with the `account-hash-` prefix the network uses
  *  for transfer/`AccountHash` JSON-RPC payloads. */
-export function casperAccountHash(pk: PrivateKey): string {
+export function casperAccountHash(pk: CasperPrivateKey): string {
   return pk.publicKey.accountHash().toPrefixedString();
 }
