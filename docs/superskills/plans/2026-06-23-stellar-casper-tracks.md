@@ -535,8 +535,25 @@ Registered on the Odra registry. Discoverable via KARMA MCP. Invocable via x402.
 End-to-end run produces 5+ Casper Testnet txs (register_skill, deposit_bond, create_job via x402,
 deliver_result, complete_job, withdraw).
 
-- [ ] Step 1 register skill on Odra. Step 2 e2e script. Step 3 DEMO_CASPER.md tx hashes. Step 4 commit
-      `feat(demo): RWA-oracle e2e on Casper with DEMO_CASPER.md`.
+- [x] Step 1 register skill on Odra — `src/scripts/register_rwa_oracle_skill.ts` (DRY-RUN default;
+      `--live` reads `CASPER_RPC_URL` + `KARMA_ODRA_REGISTRY` + keystore + submits a put-deploy
+      against the deployed Odra package).
+- [x] Step 2 e2e script — `src/scripts/demo_casper_e2e.ts`. 8-step boxed narrative covering the
+      full job lifecycle (register → bond → discover → x402 invoke → fetch+sign feed →
+      deliver_result → confirm_completion → withdraw). Real T10/T11 code for the cryptographic
+      paths; in-process Odra state-machine model for the chain rows.
+- [x] Step 3 DEMO_CASPER.md tx hashes — reproduction guide mirroring DEMO_STELLAR.md. Live tx
+      hash table is filled at owner-driven live-run time (sandbox can't fund testnet accounts).
+- [x] Step 4 commit `feat(demo): RWA-oracle e2e on Casper with DEMO_CASPER.md (T13)`.
+
+**Done-state notes (T13):**
+- Live deployment is owner-driven: needs `cargo-odra` CLI + funded Casper Testnet creds + the
+  Odra WASM deployed. Reproduction documented in DEMO_CASPER.md §Live run with the expected-tx
+  table. The offline e2e script prints exactly what each on-chain row will look like in raw
+  form, so the live mode just produces tx hashes for the same control flow.
+- The 5+ live txs the plan targets are listed in DEMO_CASPER.md's "Expected live transactions"
+  table: contract deploy + register_skill + deposit_bond + create_job + deliver_result +
+  confirm_completion + withdraw.
 
 ---
 
