@@ -1,0 +1,44 @@
+[package]
+name = "reputation_aggregation_verifier"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Soroban verifier contract for KARMA ReputationAggregationProof (Stellar ZK track, T1.1)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+# `testutils` pulls in the host-side Soroban env so `cargo test` works on x86. The contract WASM
+# build (cargo build --release --target wasm32-unknown-unknown) leaves this OFF.
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+# Enable the SDK's bump-pointer allocator so Arkworks heap allocations (Vec<Fr>, Proof<Bn254>
+# deserialize buffers, etc.) work in the WASM guest. Each submit_proof invocation runs to
+# completion and then the VM is discarded, so the no-dealloc bump arena is the right fit
+# (per soroban-sdk/src/alloc/mod.rs).
+soroban-sdk = { version = "26.0.0", features = ["alloc"] }
+# Arkworks Groth16 over BN254 — runs in no_std + WASM. Same toolchain as agent_credential_verifier
+# (T5); keeping the two verifiers separate keeps audit + nullifier domains disjoint while reusing
+# the proven crypto path.
+ark-bn254       = { version = "0.5", default-features = false, features = ["curve"] }
+ark-groth16     = { version = "0.5", default-features = false }
+ark-ec          = { version = "0.5", default-features = false }
+ark-ff          = { version = "0.5", default-features = false }
+ark-serialize   = { version = "0.5", default-features = false, features = ["derive"] }
+ark-std         = { version = "0.5", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.0", features = ["testutils"] }
+
+[profile.release]
+opt-level    = "z"
+overflow-checks = true
+debug        = 0
+strip        = "symbols"
+debug-assertions = false
+panic        = "abort"
+codegen-units = 1
+lto          = true

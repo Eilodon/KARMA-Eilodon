@@ -1,0 +1,92 @@
+# DP-7 — ZK framework: Circom + snarkjs (NOT Noir + Barretenberg)
+
+**Status:** Decided · 2026-06-24
+**Scope:** All ZK circuits in this repo (AgentCredentialProof T4, ReputationAggregationProof T1.1, JobCommitmentProof T1.2, cross-chain rep oracle T1.3).
+**Reverses:** Roadmap §B.T1 framework recommendation.
+
+## Decision
+
+Continue using **Circom 2 + snarkjs (Groth16 over BN254)**. Do not migrate to Noir +
+Barretenberg for the hackathon window or for the immediate post-hackathon roadmap.
+
+## Why the roadmap recommendation does not apply
+
+The roadmap's argument for Noir reduced to three claims. Each fails on inspection of
+what is already in this repo:
+
+1. **"Noir is TypeScript-native, Circom requires external service."**
+   False. `snarkjs.groth16.fullProve(input, wasm, zkey)` runs in Node and in the
+   browser via WASM, with zero external service. The existing
+   `circuits/test/agent_credential.test.mjs` exercises exactly this path.
+   `@noir-lang/noir_js` does the same thing for ACIR — same shape, not a capability
+   gap.
+
+2. **"BN254 native on Soroban / EVM."**
+   The verifier we already shipped
+   (`contracts-soroban/agent_credential_verifier/src/lib.rs`) hardcodes Arkworks
+   `Bn254 + Groth16` and ingests `PreparedVerifyingKey<Bn254>` plus
+   `Proof<Bn254>` in Arkworks-canonical compressed form. That is exactly what
+   `snarkjs zkey export` produces (after the standard Arkworks re-serialization
+   helper). Barretenberg's default output is UltraHonk, **not** Groth16-compatible
+   with this verifier — switching backends means rewriting the verifier contract
+   from scratch.
+
+3. **"Cleaner syntax, easier to audit."**
+   True in isolation, irrelevant here. The existing AgentCredentialProof circuit
+   is 122 lines and already audited-by-eye. RepAggProof reuses Poseidon + Merkle
+   from `circomlib` — same building blocks the auditor already validated.
+
+## Costs of switching (rejected)
+
+- **Verifier rewrite:** Arkworks Groth16 → Barretenberg UltraHonk verifier on
+  Soroban. New Cargo deps, new vkey/proof format, new tests, new gas profile.
+  Estimated 3-5 sessions. Pre-hackathon = unaffordable.
+- **Toolchain re-bootstrap:** `circuits/scripts/install-toolchain.sh` works.
+  Re-doing it for `nargo` + `bb` adds a second toolchain to CI without removing
+  the first (T4 already shipped).
+- **Audit surface doubled:** auditor must learn ACIR + Barretenberg in addition
+  to Circom + snarkjs. Reduces, not increases, review velocity.
+- **Trusted-setup story split:** Groth16 needs per-circuit ptau-derived zkey.
+  We have that ceremony in place. Switching to a Plonk-family system (UltraHonk)
+  changes the ceremony story mid-stream — fine if you're starting fresh, costly
+  if you've already shipped one circuit under the old story.
+
+## Constraints this commits us to
+
+- **Per-circuit trusted setup.** Each new circuit (RepAgg, JobCommitment) gets
+  its own zkey. Documented testnet (single-contributor) vs mainnet (multi-party)
+  distinction stays as-is from T4.
+- **Groth16-only at the verifier.** Plonk-family proofs are not interchangeable.
+  If we add a non-Groth16 circuit later, it gets its own verifier contract — but
+  we have no such circuit in the roadmap before T5.
+- **Circom 2.1+ + circomlib Poseidon.** Locks us to circomlibjs' Poseidon
+  parameters at the prover side. Already true for T4; not a new constraint.
+
+## When to revisit
+
+Revisit Noir/Barretenberg if any of these become true:
+
+1. Stellar's `rs-soroban-env` ships native `bn254_pairing` host functions AND
+   the cost model favors UltraHonk over Groth16 in-contract. (Today CAP-0074
+   only covers scalar arith + MSM — Groth16 still wins for the pairing.)
+2. We need recursion (proof-of-proof) for the cross-chain rep oracle (T1.3).
+   Groth16-on-BN254 supports recursion but the tooling story in snarkjs is
+   weaker than Aztec's. T1.3 first cut can avoid recursion (off-chain prover
+   bundles a single big proof per epoch); revisit only if that becomes a
+   bottleneck.
+3. Audit feedback explicitly cites Circom's verbose syntax as a finding. Has
+   not happened.
+
+## Decision check-list (what we'll actually do for T1.1)
+
+- [x] Keep `circuits/package.json` deps (`circomlib`, `circomlibjs`, `snarkjs`).
+- [x] Add `circuits/src/reputation_aggregation.circom` following the
+  AgentCredentialProof pattern (Poseidon for hashes, MerkleProof template
+  reuse).
+- [x] Reuse `circuits/scripts/install-toolchain.sh` ptau (2^14 if the constraint
+  count grows beyond 2^12 — measure first).
+- [x] Verifier: extend `agent_credential_verifier` contract with a
+  `register_rep_agg_skill` + `submit_rep_proof` pair, OR ship a sibling
+  `reputation_aggregation_verifier` contract — pick whichever keeps the
+  existing T5 verifier unchanged. (Sibling contract wins on isolation; pick
+  that.)
