@@ -20,13 +20,14 @@
  */
 
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CasperX402Plugin } from "../plugins/x402_casper.js";
 import { StellarX402Plugin } from "../plugins/x402_stellar.js";
 import { deriveStellarKeypair } from "../lib/stellar/keypair.js";
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
-import { generateRepAggProof, type RepAggInputs } from "../lib/zk/reputation_aggregation.js";
+import { generateRepAggProof, type RepAggInputs, type RepAggProof } from "../lib/zk/reputation_aggregation.js";
 import {
   fetchAndAttest,
   signAttestation,
@@ -57,19 +58,39 @@ function chainLabel(chain: "Pharos" | "Stellar" | "Casper", step: number, title:
   console.log(`\n━━━━━ Step ${step} · ${tag} ━━━ ${title} ━━━`);
 }
 
+function mockRepAggProof(inputs: RepAggInputs): RepAggProof {
+  // OFFLINE STUB — deterministic, and clearly NOT a valid Groth16 proof. Lets the visual
+  // cross-chain flow render without the (heavy, circom-dependent) `make repagg` ceremony,
+  // matching the "runs entirely offline" pattern of the other KARMA demos.
+  const tag = (label: string): string =>
+    "0x" + createHash("sha256").update(`${label}:${inputs.agentSecret}:${inputs.epoch}`).digest("hex");
+  const nullifier = tag("nullifier");
+  const epochRoot = tag("epochRoot");
+  return {
+    proof: { mock: true, scheme: "groth16-bn254", note: "OFFLINE STUB — not a valid proof" },
+    publicSignals: [
+      String(inputs.minAvgScore),
+      String(inputs.minDistinctCategories),
+      String(inputs.minJobs),
+      nullifier,
+      epochRoot,
+    ],
+    nullifier,
+    epochRoot,
+  };
+}
+
 async function main(): Promise<void> {
   console.log("=".repeat(80));
   console.log("KARMA cross-chain workflow demo (T5.2)");
   console.log("  Pharos → Stellar ZK → Casper x402 → Stellar settle");
   console.log("=".repeat(80));
 
-  if (!existsSync(REPAGG_WASM) || !existsSync(REPAGG_ZKEY)) {
-    console.error("[demo] FAIL: ReputationAggregationProof artefacts missing.");
-    console.error("  Run once: cd circuits && make repagg");
-    console.error("  Expected files:");
-    console.error("    " + REPAGG_WASM);
-    console.error("    " + REPAGG_ZKEY);
-    process.exit(1);
+  const offline = !existsSync(REPAGG_WASM) || !existsSync(REPAGG_ZKEY);
+  if (offline) {
+    console.log("[demo] OFFLINE MODE — repagg Groth16 artefacts absent; the ZK step uses a");
+    console.log("[demo]   LABELLED MOCK proof so the full cross-chain flow still renders.");
+    console.log("[demo]   For a real proof, build once: cd circuits && make repagg");
   }
 
   // Single secp256k1 fixture → derived Stellar keypair + derived Casper keypair. Same agent
@@ -111,19 +132,26 @@ async function main(): Promise<void> {
     minDistinctCategories: 5,
     minJobs: 10,
   };
-  const t0 = Date.now();
-  const repProof = await generateRepAggProof(proofInputs, {
-    wasmPath: REPAGG_WASM,
-    zkeyPath: REPAGG_ZKEY,
-  });
-  const proveMs = Date.now() - t0;
+  let repProof: RepAggProof;
+  let proveMs: number;
+  if (offline) {
+    repProof = mockRepAggProof(proofInputs);
+    proveMs = 0;
+  } else {
+    const t0 = Date.now();
+    repProof = await generateRepAggProof(proofInputs, {
+      wasmPath: REPAGG_WASM,
+      zkeyPath: REPAGG_ZKEY,
+    });
+    proveMs = Date.now() - t0;
+  }
   box("RepAggProof (public signals — what Soroban verifier consumes)", [
     `minAvgScore           = ${repProof.publicSignals[0]}`,
     `minDistinctCategories = ${repProof.publicSignals[1]}`,
     `minJobs               = ${repProof.publicSignals[2]}`,
     `nullifier             = ${repProof.nullifier.slice(0, 14)}…${repProof.nullifier.slice(-6)}`,
     `epochRoot             = ${repProof.epochRoot.slice(0, 14)}…${repProof.epochRoot.slice(-6)}`,
-    `proving time          = ${proveMs} ms`,
+    `proving time          = ${offline ? "n/a (offline mock proof)" : `${proveMs} ms`}`,
   ]);
 
   // ─── Step 3: Soroban — submit proof to ReputationAggregationVerifier ───────────
