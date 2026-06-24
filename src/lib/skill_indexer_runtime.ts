@@ -55,7 +55,11 @@ export function skillDocFromChain(skillId: bigint, s: OnchainSkill, repOverride?
 export async function applyIndexedEvent(
   svc: KarmaService,
   e: IndexedEvent,
-  flow?: { record(edge: FlowEdge): void; setBondSeed(agent: string, bondWei: bigint): void },
+  flow?: {
+    record(edge: FlowEdge): void;
+    setBondSeed(agent: string, bondWei: bigint): void;
+    recordDispute(provider: string, timestamp: number): void;
+  },
 ): Promise<void> {
   switch (e.type) {
     case "SkillRegistered": {
@@ -89,6 +93,20 @@ export async function applyIndexedEvent(
       // No BM25 doc change — bonds seed trust origination, not the skill text/price/active state.
       flow?.setBondSeed(e.agent, e.seedEligible);
       return;
+    case "ResultDisputed": {
+      // T0.1 P3-lite: dispute → soft penalty to provider's flow rep (ranking only, never funds).
+      // The on-chain event indexes only the requester; resolve provider via readJob. If `flow` is
+      // not wired (KARMA_DISCOVERY_RANK != "flow") this is a no-op apart from the cheap RPC read,
+      // so gate the readJob on flow being present.
+      if (!flow) return;
+      const job = await svc.readJob(e.jobId);
+      // Time anchor: the dispute window starts at delivery. completedAt is 0 for unsettled jobs,
+      // so use createdAt as a stable lower bound (the actual dispute happened later, but decay
+      // half-life is days — sub-day error is negligible for ranking).
+      const ts = Number(job.completedAt > 0n ? job.completedAt : job.createdAt);
+      flow.recordDispute(job.provider, ts);
+      return;
+    }
     case "MinReputationSet":
       // H2 fix: persist the on-chain Trust Gate threshold without a full skill re-read, so
       // replaying this event after restart restores every skill's threshold — closes the Phase-1 gap.
@@ -113,7 +131,11 @@ const RECONCILE_RETRY_BASE_MS = 200;
 export async function applyWithRetry(
   svc: KarmaService,
   e: IndexedEvent,
-  flow?: { record(edge: FlowEdge): void; setBondSeed(agent: string, bondWei: bigint): void },
+  flow?: {
+    record(edge: FlowEdge): void;
+    setBondSeed(agent: string, bondWei: bigint): void;
+    recordDispute(provider: string, timestamp: number): void;
+  },
   maxRetries = MAX_RECONCILE_RETRIES,
   baseDelayMs = RECONCILE_RETRY_BASE_MS,
 ): Promise<void> {

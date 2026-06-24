@@ -111,7 +111,7 @@ describe("skill_indexer_runtime", () => {
     const svc = fakeService({
       readJob: vi.fn(async () => job({ requester: BETA, provider: ALPHA, escrowAmount: 5n, completedAt: 99n, skillId: 42n })),
     });
-    const flow = { record: vi.fn(), setBondSeed: vi.fn() };
+    const flow = { record: vi.fn(), setBondSeed: vi.fn(), recordDispute: vi.fn() };
     await applyIndexedEvent(
       svc,
       { type: "JobCompleted", blockNumber: 12n, jobId: 3n, provider: ALPHA, payout: 5n, newReputation: 60n },
@@ -123,7 +123,7 @@ describe("skill_indexer_runtime", () => {
 
   it("JobCompleted → does NOT record a self-deal edge (requester === provider)", async () => {
     const svc = fakeService({ readJob: vi.fn(async () => job({ requester: ALPHA, provider: ALPHA })) });
-    const flow = { record: vi.fn(), setBondSeed: vi.fn() };
+    const flow = { record: vi.fn(), setBondSeed: vi.fn(), recordDispute: vi.fn() };
     await applyIndexedEvent(
       svc,
       { type: "JobCompleted", blockNumber: 12n, jobId: 3n, provider: ALPHA, payout: 1000n, newReputation: 55n },
@@ -134,7 +134,7 @@ describe("skill_indexer_runtime", () => {
 
   it("BondUpdated → mirrors seed-eligible bond into the flow seed (Tier-2), no chain reads", async () => {
     const svc = fakeService();
-    const flow = { record: vi.fn(), setBondSeed: vi.fn() };
+    const flow = { record: vi.fn(), setBondSeed: vi.fn(), recordDispute: vi.fn() };
     await applyIndexedEvent(
       svc,
       { type: "BondUpdated", blockNumber: 20n, agent: BETA, bondedAmount: 5n, seedEligible: 5n },
@@ -146,7 +146,7 @@ describe("skill_indexer_runtime", () => {
   });
 
   it("BondUpdated with seedEligible=0 (cooling down / withdrawn) clears the seed", async () => {
-    const flow = { record: vi.fn(), setBondSeed: vi.fn() };
+    const flow = { record: vi.fn(), setBondSeed: vi.fn(), recordDispute: vi.fn() };
     await applyIndexedEvent(
       fakeService(),
       { type: "BondUpdated", blockNumber: 21n, agent: BETA, bondedAmount: 5n, seedEligible: 0n },
