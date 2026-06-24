@@ -528,3 +528,316 @@ fn bond_request_unlock_without_bond_reverts() {
     env.set_caller(beta);
     assert_eq!(reg.try_request_bond_unlock(), Err(Error::NoBond.into()));
 }
+
+// ─── Composition primitive (T2.1) ───────────────────────────────────────────
+//
+// Setup uses three primitives owned by three distinct accounts so revenue split + per-leaf
+// reputation are observable independently. The composite wrapper is owned by `omega` so we
+// can also verify that wrapper-vs-leaf trust signals route correctly.
+
+const LEAF_PRICE: u64 = 100_000;
+const COMPOSITE_PRICE: u64 = 3_000_000;
+
+fn register_leaf(env: &HostEnv, contract: &mut AgentSkillRegistryHostRef, owner: Address, label: &str) -> u64 {
+    env.set_caller(owner);
+    contract.register_skill(
+        format!("leaf-{label}"),
+        format!("leaf primitive {label}"),
+        format!("mcp://leaf/{label}"),
+        U512::from(LEAF_PRICE),
+        0,
+        IDENTITY_POLICY_NONE,
+    )
+}
+
+fn register_composite(
+    env: &HostEnv,
+    contract: &mut AgentSkillRegistryHostRef,
+    wrapper_owner: Address,
+    leaves: Vec<u64>,
+    weights: Vec<u32>,
+    price: u64,
+) -> u64 {
+    env.set_caller(wrapper_owner);
+    contract.register_composition(
+        "compose-alpha-beta-omega".to_string(),
+        "5/3/2 fanout across three primitives".to_string(),
+        "mcp://omega/compose".to_string(),
+        U512::from(price),
+        0,
+        IDENTITY_POLICY_NONE,
+        leaves,
+        weights,
+    )
+}
+
+#[test]
+fn composition_register_persists_and_views_distinguish_composite_from_primitive() {
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let omega = env.get_account(3);
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let composite = register_composite(
+        &env, &mut reg, omega, vec![leaf_a, leaf_b], vec![6_000, 4_000], COMPOSITE_PRICE,
+    );
+
+    assert!(reg.is_composite(composite), "wrapper is composite");
+    assert!(!reg.is_composite(leaf_a), "leaf is primitive");
+    assert!(!reg.is_composite(leaf_b), "leaf is primitive");
+
+    let comp = reg.get_composition(composite).expect("composition present");
+    assert_eq!(comp.leaf_skill_ids, vec![leaf_a, leaf_b]);
+    assert_eq!(comp.weights_bps, vec![6_000u32, 4_000u32]);
+
+    let wrapper_skill = reg.get_skill(composite);
+    assert_eq!(wrapper_skill.owner, omega, "wrapper owner == caller of register_composition");
+    assert_eq!(wrapper_skill.price_per_call, U512::from(COMPOSITE_PRICE));
+}
+
+#[test]
+fn composition_rejects_empty_leaves() {
+    let (env, mut reg, _, _) = setup();
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "c".to_string(), "".to_string(), "mcp://c".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE, vec![], vec![],
+        ),
+        Err(Error::EmptyComposition.into()),
+    );
+}
+
+#[test]
+fn composition_rejects_weight_length_mismatch() {
+    let (env, mut reg, alpha, _) = setup();
+    let leaf = register_leaf(&env, &mut reg, alpha, "a");
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "c".to_string(), "".to_string(), "mcp://c".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE,
+            vec![leaf], vec![5_000, 5_000],
+        ),
+        Err(Error::WeightsMismatch.into()),
+    );
+}
+
+#[test]
+fn composition_rejects_weights_not_summing_to_denominator() {
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "c".to_string(), "".to_string(), "mcp://c".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE,
+            vec![leaf_a, leaf_b], vec![3_000, 3_000], // sums to 6_000, not 10_000
+        ),
+        Err(Error::WeightsMismatch.into()),
+    );
+}
+
+#[test]
+fn composition_rejects_unknown_leaf() {
+    let (env, mut reg, _, _) = setup();
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "c".to_string(), "".to_string(), "mcp://c".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE,
+            vec![42u64], vec![10_000],
+        ),
+        Err(Error::LeafSkillNotFound.into()),
+    );
+}
+
+#[test]
+fn composition_rejects_inactive_leaf() {
+    let (env, mut reg, alpha, _) = setup();
+    let leaf = register_leaf(&env, &mut reg, alpha, "a");
+    env.set_caller(alpha);
+    reg.deactivate_skill(leaf);
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "c".to_string(), "".to_string(), "mcp://c".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE,
+            vec![leaf], vec![10_000],
+        ),
+        Err(Error::LeafSkillInactive.into()),
+    );
+}
+
+#[test]
+fn composition_rejects_composite_leaf_single_level_only() {
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let omega = env.get_account(3);
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let composite = register_composite(
+        &env, &mut reg, omega, vec![leaf_a, leaf_b], vec![5_000, 5_000], COMPOSITE_PRICE,
+    );
+    // Try to wrap the composite again — must be rejected.
+    let theta = env.get_account(4);
+    env.set_caller(theta);
+    assert_eq!(
+        reg.try_register_composition(
+            "c2".to_string(), "".to_string(), "mcp://c2".to_string(),
+            U512::from(1u64), 0, IDENTITY_POLICY_NONE,
+            vec![composite], vec![10_000],
+        ),
+        Err(Error::LeafIsComposite.into()),
+    );
+}
+
+#[test]
+fn composition_completion_splits_escrow_per_weights_and_credits_leaf_owners() {
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let gamma = env.get_account(4);
+    let omega = env.get_account(3);
+    let requester = env.get_account(5);
+
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let leaf_c = register_leaf(&env, &mut reg, gamma, "c");
+    let composite = register_composite(
+        &env, &mut reg, omega,
+        vec![leaf_a, leaf_b, leaf_c],
+        vec![5_000, 3_000, 2_000], // 50/30/20
+        COMPOSITE_PRICE,
+    );
+
+    // Requester escrows the composite price; provider (= wrapper owner omega) delivers.
+    env.set_caller(requester);
+    let job_id = reg
+        .with_tokens(U512::from(COMPOSITE_PRICE))
+        .create_job(composite, task_hash("compose-job"), DEADLINE_MS);
+    env.set_caller(omega);
+    reg.deliver_result(job_id, task_hash("compose-result"));
+    env.set_caller(requester);
+    reg.confirm_completion(job_id);
+
+    // Each leaf owner has a pending withdrawal == their share of the escrow.
+    assert_eq!(
+        reg.pending_withdrawals_of(alpha),
+        U512::from(COMPOSITE_PRICE * 5_000 / 10_000), "alpha = 50%",
+    );
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(COMPOSITE_PRICE * 3_000 / 10_000), "beta = 30%",
+    );
+    assert_eq!(
+        reg.pending_withdrawals_of(gamma),
+        U512::from(COMPOSITE_PRICE * 2_000 / 10_000), "gamma = 20%",
+    );
+    // Wrapper owner gets ZERO escrow by default (they get a slice only by including themselves
+    // as a leaf — the design point that forces wrapper cuts to be on-chain visible).
+    assert_eq!(
+        reg.pending_withdrawals_of(omega),
+        U512::zero(),
+        "wrapper owner has no implicit slice",
+    );
+
+    // Σ payouts == escrow_amount (the pull-payment invariant).
+    let total = reg.pending_withdrawals_of(alpha)
+        + reg.pending_withdrawals_of(beta)
+        + reg.pending_withdrawals_of(gamma);
+    assert_eq!(total, U512::from(COMPOSITE_PRICE), "escrow fully distributed (no dust lost)");
+
+    // Reputation propagation: each leaf skill + composite all bump by REPUTATION_STEP.
+    assert_eq!(reg.get_skill(leaf_a).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.get_skill(leaf_b).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.get_skill(leaf_c).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    // Each leaf owner + the wrapper owner + the requester all bump in agent rep.
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(beta), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(gamma), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(omega), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(requester), BASE_REPUTATION + REPUTATION_STEP);
+}
+
+#[test]
+fn composition_completion_last_leaf_absorbs_rounding_remainder() {
+    // 3 leaves with weights that don't divide escrow evenly: 3333/3333/3334 of 1000 motes.
+    // 1000 * 3333 / 10000 = 333.3 → 333 each for first two, last one gets 1000-333-333 = 334.
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let gamma = env.get_account(4);
+    let omega = env.get_account(3);
+    let requester = env.get_account(5);
+
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let leaf_c = register_leaf(&env, &mut reg, gamma, "c");
+    const DUSTY_PRICE: u64 = 1_000;
+    let composite = register_composite(
+        &env, &mut reg, omega,
+        vec![leaf_a, leaf_b, leaf_c],
+        vec![3_333, 3_333, 3_334],
+        DUSTY_PRICE,
+    );
+    env.set_caller(requester);
+    let job_id = reg
+        .with_tokens(U512::from(DUSTY_PRICE))
+        .create_job(composite, task_hash("dust-job"), DEADLINE_MS);
+    env.set_caller(omega);
+    reg.deliver_result(job_id, task_hash("dust-result"));
+    env.set_caller(requester);
+    reg.confirm_completion(job_id);
+
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(333u64));
+    assert_eq!(reg.pending_withdrawals_of(beta),  U512::from(333u64));
+    // Last leaf absorbs the rounding remainder — Σ == escrow (no dust).
+    assert_eq!(reg.pending_withdrawals_of(gamma), U512::from(334u64));
+    let total = reg.pending_withdrawals_of(alpha)
+        + reg.pending_withdrawals_of(beta)
+        + reg.pending_withdrawals_of(gamma);
+    assert_eq!(total, U512::from(DUSTY_PRICE));
+}
+
+#[test]
+fn composition_wrapper_can_include_itself_as_leaf_for_explicit_cut() {
+    // Wrapper-owner omega registers a primitive of their own, then composes
+    // (wrapper-primitive, leaf-a, leaf-b) with a 4_000/3_000/3_000 split — proving the
+    // "wrapper cut" is achievable IF AND ONLY IF it appears as an explicit on-chain leaf.
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let omega = env.get_account(3);
+    let requester = env.get_account(5);
+
+    let leaf_omega = register_leaf(&env, &mut reg, omega, "omega");
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let composite = register_composite(
+        &env, &mut reg, omega,
+        vec![leaf_omega, leaf_a, leaf_b],
+        vec![4_000, 3_000, 3_000],
+        COMPOSITE_PRICE,
+    );
+
+    env.set_caller(requester);
+    let job_id = reg
+        .with_tokens(U512::from(COMPOSITE_PRICE))
+        .create_job(composite, task_hash("cut-job"), DEADLINE_MS);
+    env.set_caller(omega);
+    reg.deliver_result(job_id, task_hash("cut-result"));
+    env.set_caller(requester);
+    reg.confirm_completion(job_id);
+
+    assert_eq!(
+        reg.pending_withdrawals_of(omega),
+        U512::from(COMPOSITE_PRICE * 4_000 / 10_000),
+        "wrapper owner gets exactly the slice tied to their own primitive leaf",
+    );
+}
