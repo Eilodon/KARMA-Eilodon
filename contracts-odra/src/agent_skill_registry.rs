@@ -27,6 +27,13 @@ pub const IDENTITY_POLICY_NONE: u8 = 0;
 pub const IDENTITY_POLICY_T3N: u8 = 1;
 pub const IDENTITY_POLICY_T3N_FRESH: u8 = 2;
 
+// Composition primitive (T2.1). Weights live on a basis-points axis (10_000 = 100%) so
+// integer arithmetic stays exact and the `register_composition` validation is a clean
+// `sum == WEIGHT_DENOMINATOR` check. Single-level only for hackathon scope: a leaf may
+// not itself be a composition.
+pub const WEIGHT_DENOMINATOR: u32 = 10_000;
+pub const MAX_COMPOSITION_LEAVES: u32 = 8;
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 #[odra::odra_error]
 pub enum Error {
@@ -54,6 +61,13 @@ pub enum Error {
     NotUnlocking = 22,
     CooldownActive = 23,
     BadReviewWindow = 24,
+    // ── Composition primitive (T2.1) ──
+    EmptyComposition = 25,
+    TooManyLeaves = 26,
+    WeightsMismatch = 27,
+    LeafSkillNotFound = 28,
+    LeafSkillInactive = 29,
+    LeafIsComposite = 30,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -176,11 +190,39 @@ pub struct BondUpdated {
     pub seed_eligible: U512,
 }
 
+// ── Composition events (T2.1) ────────────────────────────────────────────────
+#[odra::event]
+pub struct CompositionRegistered {
+    pub skill_id: u64,
+    pub owner: Address,
+    pub leaf_skill_ids: Vec<u64>,
+    pub weights_bps: Vec<u32>,
+}
+
+#[odra::event]
+pub struct CompositionLeafPayout {
+    pub job_id: u64,
+    pub composite_skill_id: u64,
+    pub leaf_skill_id: u64,
+    pub leaf_owner: Address,
+    pub payout: U512,
+}
+
+// ── Composition type (T2.1) ──────────────────────────────────────────────────
+/// Single-level composition: a wrapper skill that fans out one job's escrow across
+/// `leaf_skill_ids` according to `weights_bps`. Self-cuts are explicit — if the wrapper
+/// owner wants a slice, the wrapper registers one of its OWN primitive skills as a leaf.
+#[odra::odra_type]
+pub struct Composition {
+    pub leaf_skill_ids: Vec<u64>,
+    pub weights_bps: Vec<u32>,
+}
+
 // ─── Contract ──────────────────────────────────────────────────────────────
 #[odra::module(events = [
     SkillRegistered, SkillDeactivated, JobCreated, ResultDelivered, JobCompleted,
     JobRefunded, ResultDisputed, MinReputationSet, IdentityPolicySet, Withdrawn,
-    BondUpdated,
+    BondUpdated, CompositionRegistered, CompositionLeafPayout,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -196,6 +238,9 @@ pub struct AgentSkillRegistry {
     agent_rep: Mapping<Address, u32>,
     bonded_amount: Mapping<Address, U512>,
     bond_unlock_at: Mapping<Address, u64>,
+    /// Composite skills (T2.1). Empty entry = primitive skill; present entry = composite.
+    /// Lookup is keyed by the wrapper's `skill_id` (same id space as `skills`).
+    compositions: Mapping<u64, Composition>,
 }
 
 #[odra::module]
@@ -255,6 +300,94 @@ impl AgentSkillRegistry {
             price_per_call,
         });
         skill_id
+    }
+
+    /// Register a composite skill (T2.1). The wrapper itself is a normal Skill entry; the
+    /// `compositions` map records its leaf split. Constraints (all asserted on-chain):
+    ///   - 1 ≤ leaves ≤ MAX_COMPOSITION_LEAVES
+    ///   - `weights_bps.len() == leaf_skill_ids.len()`
+    ///   - Σ weights_bps == WEIGHT_DENOMINATOR (10_000)
+    ///   - every leaf_skill_id exists, is active, and is NOT itself a composition
+    ///     (single-level only for hackathon scope)
+    /// Reputation/identity gates on the WRAPPER are inherited from the wrapper's own Skill
+    /// entry, so a composite can be gated independently of its leaves' gates.
+    pub fn register_composition(
+        &mut self,
+        name: String,
+        description: String,
+        mcp_endpoint: String,
+        price_per_call: U512,
+        min_reputation_to_invoke: u32,
+        identity_policy: u8,
+        leaf_skill_ids: Vec<u64>,
+        weights_bps: Vec<u32>,
+    ) -> u64 {
+        if leaf_skill_ids.is_empty() {
+            self.env().revert(Error::EmptyComposition);
+        }
+        if leaf_skill_ids.len() as u32 > MAX_COMPOSITION_LEAVES {
+            self.env().revert(Error::TooManyLeaves);
+        }
+        if leaf_skill_ids.len() != weights_bps.len() {
+            self.env().revert(Error::WeightsMismatch);
+        }
+        let mut sum: u32 = 0;
+        for w in weights_bps.iter() {
+            sum = sum.saturating_add(*w);
+        }
+        if sum != WEIGHT_DENOMINATOR {
+            self.env().revert(Error::WeightsMismatch);
+        }
+        for leaf_id in leaf_skill_ids.iter() {
+            let leaf = self
+                .skills
+                .get(leaf_id)
+                .unwrap_or_else(|| self.env().revert(Error::LeafSkillNotFound));
+            if !leaf.active {
+                self.env().revert(Error::LeafSkillInactive);
+            }
+            if self.compositions.get(leaf_id).is_some() {
+                // Single-level only: leaves must be primitive. Lifts hackathon-scope ambiguity
+                // about whether revenue/rep should cascade transitively. Revisit post-hackathon.
+                self.env().revert(Error::LeafIsComposite);
+            }
+        }
+
+        // Register the wrapper as a normal Skill entry — same id space — then attach the
+        // composition record under that id. Reusing `register_skill`'s shape keeps discovery
+        // and gating logic untouched.
+        let skill_id = self.register_skill(
+            name,
+            description,
+            mcp_endpoint,
+            price_per_call,
+            min_reputation_to_invoke,
+            identity_policy,
+        );
+        let composition = Composition {
+            leaf_skill_ids: leaf_skill_ids.clone(),
+            weights_bps: weights_bps.clone(),
+        };
+        self.compositions.set(&skill_id, composition);
+
+        let owner = self.env().caller();
+        self.env().emit_event(CompositionRegistered {
+            skill_id,
+            owner,
+            leaf_skill_ids,
+            weights_bps,
+        });
+        skill_id
+    }
+
+    /// View: returns the composition record for a composite skill, or None for a primitive.
+    pub fn get_composition(&self, skill_id: u64) -> Option<Composition> {
+        self.compositions.get(&skill_id)
+    }
+
+    /// View: convenience boolean — is this skill a composite?
+    pub fn is_composite(&self, skill_id: u64) -> bool {
+        self.compositions.get(&skill_id).is_some()
     }
 
     pub fn deactivate_skill(&mut self, skill_id: u64) {
@@ -617,15 +750,92 @@ impl AgentSkillRegistry {
     /// ledger writes (no external call). Self-deal guard widened from Solidity audit Abductive-2 +
     /// Tier-0: when `requester == provider`, escrow still settles, but NONE of the trust signals
     /// (skill rep, totalInvocations, requester rep, provider rep) move.
+    ///
+    /// T2.1 composition split: if the job's skill has a `Composition` record, the escrow is
+    /// distributed across the leaf skills' owners per `weights_bps`. The wrapper owner does
+    /// NOT get an implicit slice — if they want a cut they must include one of their OWN
+    /// primitive skills as a leaf. Per-leaf reputation + invocation counters and per-leaf-owner
+    /// agent rep all bump, mirroring the primitive-skill semantics one level down.
     fn settle_completion(&mut self, j: &mut Job, job_id: u64) {
         j.status = JobStatus::Completed;
         j.completed_at = self.env().get_block_time();
+
+        let composition = self.compositions.get(&j.skill_id);
+        let self_deal = j.requester == j.provider;
+
+        if let Some(comp) = composition.as_ref() {
+            // ── Composite path: fan out escrow per weights to leaf owners. ──
+            //
+            // Crediting strategy: we split escrow with integer basis-points math and let the
+            // last leaf absorb the rounding remainder, so Σ payouts == escrow_amount exactly.
+            // This matches the pull-payment ledger invariant: sum(credited) == debited.
+            let escrow = j.escrow_amount;
+            let mut distributed = U512::zero();
+            let n = comp.leaf_skill_ids.len();
+            for (i, leaf_id) in comp.leaf_skill_ids.iter().enumerate() {
+                let weight = comp.weights_bps[i];
+                // Last leaf gets `escrow - distributed` so rounding never leaves dust behind.
+                let payout = if i + 1 == n {
+                    escrow - distributed
+                } else {
+                    let p = (escrow * U512::from(weight)) / U512::from(WEIGHT_DENOMINATOR);
+                    distributed += p;
+                    p
+                };
+                let leaf = self.require_skill(*leaf_id);
+                let credit = self
+                    .pending_withdrawals
+                    .get(&leaf.owner)
+                    .unwrap_or_default()
+                    + payout;
+                self.pending_withdrawals.set(&leaf.owner, credit);
+
+                // Leaf reputation bumps mirror the primitive-skill path.
+                if !self_deal && j.requester != leaf.owner {
+                    let mut leaf_mut = leaf.clone();
+                    leaf_mut.total_invocations += 1;
+                    let next = leaf_mut.reputation_score.saturating_add(REPUTATION_STEP);
+                    leaf_mut.reputation_score = if next > MAX_REPUTATION { MAX_REPUTATION } else { next };
+                    self.skills.set(leaf_id, leaf_mut);
+                    self.bump_agent_rep(leaf.owner);
+                }
+
+                self.env().emit_event(CompositionLeafPayout {
+                    job_id,
+                    composite_skill_id: j.skill_id,
+                    leaf_skill_id: *leaf_id,
+                    leaf_owner: leaf.owner,
+                    payout,
+                });
+            }
+
+            // Wrapper-level trust signals: composite skill rep + invocation count + wrapper
+            // owner agent rep + requester agent rep all move on a successful arm's-length call.
+            let mut s = self.require_skill(j.skill_id);
+            if !self_deal {
+                s.total_invocations += 1;
+                let next = s.reputation_score.saturating_add(REPUTATION_STEP);
+                s.reputation_score = if next > MAX_REPUTATION { MAX_REPUTATION } else { next };
+                self.skills.set(&j.skill_id, s.clone());
+                self.bump_agent_rep(j.provider);
+                self.bump_agent_rep(j.requester);
+            }
+            self.env().emit_event(JobCompleted {
+                job_id,
+                provider: j.provider,
+                payout: escrow,
+                new_reputation: s.reputation_score,
+            });
+            return;
+        }
+
+        // ── Primitive-skill path (unchanged). ──
         let credit =
             self.pending_withdrawals.get(&j.provider).unwrap_or_default() + j.escrow_amount;
         self.pending_withdrawals.set(&j.provider, credit);
 
         let mut s = self.require_skill(j.skill_id);
-        if j.requester != j.provider {
+        if !self_deal {
             s.total_invocations += 1;
             let next = s.reputation_score.saturating_add(REPUTATION_STEP);
             s.reputation_score = if next > MAX_REPUTATION { MAX_REPUTATION } else { next };
