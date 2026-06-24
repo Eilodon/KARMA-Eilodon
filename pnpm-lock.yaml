@@ -8,6 +8,7 @@ overrides:
   ws@<8.21.0: ^8.21.0
   '@opentelemetry/core@<2.8.0': ^2.8.0
   '@stellar/stellar-sdk': 16.0.1
+  underscore@<=1.13.7: ^1.13.8
 
 importers:
 
@@ -2928,8 +2929,8 @@ packages:
   unbzip2-stream@1.4.3:
     resolution: {integrity: sha512-mlExGW4w71ebDJviH16lQLtZS32VKqsSfk80GCfUlwT/4/hNRFsoscrF/c++9xinkMzECL1uL9DDwXqFWkruPg==}
 
-  underscore@1.13.6:
-    resolution: {integrity: sha512-+A5Sja4HP1M08MaXya7p5LvjuM7K6q/2EaC0+iovj/wOcMsTzMvDFbasi/oSapiwOlt252IqsKqPjCl7huKS0A==}
+  underscore@1.13.8:
+    resolution: {integrity: sha512-DXtD3ZtEQzc7M8m4cXotyHR+FAS18C64asBYY5vqZexfYryNNnDc02W4hKg3rdQuqOYas1jkseX0+nZXjTXnvQ==}
 
   undici-types@6.19.8:
     resolution: {integrity: sha512-ve2KP6f/JnbPBFyobGHuerC9g1FYGn/F8n1LWTwNxCEzd6IfqTwUQcNXgEtmmQ6DlRrC1hrSrBnCZPokRrDHjw==}
@@ -5664,7 +5665,7 @@ snapshots:
     dependencies:
       esprima: 1.2.5
       static-eval: 2.1.1
-      underscore: 1.13.6
+      underscore: 1.13.8
 
   keyv@4.5.4:
     dependencies:
@@ -6308,7 +6309,7 @@ snapshots:
       buffer: 5.7.1
       through: 2.3.8
 
-  underscore@1.13.6: {}
+  underscore@1.13.8: {}
 
   undici-types@6.19.8: {}
 
