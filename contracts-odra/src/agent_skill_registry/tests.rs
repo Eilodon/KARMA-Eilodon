@@ -841,3 +841,124 @@ fn composition_wrapper_can_include_itself_as_leaf_for_explicit_cut() {
         "wrapper owner gets exactly the slice tied to their own primitive leaf",
     );
 }
+
+// ─── Ported from PR#7 (claude/karma-t2-1-skill-composition-odra) ──────────────
+// PR#7 and this branch implement T2.1 with different revenue-split designs (PR#7:
+// explicit `orchestrator_bps` + dust-to-orchestrator; here: weights sum to 10_000,
+// wrapper-as-explicit-leaf, dust-to-last-leaf). The three cases below cover PR#7
+// invariants that had no twin here — the leaf-count bound, the composite dispute
+// refund, and the per-leaf self-deal carve-out — re-expressed for this design.
+
+#[test]
+fn composition_rejects_more_than_max_leaves() {
+    // MAX_COMPOSITION_LEAVES + 1 distinct active leaves must be rejected. The leaf-count
+    // bound is the first structural guard after the empty check, so it fires before the
+    // weights-sum check regardless of the weight values.
+    let (env, mut reg, alpha, _) = setup();
+    let n = (MAX_COMPOSITION_LEAVES + 1) as usize;
+    let mut leaves = Vec::with_capacity(n);
+    for i in 0..n {
+        leaves.push(register_leaf(&env, &mut reg, alpha, &format!("m{i}")));
+    }
+    let weights = vec![WEIGHT_DENOMINATOR / n as u32; n];
+    let omega = env.get_account(3);
+    env.set_caller(omega);
+    assert_eq!(
+        reg.try_register_composition(
+            "too-many".to_string(), "".to_string(), "mcp://too-many".to_string(),
+            U512::from(COMPOSITE_PRICE), 0, IDENTITY_POLICY_NONE,
+            leaves, weights,
+        ),
+        Err(Error::TooManyLeaves.into()),
+    );
+}
+
+#[test]
+fn composition_dispute_refunds_full_escrow_and_freezes_reputation() {
+    // Disputing a composite job refunds the WHOLE escrow to the requester — no leaf owner
+    // and no wrapper owner is paid — and bumps nobody's reputation.
+    let (env, mut reg, alpha, _) = setup();
+    let beta = env.get_account(2);
+    let gamma = env.get_account(4);
+    let omega = env.get_account(3);
+    let requester = env.get_account(5);
+
+    let leaf_a = register_leaf(&env, &mut reg, alpha, "a");
+    let leaf_b = register_leaf(&env, &mut reg, beta, "b");
+    let leaf_c = register_leaf(&env, &mut reg, gamma, "c");
+    let composite = register_composite(
+        &env, &mut reg, omega,
+        vec![leaf_a, leaf_b, leaf_c],
+        vec![5_000, 3_000, 2_000],
+        COMPOSITE_PRICE,
+    );
+
+    env.set_caller(requester);
+    let job_id = reg
+        .with_tokens(U512::from(COMPOSITE_PRICE))
+        .create_job(composite, task_hash("disp-job"), DEADLINE_MS);
+    env.set_caller(omega);
+    reg.deliver_result(job_id, task_hash("garbage"));
+    env.set_caller(requester);
+    reg.dispute_result(job_id);
+
+    // Full escrow back to requester; every producer slice is zero.
+    assert_eq!(reg.pending_withdrawals_of(requester), U512::from(COMPOSITE_PRICE), "full refund");
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero(), "leaf A unpaid on dispute");
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero(), "leaf B unpaid on dispute");
+    assert_eq!(reg.pending_withdrawals_of(gamma), U512::zero(), "leaf C unpaid on dispute");
+    assert_eq!(reg.pending_withdrawals_of(omega), U512::zero(), "wrapper unpaid on dispute");
+
+    // Dispute never moves trust signals.
+    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION, "composite rep frozen");
+    assert_eq!(reg.get_skill(leaf_a).reputation_score, BASE_REPUTATION, "leaf A rep frozen");
+    assert_eq!(reg.get_skill(leaf_b).reputation_score, BASE_REPUTATION, "leaf B rep frozen");
+    assert_eq!(reg.get_skill(leaf_c).reputation_score, BASE_REPUTATION, "leaf C rep frozen");
+}
+
+#[test]
+fn composition_settle_self_deal_leaf_paid_but_no_reputation() {
+    // A leaf whose owner is ALSO the requester is still PAID (payment is not a self-deal
+    // guard) but earns NO reputation; the arm's-length leaf and the composite wrapper do.
+    let (env, mut reg, _, _) = setup();
+    let requester = env.get_account(1); // also owns leaf_a → the self-deal target
+    let arms = env.get_account(2);
+    let omega = env.get_account(3);
+
+    let leaf_a = register_leaf(&env, &mut reg, requester, "self");
+    let leaf_b = register_leaf(&env, &mut reg, arms, "arms");
+    let composite = register_composite(
+        &env, &mut reg, omega,
+        vec![leaf_a, leaf_b],
+        vec![6_000, 4_000],
+        COMPOSITE_PRICE,
+    );
+
+    env.set_caller(requester);
+    let job_id = reg
+        .with_tokens(U512::from(COMPOSITE_PRICE))
+        .create_job(composite, task_hash("self-job"), DEADLINE_MS);
+    env.set_caller(omega);
+    reg.deliver_result(job_id, task_hash("ok"));
+    env.set_caller(requester);
+    reg.confirm_completion(job_id);
+
+    // Payment is unconditional — the self-dealing leaf owner (= requester) is still paid.
+    assert_eq!(
+        reg.pending_withdrawals_of(requester),
+        U512::from(COMPOSITE_PRICE * 6_000 / 10_000), "leaf A (self) paid 60%",
+    );
+    assert_eq!(
+        reg.pending_withdrawals_of(arms),
+        U512::from(COMPOSITE_PRICE * 4_000 / 10_000), "leaf B (arm's length) paid 40%",
+    );
+
+    // Reputation: self-deal leaf frozen; arm's-length leaf + composite bump.
+    assert_eq!(reg.get_skill(leaf_a).reputation_score, BASE_REPUTATION, "self-deal leaf rep frozen");
+    assert_eq!(reg.get_skill(leaf_b).reputation_score, BASE_REPUTATION + REPUTATION_STEP, "arm's-length leaf bumped");
+    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION + REPUTATION_STEP, "composite bumped");
+
+    // Requester earns exactly one step (the composite layer), not a second from leaf_a.
+    assert_eq!(reg.agent_reputation(requester), BASE_REPUTATION + REPUTATION_STEP, "requester one composite-layer bump");
+    assert_eq!(reg.agent_reputation(arms), BASE_REPUTATION + REPUTATION_STEP, "arm's-length leaf owner bumped");
+}
