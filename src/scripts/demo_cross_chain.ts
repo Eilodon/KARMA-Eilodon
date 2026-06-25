@@ -28,6 +28,7 @@ import { StellarX402Plugin } from "../plugins/x402_stellar.js";
 import { deriveStellarKeypair } from "../lib/stellar/keypair.js";
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
 import { generateRepAggProof, type RepAggInputs, type RepAggProof } from "../lib/zk/reputation_aggregation.js";
+import { buildRepAggInputs, type RepObservation } from "../lib/zk/rep_oracle.js";
 import {
   fetchAndAttest,
   signAttestation,
@@ -111,7 +112,7 @@ async function main(): Promise<void> {
   // In production this is `karmaService.streamJobCompletedEvents()` indexed per category.
   // For the visual demo we materialize a canned history that satisfies the gates we'll
   // assert in the proof. Same shape the live indexer produces.
-  const repHistory = [
+  const observations: RepObservation[] = [
     { providerId: 100, categoryId: 1, score: 80, jobCount: 5 },
     { providerId: 200, categoryId: 1, score: 90, jobCount: 5 },
     { providerId: 300, categoryId: 2, score: 70, jobCount: 5 },
@@ -119,19 +120,21 @@ async function main(): Promise<void> {
     { providerId: 500, categoryId: 4, score: 75, jobCount: 5 },
     { providerId: 600, categoryId: 5, score: 80, jobCount: 5 },
   ];
-  console.log(`[Pharos] loaded ${repHistory.length} (provider,category,score,jobs) rows`);
-  console.log(`[Pharos] aggregate: 30 jobs across 5 distinct categories, weighted avg 80`);
+  console.log(`[Pharos] indexed ${observations.length} reputation observations (live = karmaService.streamJobCompletedEvents)`);
 
-  // ─── Step 2: Stellar ZK — generate ReputationAggregationProof ──────────────────
-  chainLabel("Stellar", 2, "Generate ReputationAggregationProof (Groth16, Bn254)");
-  const proofInputs: RepAggInputs = {
-    tuples: repHistory,
-    agentSecret: 0x4be7c0ffeen,
-    epoch: 202606n,
-    minAvgScore: 80,
-    minDistinctCategories: 5,
-    minJobs: 10,
-  };
+  // ─── Step 2: Stellar ZK — T1.3 oracle aggregates → ReputationAggregationProof (T1.1) ──
+  chainLabel("Stellar", 2, "Aggregate via T1.3 oracle → ReputationAggregationProof (Groth16)");
+  // T1.3: fold raw observations into circuit tuples + pre-flight the gates — "my Pharos
+  // history" becomes a portable, provable credential with no trusted bridge.
+  const proofInputs = await buildRepAggInputs(
+    stellarAddr,
+    async () => observations,
+    {
+      thresholds: { minAvgScore: 80, minDistinctCategories: 5, minJobs: 10 },
+      identity: { agentSecret: 0x4be7c0ffeen, epoch: 202606n },
+    },
+  );
+  console.log(`[oracle] ${proofInputs.tuples.length} distinct-category tuples · ${proofInputs.tuples.reduce((a, t) => a + t.jobCount, 0)} jobs · gate avg≥${proofInputs.minAvgScore} cats≥${proofInputs.minDistinctCategories} jobs≥${proofInputs.minJobs}`);
   let repProof: RepAggProof;
   let proveMs: number;
   if (offline) {
