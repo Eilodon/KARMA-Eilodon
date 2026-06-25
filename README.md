@@ -14,9 +14,16 @@ caller presents a verified `did:t3n:…` *and* meets an on-chain reputation thre
 It is built on **SUPER-MCP** (Layer 0, bundled here under `src/core`, `src/mcp`, `src/middlewares`,
 `src/storage`) — a hardened TypeScript/ESM runtime for production MCP servers.
 
-> **Submissions:** Terminal3 **T3ADK Dev Challenge** (Best Agent) and **Pharos Phase 1** Skill
-> Hackathon. The on-chain transaction log is in [DEMO.md](DEMO.md); the Pharos skill entry point is
-> [SKILL.md](SKILL.md); the full runtime/operations reference is [docs/RUNTIME.md](docs/RUNTIME.md).
+Beyond the live Pharos path, KARMA is **settlement-agnostic**: a narrow `IPaymentPlugin` plus ZK
+credentials extend the same skill / identity / reputation model to **Stellar** (Soroban Groth16
+verifiers + x402 USDC) and **Casper** (Odra registry + skill composition + x402 CSPR). See
+[Chain-agnostic settlement & cryptographic primitives](#chain-agnostic-settlement--cryptographic-primitives).
+
+> **Submissions:** Terminal3 **T3ADK Dev Challenge** (Best Agent), **Pharos Phase 1** Skill Hackathon,
+> **Stellar Real-World ZK** and the **Casper Agentic Buildathon**. On-chain logs:
+> [DEMO.md](DEMO.md) · [DEMO_STELLAR.md](DEMO_STELLAR.md) · [DEMO_CASPER.md](DEMO_CASPER.md). The
+> Pharos skill entry point is [SKILL.md](SKILL.md); the runtime/operations reference is
+> [docs/RUNTIME.md](docs/RUNTIME.md).
 
 ---
 
@@ -133,6 +140,39 @@ goes through viem `Account.signMessage` or the TEE-side custodial signer.
 
 ---
 
+## Chain-agnostic settlement & cryptographic primitives
+
+The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
+`SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
+chains. Pharos escrow is **live**; the Stellar and Casper tracks below run **offline / testnet** — live
+chain legs are owner-driven (the sandbox cannot fund testnet or run the circom ceremony), and the ZK
+demos fall back to a clearly-labelled mock proof when the `make repagg` artefacts are absent.
+
+| Capability | Where | Status |
+|---|---|---|
+| `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
+| x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet (owner-driven) |
+| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` | testnet (owner-driven) |
+| **AgentCredentialProof** — Circom Groth16 + Soroban verifier | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | demo / testnet |
+| **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`) | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | demo / testnet |
+| **Cross-chain reputation oracle** (T1.3) — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
+| **Signed-TLS attestation** (T1.4 fallback) — verifiable RWA price feed | `src/lib/zk/signed_tls_attestation.ts` | in-repo, tested |
+| **Skill composition** (T2.1) — weighted revenue split + reputation propagation | `contracts-odra/src/agent_skill_registry.rs` · `src/lib/casper/{odra_registry,composition_tools}.ts` | Odra + in-process, tested |
+| **Autonomous economic loop** (T5.1) — budget-capped goal loop + dashboard | `src/lib/autonomous_loop/` · `src/scripts/run_autonomous_loop.ts` | dry-run tested; `--live` owner-driven |
+| **Trust-kernel hardening** (T0.1/T0.2) — dispute-rate + anti-wash into flow reputation | `src/lib/flow_reputation.ts` | in-repo (Sybil Tier-1) |
+
+Public specs live in [`docs/standards/`](docs/standards/) (IPaymentPlugin v1, IdentityPolicy registry,
+reference implementations); open design in [`docs/rfc/`](docs/rfc/) (symmetric dispute bond, P3-hard).
+
+```bash
+pnpm demo:cross-chain     # Pharos rep → ZK proof → Casper RWA (signed-TLS) → settle  (offline)
+pnpm demo:self-hosting    # KARMA registers its own oracle as a paid skill on itself  (offline)
+pnpm exec tsx src/scripts/demo_casper_composability.ts    # KARMA-MCP × Casper-MCP composability
+pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop (dry-run)
+```
+
+---
+
 ## Live deployment
 
 | | |
@@ -160,7 +200,7 @@ goes through viem `Account.signMessage` or the TEE-side custodial signer.
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 470 passed, 1 skipped
+pnpm test          # 636 passed, 1 skipped
 pnpm build
 ```
 
@@ -273,7 +313,7 @@ for multi-replica.
 ## Testing
 
 ```bash
-pnpm test            # full Vitest suite (470 passed, 1 skipped)
+pnpm test            # full Vitest suite (636 passed, 1 skipped)
 pnpm typecheck       # tsc --noEmit
 pnpm test:contract   # Foundry tests for AgentSkillRegistry.sol (requires forge)
 pnpm test:enterprise # Layer-0 runtime hardening suites
@@ -296,11 +336,20 @@ src/
   plugins/
     karma.tool.ts   Layer 1 — skill economy tools (in-process)
     t3.tool.ts      Layer 3 — Terminal3 identity & delegation tools (in-process)
-  lib/           KarmaService, keystore, viem contract clients, BM25 index, ABI
-  scripts/       setup_keystore, deploy_contract, demos, t3_payroll_smoke
-  __tests__/     Vitest suites (runtime + app layer)
-contracts/       AgentSkillRegistry.sol (Foundry)
-docs/            RUNTIME.md (operations reference), ADRs, plans
+    x402_stellar.ts / x402_casper.ts   IPaymentPlugin settlement rails
+  lib/           KarmaService, keystore, viem clients, BM25 index, ABI, flow_reputation
+    payment/         IPaymentPlugin interface + registry
+    zk/              RepAgg proof wrapper, cross-chain rep oracle, signed-TLS attestation
+    stellar/ casper/ HKDF-derived keypairs; in-process Odra registry + composition tools
+    autonomous_loop/ T5.1 loop core + dashboard + live/dry-run runner
+  scripts/       setup_keystore, deploy_contract, demos (cross-chain, self-hosting,
+                 stellar/casper), run_autonomous_loop, t3_payroll_smoke
+  __tests__/     Vitest suites (runtime + app layer) — 71 files
+circuits/        Circom circuits: agent_credential, reputation_aggregation (+ snarkjs harness)
+contracts/       AgentSkillRegistry.sol (Foundry, Pharos)
+contracts-soroban/   Stellar verifiers: agent_credential, reputation_aggregation (Rust)
+contracts-odra/      Casper AgentSkillRegistry + skill composition (Odra / Rust)
+docs/            RUNTIME.md, standards/, rfc/, ADRs, plans, session handoffs
 ```
 
 ---
