@@ -1,12 +1,28 @@
 /**
  * Live/testnet runner for the autonomous economic loop (T5.1).
  *
+ * LIVE MODE STATUS: UNTESTED — dry-run verified 2026-06-29, live testnet path requires
+ * funded credentials and has not been confirmed end-to-end.
+ *
  *   pnpm exec tsx src/scripts/run_autonomous_loop.ts [--ticks N] [--budget USD] [--live]
  *
  *   • default (dry-run): deterministic, network-free. Drives the real `tick()` core against the
  *     dry-run adapter, writes the live dashboard JSON + replay ndjson. Fully verifiable offline.
  *   • --live: wires `StellarX402Plugin` for the x402 invoke leg. Requires testnet env (DP-3:
  *     STELLAR_NETWORK=*testnet* + STELLAR_X402_FACILITATOR_URL). Owner-driven — needs funded creds.
+ *
+ * Live mode env vars (all required for --live):
+ *   STELLAR_NETWORK            — must contain "testnet" (e.g. "stellar:testnet"); mainnet rejected by DP-3 guard
+ *   STELLAR_X402_FACILITATOR_URL — URL of the x402 facilitator service on testnet
+ *   KEYSTORE_PATH              — path to the KARMA keystore JSON (default: ./keystore.json)
+ *   KEYSTORE_PASSWORD          — password to decrypt the keystore
+ *   KARMA_AGENT_ID             — agent identity in the keystore (default: "agent-alpha")
+ *
+ * Known gap (live path): the keystore is not loaded before `makeLiveInvoke()` constructs
+ * `StellarX402Plugin`. The plugin's `pay()` calls `keystoreManager.getStellarKeypair(agentId)`,
+ * which will throw "Agent not found in keystore" unless `keystoreManager.load()` is called
+ * first. A fix should add a `keystoreManager.load(...)` call in `main()` before
+ * `buildLiveAdapter()` when `--live` is set.
  *
  * Safety: per-tx + hourly USDC caps + a dashboard control file (`{ "paused": true }`) that pauses
  * the loop on the next tick. The $-budget is the cap, not the floor (DP-3).

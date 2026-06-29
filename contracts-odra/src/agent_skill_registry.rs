@@ -68,6 +68,8 @@ pub enum Error {
     LeafSkillNotFound = 28,
     LeafSkillInactive = 29,
     LeafIsComposite = 30,
+    // ── Cross-chain reputation consumer (P0.1) ──
+    NotContractOwner = 31,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -190,6 +192,14 @@ pub struct BondUpdated {
     pub seed_eligible: U512,
 }
 
+// ── Cross-chain reputation consumer events (P0.1) ───────────────────────────
+#[odra::event]
+pub struct CrossChainRepUpdated {
+    pub agent: Address,
+    pub score: u32,
+    pub source_chain: String,
+}
+
 // ── Composition events (T2.1) ────────────────────────────────────────────────
 #[odra::event]
 pub struct CompositionRegistered {
@@ -222,7 +232,7 @@ pub struct Composition {
 #[odra::module(events = [
     SkillRegistered, SkillDeactivated, JobCreated, ResultDelivered, JobCompleted,
     JobRefunded, ResultDisputed, MinReputationSet, IdentityPolicySet, Withdrawn,
-    BondUpdated, CompositionRegistered, CompositionLeafPayout,
+    BondUpdated, CompositionRegistered, CompositionLeafPayout, CrossChainRepUpdated,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -241,6 +251,10 @@ pub struct AgentSkillRegistry {
     /// Composite skills (T2.1). Empty entry = primitive skill; present entry = composite.
     /// Lookup is keyed by the wrapper's `skill_id` (same id space as `skills`).
     compositions: Mapping<u64, Composition>,
+    /// Cross-chain reputation (P0.1). Admin-gated bridge from Soroban verifier attestations.
+    cross_chain_rep: Mapping<Address, u32>,
+    /// Contract owner (set at init, used for admin-gated cross-chain rep updates).
+    owner: Var<Address>,
 }
 
 #[odra::module]
@@ -251,6 +265,7 @@ impl AgentSkillRegistry {
             self.env().revert(Error::BadReviewWindow);
         }
         self.review_window.set(review_window_ms);
+        self.owner.set(self.env().caller());
     }
 
     // ── Skill lifecycle ────────────────────────────────────────────────────
@@ -674,6 +689,34 @@ impl AgentSkillRegistry {
             bonded_amount: U512::zero(),
             seed_eligible: U512::zero(),
         });
+    }
+
+    // ── Cross-chain reputation consumer (P0.1) ──────────────────────────────
+    //
+    // Odra cannot verify Soroban Groth16 proofs directly. Instead, the contract owner
+    // (trusted bridge) attests cross-chain reputation based on verified Soroban credentials.
+    // This mirrors the Soroban `admin_set_cross_chain_rep` pattern.
+
+    /// Set an agent's cross-chain reputation. Owner-only (trusted bridge from Soroban).
+    pub fn set_cross_chain_rep(&mut self, agent: Address, score: u32, source_chain: String) {
+        let owner = self.owner.get_or_default();
+        if owner != self.env().caller() {
+            self.env().revert(Error::NotContractOwner);
+        }
+        if score > MAX_REPUTATION {
+            self.env().revert(Error::BadThreshold);
+        }
+        self.cross_chain_rep.set(&agent, score);
+        self.env().emit_event(CrossChainRepUpdated {
+            agent,
+            score,
+            source_chain,
+        });
+    }
+
+    /// Query cross-chain reputation for an agent. Returns 0 if no attestation exists.
+    pub fn get_cross_chain_rep(&self, agent: Address) -> u32 {
+        self.cross_chain_rep.get(&agent).unwrap_or(0)
     }
 
     // ── Views ──────────────────────────────────────────────────────────────
