@@ -175,6 +175,41 @@ describe("OdraRegistry — composite settlement", () => {
   });
 });
 
+describe("OdraRegistry — pull-payment + Tier-2 bond parity (agent_skill_registry.rs:589-624)", () => {
+  let reg: OdraRegistry;
+  beforeEach(() => {
+    reg = new OdraRegistry();
+  });
+
+  it("withdraw drains the pending ledger and zeroes it (CEI)", () => {
+    const a = leaf(reg, ALPHA, "a");
+    const job = reg.create_job(a, REQ, "t", 100_000n);
+    reg.deliver_result(job, ALPHA, "r");
+    reg.confirm_completion(job, REQ);
+    expect(reg.pending_withdrawals_of(ALPHA)).toBe(100_000n);
+    expect(reg.withdraw(ALPHA)).toBe(100_000n);
+    expect(reg.pending_withdrawals_of(ALPHA)).toBe(0n);
+  });
+
+  it("withdraw on an empty ledger throws NothingToWithdraw (matches Error::NothingToWithdraw)", () => {
+    expect(() => reg.withdraw(ALPHA)).toThrow(new CompositionError("NothingToWithdraw"));
+  });
+
+  it("deposit_bond accumulates the bonded amount per agent", () => {
+    reg.deposit_bond(ALPHA, 1_000_000_000n);
+    reg.deposit_bond(ALPHA, 500_000_000n);
+    reg.deposit_bond(BETA, 250_000_000n);
+    expect(reg.bonded_of(ALPHA)).toBe(1_500_000_000n);
+    expect(reg.bonded_of(BETA)).toBe(250_000_000n);
+    expect(reg.bonded_of(GAMMA)).toBe(0n);
+  });
+
+  it("deposit_bond rejects zero / negative attached value (matches Error::NoBond)", () => {
+    expect(() => reg.deposit_bond(ALPHA, 0n)).toThrow(new CompositionError("NoBond"));
+    expect(() => reg.deposit_bond(ALPHA, -1n)).toThrow(new CompositionError("NoBond"));
+  });
+});
+
 describe("composition MCP tool surface (discoverable + invocable)", () => {
   let reg: OdraRegistry;
   let tools: McpTool[];

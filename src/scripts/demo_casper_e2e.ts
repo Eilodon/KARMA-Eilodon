@@ -27,90 +27,7 @@ import {
   casperAccountHash,
   casperPublicKeyHex,
 } from "../lib/casper/keypair.js";
-
-// ── State-machine model of the Odra registry (subset exercised in this demo) ─────────────
-interface SkillRow {
-  owner: string;
-  name: string;
-  price: bigint;
-  rep: number;
-  invocations: number;
-  identityPolicy: number;
-}
-interface JobRow {
-  requester: string;
-  provider: string;
-  skill_id: number;
-  task_hash: string;
-  escrow: bigint;
-  status: "Open" | "Delivered" | "Completed" | "Refunded" | "Disputed";
-  result_hash: string | null;
-}
-class OdraStateMachine {
-  skills = new Map<number, SkillRow>();
-  jobs = new Map<number, JobRow>();
-  pendingWithdrawals = new Map<string, bigint>();
-  bonded = new Map<string, bigint>();
-  private nextSkillId = 0;
-  private nextJobId = 0;
-
-  register_skill(owner: string, row: Omit<SkillRow, "owner" | "rep" | "invocations">): number {
-    this.nextSkillId += 1;
-    this.skills.set(this.nextSkillId, { ...row, owner, rep: 50, invocations: 0 });
-    return this.nextSkillId;
-  }
-  deposit_bond(agent: string, amount: bigint): void {
-    this.bonded.set(agent, (this.bonded.get(agent) ?? 0n) + amount);
-  }
-  create_job(skillId: number, requester: string, taskHash: string, escrow: bigint): number {
-    const skill = this.skills.get(skillId);
-    if (!skill) throw new Error("skill not found");
-    if (escrow !== skill.price) throw new Error("escrow != price");
-    this.nextJobId += 1;
-    this.jobs.set(this.nextJobId, {
-      requester,
-      provider: skill.owner,
-      skill_id: skillId,
-      task_hash: taskHash,
-      escrow,
-      status: "Open",
-      result_hash: null,
-    });
-    return this.nextJobId;
-  }
-  deliver_result(jobId: number, provider: string, resultHash: string): void {
-    const job = this.jobs.get(jobId);
-    if (!job) throw new Error("job not found");
-    if (job.provider !== provider) throw new Error("not provider");
-    if (job.status !== "Open") throw new Error("job not open");
-    job.status = "Delivered";
-    job.result_hash = resultHash;
-  }
-  confirm_completion(jobId: number, requester: string): void {
-    const job = this.jobs.get(jobId);
-    if (!job || job.requester !== requester || job.status !== "Delivered") {
-      throw new Error("confirm_completion guard failed");
-    }
-    job.status = "Completed";
-    this.pendingWithdrawals.set(
-      job.provider,
-      (this.pendingWithdrawals.get(job.provider) ?? 0n) + job.escrow,
-    );
-    // Skill + agent reputation bumps (arm's-length; self-deal would no-op — see Odra tests).
-    if (job.requester !== job.provider) {
-      const skill = this.skills.get(job.skill_id);
-      if (skill) {
-        skill.invocations += 1;
-        skill.rep = Math.min(100, skill.rep + 5);
-      }
-    }
-  }
-  withdraw(agent: string): bigint {
-    const amt = this.pendingWithdrawals.get(agent) ?? 0n;
-    this.pendingWithdrawals.set(agent, 0n);
-    return amt;
-  }
-}
+import { OdraRegistry } from "../lib/casper/odra_registry.js";
 
 // ── Pretty-printing ──────────────────────────────────────────────────────────────────────
 function box(label: string, lines: string[]): void {
@@ -136,7 +53,7 @@ async function main(): Promise<void> {
   const requesterKp = deriveCasperPrivateKey(new Uint8Array(32).fill(0x22));
   const provider = casperAccountHash(providerKp);
   const requester = casperAccountHash(requesterKp);
-  const odra = new OdraStateMachine();
+  const odra = new OdraRegistry();
 
   // ── Step 1 — provider registers `rwa_price_oracle` ──
   const PRICE = 10_000_000n; // 0.01 CSPR in motes
@@ -145,12 +62,14 @@ async function main(): Promise<void> {
     price: PRICE,
     identityPolicy: 0,
   });
+  const registeredSkill = odra.get_skill(skillId);
   box("Step 1 — register_skill (Odra deploy)", [
     "entry_point        = register_skill",
     `owner              = ${short(provider)}`,
     "name               = rwa_price_oracle",
     "price_per_call     = 10000000 motes (0.01 CSPR)",
     `skill_id (assigned)= ${skillId}`,
+    `starting reputation= ${registeredSkill.rep}/100`,
   ]);
 
   // ── Step 2 — provider deposits a Tier-2 Sybil bond (PD-007) ──
@@ -159,14 +78,14 @@ async function main(): Promise<void> {
   box("Step 2 — deposit_bond (Odra deploy, payable 1 CSPR)", [
     "entry_point        = deposit_bond",
     "attached_value     = 1000000000 motes (1 CSPR)",
-    `bonded_amount      = ${odra.bonded.get(provider)} motes`,
+    `bonded_amount      = ${odra.bonded_of(provider)} motes`,
     "seed_eligible      = same (active bond seeds flow_reputation)",
   ]);
 
   // ── Step 3 — requester discovers via KARMA MCP ──
   box("Step 3 — KARMA MCP discover_skills", [
     'query                = "real world asset price oracle"',
-    `hit                  = skill ${skillId} (rep ${odra.skills.get(skillId)!.rep}/100)`,
+    `hit                  = skill ${skillId} (rep ${odra.get_skill(skillId).rep}/100)`,
     "payment_options[0]   = { rail: x402, network: casper:mainnet, asset: CSPR }",
     "payment_options[1]   = { rail: escrow, network: casper:mainnet, asset: CSPR }",
   ]);
@@ -235,13 +154,14 @@ async function main(): Promise<void> {
   const verifiedOK = cryptoVerify("sha256", new TextEncoder().encode(feedCanonical), providerPub, feedSigDER);
   if (!verifiedOK) throw new Error("provider signature did not verify under their public key");
   odra.confirm_completion(jobId, requester);
+  const completedSkill = odra.get_skill(skillId);
   box("Step 7 — requester verifies + confirm_completion (Odra deploy)", [
     "provider_sig verify = TRUE (secp256k1/SHA-256/DER under provider pubkey)",
     "entry_point         = confirm_completion",
     "status              = Delivered → Completed",
-    `pending[provider]   = ${odra.pendingWithdrawals.get(provider)} motes (escrow credited)`,
-    `skill ${skillId} rep         = ${odra.skills.get(skillId)!.rep} (+5 from arm's-length completion)`,
-    `skill ${skillId} invocations = ${odra.skills.get(skillId)!.invocations}`,
+    `pending[provider]   = ${odra.pending_withdrawals_of(provider)} motes (escrow credited)`,
+    `skill ${skillId} rep         = ${completedSkill.rep} (+5 from arm's-length completion)`,
+    `skill ${skillId} invocations = ${completedSkill.invocations}`,
   ]);
 
   // ── Step 8 — provider withdraws CSPR ──
@@ -249,7 +169,7 @@ async function main(): Promise<void> {
   box("Step 8 — withdraw (Odra deploy, CEI pull-payment)", [
     "entry_point         = withdraw",
     `transfer_tokens     = ${paid} motes → provider`,
-    `pending[provider]   = 0 (zeroed before transfer — CEI)`,
+    `pending[provider]   = ${odra.pending_withdrawals_of(provider)} (zeroed before transfer — CEI)`,
   ]);
 
   console.log("\n┌── End-to-end summary ─────────────────────────────────────────────────────");

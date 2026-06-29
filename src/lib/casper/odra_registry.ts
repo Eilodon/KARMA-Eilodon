@@ -16,7 +16,7 @@ export const BASE_REPUTATION = 50;
 export const REPUTATION_STEP = 5;
 export const MAX_REPUTATION = 100;
 
-/** Mirrors the Odra `Error` enum variants used by the composition path. */
+/** Mirrors the Odra `Error` enum variants used by the composition + lifecycle paths. */
 export type CompositionErrorCode =
   | "EmptyComposition"
   | "TooManyLeaves"
@@ -32,7 +32,9 @@ export type CompositionErrorCode =
   | "NotProvider"
   | "NotRequester"
   | "JobNotOpen"
-  | "JobNotDelivered";
+  | "JobNotDelivered"
+  | "NoBond"
+  | "NothingToWithdraw";
 
 export class CompositionError extends Error {
   readonly code: CompositionErrorCode;
@@ -82,6 +84,10 @@ export class OdraRegistry {
   private readonly jobs = new Map<number, JobRow>();
   private readonly pendingWithdrawals = new Map<string, bigint>();
   private readonly agentRep = new Map<string, number>();
+  // Tier-2 Sybil bond (PD-007). Bond-unlock cooldown is omitted from this JS twin — no
+  // current consumer drives `request_bond_unlock` / `withdraw_bond`, so the active-bond view
+  // (`bonded_of`) is all the demo / flow_reputation seed path needs.
+  private readonly bondedAmount = new Map<string, bigint>();
   private nextSkillId = 0;
   private nextJobId = 0;
 
@@ -206,6 +212,29 @@ export class OdraRegistry {
 
   agent_reputation(agent: string): number {
     return this.agentRep.get(agent) ?? BASE_REPUTATION;
+  }
+
+  // ── Pull-payment + Tier-2 bond (mirror of agent_skill_registry.rs:589-624) ─
+  /**
+   * CEI parity: zero the ledger BEFORE returning the credit, matching the audited Solidity /
+   * Odra `withdraw` (`pending_withdrawals.set(caller, 0)` then `transfer_tokens(caller, amount)`).
+   * Throws `NothingToWithdraw` to mirror `Error::NothingToWithdraw`.
+   */
+  withdraw(agent: string): bigint {
+    const amount = this.pendingWithdrawals.get(agent) ?? 0n;
+    if (amount === 0n) throw new CompositionError("NothingToWithdraw");
+    this.pendingWithdrawals.set(agent, 0n);
+    return amount;
+  }
+
+  /** Mirrors the `#[odra(payable)] deposit_bond` entry-point. Reverts `NoBond` on zero. */
+  deposit_bond(agent: string, amount: bigint): void {
+    if (amount <= 0n) throw new CompositionError("NoBond");
+    this.bondedAmount.set(agent, (this.bondedAmount.get(agent) ?? 0n) + amount);
+  }
+
+  bonded_of(agent: string): bigint {
+    return this.bondedAmount.get(agent) ?? 0n;
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
