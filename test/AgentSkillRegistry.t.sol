@@ -67,7 +67,7 @@ contract AgentSkillRegistryTest is Test {
     function test_CreateJob_RequiresExactEscrow() public {
         uint256 skillId = _registerSkill();
         vm.prank(beta);
-        vm.expectRevert(bytes("escrow must equal price"));
+        vm.expectRevert(bytes("escrow must equal price + evaluator fee"));
         reg.createJob{value: PRICE - 1}(skillId, TASK_HASH, DEADLINE_SECS);
     }
 
@@ -492,6 +492,378 @@ contract AgentSkillRegistryTest is Test {
         vm.prank(beta);
         vm.expectRevert(bytes("no bond"));
         reg.requestBondUnlock();
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // ── P0-A: Evaluator Agent ─────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+
+    address internal evaluator = address(0xE3); // neutral evaluator
+    uint256 internal constant EVAL_FEE = 0.1 ether;
+
+    event JobEvaluated(uint256 indexed jobId, address indexed evaluator, bool approved, uint256 evaluatorPayout);
+    event ResultDisputed(uint256 indexed jobId, address indexed requester, uint256 amount);
+    event JobCompleted(uint256 indexed jobId, address indexed provider, uint256 payout, uint256 newReputation);
+
+    function _openJobWithEvaluator(uint256 skillId) internal returns (uint256 jobId) {
+        vm.prank(beta);
+        jobId = reg.createJobWithEvaluator{value: PRICE + EVAL_FEE}(
+            skillId, keccak256("eval-task"), DEADLINE_SECS, evaluator, EVAL_FEE
+        );
+    }
+
+    // ── createJobWithEvaluator: happy path ────────────────────────
+    function test_Evaluator_CreateJobWithEvaluator_HappyPath() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        (address ev, uint256 fee) = reg.getJobEvaluator(jobId);
+        assertEq(ev, evaluator, "evaluator stored");
+        assertEq(fee, EVAL_FEE, "evaluator fee stored");
+        assertEq(address(reg).balance, PRICE + EVAL_FEE, "full escrow held");
+    }
+
+    // ── createJobWithEvaluator: guards ────────────────────────────
+    function test_Evaluator_CreateJob_EvaluatorCannotBeZero() public {
+        uint256 skillId = _registerSkill();
+        vm.prank(beta);
+        vm.expectRevert(bytes("evaluator required"));
+        reg.createJobWithEvaluator{value: PRICE + EVAL_FEE}(
+            skillId, keccak256("z"), DEADLINE_SECS, address(0), EVAL_FEE
+        );
+    }
+
+    function test_Evaluator_CreateJob_EvaluatorCannotBeRequester() public {
+        uint256 skillId = _registerSkill();
+        vm.prank(beta);
+        vm.expectRevert(bytes("evaluator cannot be requester"));
+        reg.createJobWithEvaluator{value: PRICE + EVAL_FEE}(
+            skillId, keccak256("r"), DEADLINE_SECS, beta, EVAL_FEE
+        );
+    }
+
+    function test_Evaluator_CreateJob_EvaluatorCannotBeProvider() public {
+        uint256 skillId = _registerSkill();
+        vm.prank(beta);
+        vm.expectRevert(bytes("evaluator cannot be provider"));
+        reg.createJobWithEvaluator{value: PRICE + EVAL_FEE}(
+            skillId, keccak256("p"), DEADLINE_SECS, alpha, EVAL_FEE
+        );
+    }
+
+    function test_Evaluator_CreateJob_WrongEscrowAmount() public {
+        uint256 skillId = _registerSkill();
+        vm.prank(beta);
+        vm.expectRevert(bytes("escrow must equal price + evaluator fee"));
+        reg.createJobWithEvaluator{value: PRICE}(
+            skillId, keccak256("w"), DEADLINE_SECS, evaluator, EVAL_FEE
+        );
+    }
+
+    // ── evaluateResult: approved (happy path) ─────────────────────
+    function test_Evaluator_Approved_SettlesLikeConfirm() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, true);
+
+        // Provider gets escrow
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "provider gets escrow");
+        // Evaluator gets fee
+        assertEq(reg.pendingWithdrawals(evaluator), EVAL_FEE, "evaluator gets fee");
+        // Requester gets nothing
+        assertEq(reg.pendingWithdrawals(beta), 0, "requester gets nothing on approve");
+
+        // Reputation bumped (arm's-length)
+        assertEq(reg.agentReputation(alpha), 55, "provider rep bumped");
+        assertEq(reg.agentReputation(beta), 55, "requester rep bumped");
+    }
+
+    // ── evaluateResult: rejected ──────────────────────────────────
+    function test_Evaluator_Rejected_SettlesLikeDispute() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, false);
+
+        // Requester gets escrow back
+        assertEq(reg.pendingWithdrawals(beta), PRICE, "requester gets escrow refund on reject");
+        // Evaluator still gets fee (they did the work)
+        assertEq(reg.pendingWithdrawals(evaluator), EVAL_FEE, "evaluator gets fee regardless");
+        // Provider gets nothing
+        assertEq(reg.pendingWithdrawals(alpha), 0, "provider gets nothing on reject");
+
+        // No reputation bump on dispute
+        assertEq(reg.agentReputation(alpha), 50, "no rep for provider on reject");
+        assertEq(reg.agentReputation(beta), 50, "no rep for requester on reject");
+    }
+
+    // ── evaluateResult: guards ────────────────────────────────────
+    function test_Evaluator_OnlyEvaluatorCanCall() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(beta); // requester, not evaluator
+        vm.expectRevert(bytes("not evaluator"));
+        reg.evaluateResult(jobId, true);
+
+        vm.prank(alpha); // provider, not evaluator
+        vm.expectRevert(bytes("not evaluator"));
+        reg.evaluateResult(jobId, true);
+    }
+
+    function test_Evaluator_RequiresDeliveredStatus() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        // Still Open (not Delivered yet)
+        vm.prank(evaluator);
+        vm.expectRevert(bytes("job not delivered"));
+        reg.evaluateResult(jobId, true);
+    }
+
+    function test_Evaluator_RevertsAfterReviewWindow() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.warp(block.timestamp + reg.REVIEW_WINDOW() + 1);
+
+        vm.prank(evaluator);
+        vm.expectRevert(bytes("review window closed"));
+        reg.evaluateResult(jobId, true);
+    }
+
+    // ── evaluateResult: events ────────────────────────────────────
+    function test_Evaluator_EmitsJobEvaluatedOnApprove() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.expectEmit(true, true, false, true);
+        emit JobEvaluated(jobId, evaluator, true, EVAL_FEE);
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, true);
+    }
+
+    function test_Evaluator_EmitsJobEvaluatedAndDisputedOnReject() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.expectEmit(true, true, false, true);
+        emit JobEvaluated(jobId, evaluator, false, EVAL_FEE);
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, false);
+    }
+
+    // ── Fee routing: confirmCompletion returns evaluator fee ───────
+    function test_Evaluator_ConfirmCompletion_RefundsEvalFee() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        // Requester acts directly — evaluator didn't evaluate
+        vm.prank(beta);
+        reg.confirmCompletion(jobId);
+
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "provider gets escrow");
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE, "requester gets eval fee refund");
+        assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (didn't act)");
+    }
+
+    // ── Fee routing: claimAfterReview returns evaluator fee ────────
+    function test_Evaluator_ClaimAfterReview_RefundsEvalFee() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.warp(block.timestamp + reg.REVIEW_WINDOW() + 1);
+        vm.prank(alpha);
+        reg.claimAfterReview(jobId);
+
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "provider gets escrow");
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE, "requester gets eval fee refund");
+        assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (didn't act)");
+    }
+
+    // ── Fee routing: disputeResult returns escrow + eval fee ──────
+    function test_Evaluator_DisputeResult_RefundsEscrowAndEvalFee() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(beta);
+        reg.disputeResult(jobId);
+
+        assertEq(reg.pendingWithdrawals(beta), PRICE + EVAL_FEE, "requester gets escrow + eval fee");
+        assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (didn't act)");
+    }
+
+    // ── Fee routing: claimRefund returns escrow + eval fee ─────────
+    function test_Evaluator_ClaimRefund_RefundsEscrowAndEvalFee() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        vm.warp(block.timestamp + DEADLINE_SECS + 1);
+        vm.prank(beta);
+        reg.claimRefund(jobId);
+
+        assertEq(reg.pendingWithdrawals(beta), PRICE + EVAL_FEE, "requester gets full refund");
+        assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (never delivered)");
+    }
+
+    // ── Backward compat: createJob still works with zero evaluator ──
+    function test_Evaluator_CreateJobLegacy_ZeroEvaluator() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId); // uses createJob (no evaluator)
+
+        (address ev, uint256 fee) = reg.getJobEvaluator(jobId);
+        assertEq(ev, address(0), "no evaluator on legacy job");
+        assertEq(fee, 0, "no evaluator fee on legacy job");
+
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+        vm.prank(beta);
+        reg.confirmCompletion(jobId);
+
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "legacy flow still works");
+    }
+
+    // ── Evaluator cannot evaluate a legacy job (no evaluator set) ──
+    function test_Evaluator_CannotEvaluateLegacyJob() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(evaluator);
+        vm.expectRevert(bytes("not evaluator"));
+        reg.evaluateResult(jobId, true);
+    }
+
+    // ── Double-evaluation guard ───────────────────────────────────
+    function test_Evaluator_CannotEvaluateTwice() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, true); // first evaluation settles
+
+        vm.prank(evaluator);
+        vm.expectRevert(bytes("job not delivered")); // status is now Completed
+        reg.evaluateResult(jobId, true);
+    }
+
+    // ── Zero evaluator fee: evaluator works for free ──────────────
+    function test_Evaluator_ZeroFee_StillWorks() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+
+        vm.prank(beta);
+        uint256 jobId = reg.createJobWithEvaluator{value: PRICE}(
+            skillId, keccak256("free-eval"), DEADLINE_SECS, evaluator, 0
+        );
+
+        (address ev, uint256 fee) = reg.getJobEvaluator(jobId);
+        assertEq(ev, evaluator, "evaluator set even with zero fee");
+        assertEq(fee, 0, "zero fee stored");
+
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, true);
+
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "provider gets escrow");
+        assertEq(reg.pendingWithdrawals(evaluator), 0, "zero fee = no payout");
+    }
+
+    // ── Requester can still confirm even when evaluator is set ────
+    function test_Evaluator_RequesterCanStillConfirm() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        // Requester confirms directly, bypassing evaluator
+        vm.prank(beta);
+        reg.confirmCompletion(jobId);
+
+        assertEq(reg.pendingWithdrawals(alpha), PRICE, "provider paid");
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE, "eval fee refunded to requester");
+    }
+
+    // ── Requester can still dispute even when evaluator is set ────
+    function test_Evaluator_RequesterCanStillDispute() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(beta);
+        reg.disputeResult(jobId);
+
+        assertEq(reg.pendingWithdrawals(beta), PRICE + EVAL_FEE, "requester gets full refund on dispute");
+    }
+
+    // ── Full withdrawal flow with evaluator ───────────────────────
+    function test_Evaluator_FullWithdrawalFlow() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, true);
+
+        // Provider withdraws escrow
+        uint256 alphaBefore = alpha.balance;
+        vm.prank(alpha);
+        reg.withdraw();
+        assertEq(alpha.balance, alphaBefore + PRICE, "provider withdrew escrow");
+
+        // Evaluator withdraws fee
+        uint256 evalBefore = evaluator.balance;
+        vm.prank(evaluator);
+        reg.withdraw();
+        assertEq(evaluator.balance, evalBefore + EVAL_FEE, "evaluator withdrew fee");
+
+        // Registry fully settled
+        assertEq(address(reg).balance, 0, "registry fully settled");
     }
 }
 

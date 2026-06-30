@@ -135,9 +135,11 @@ async function handleFullFormat(address: Address, svc: KarmaService): Promise<So
   const jobs = await readJobsChunked(uniqueIds, svc, 100);
   const jobById = new Map(uniqueIds.map((id, i) => [id, jobs[i]] as const));
 
+  const zeroAddr = "0x0000000000000000000000000000000000000000";
   const toDetail = (id: bigint, counterpart: "requester" | "provider"): JobDetail => {
     const j = jobById.get(String(id));
     if (!j) throw new Error(`[KARMA] job #${id} missing from hydration batch`);
+    const hasEval = j.evaluator.toLowerCase() !== zeroAddr;
     return {
       job_id: String(id),
       counterpart: counterpart === "requester" ? j.requester : j.provider,
@@ -147,6 +149,8 @@ async function handleFullFormat(address: Address, svc: KarmaService): Promise<So
       status: STATUS_MAP[j.status] ?? "Open",
       result_hash: j.resultHash.toLowerCase() === ZERO_HASH ? null : j.resultHash,
       created_at: Number(j.createdAt),
+      evaluator: hasEval ? j.evaluator : null,
+      evaluator_fee_phrs: hasEval ? weiToPhrs6(j.evaluatorFee) : null,
     };
   };
 
@@ -356,6 +360,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         price: z.string().min(1).optional().describe("Decimal or smallest-unit amount string. Falls back to skill.pricePerCall when omitted."),
         asset: z.string().optional().describe("Optional asset override (defaults: USDC on Stellar, CSPR on Casper)."),
       }).optional().describe('Required when settlement_rail="x402". Carries the chain-specific routing the plugin needs.'),
+      evaluator: z.string().optional().describe("P0-A: address of a neutral third-party evaluator agent. Must not be requester or provider. Omit for a standard (no-evaluator) job."),
+      evaluatorFeeWei: WEI.optional().describe("P0-A: fee (wei) held for the evaluator, paid only if they evaluate. msg.value = pricePerCall + evaluatorFee."),
     },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -375,6 +381,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
           price: z.string().min(1).optional(),
           asset: z.string().optional(),
         }).optional(),
+        evaluator: z.string().optional(),
+        evaluatorFeeWei: WEI.optional(),
       }).parse(args);
       const { tenantId } = getRequestContext();
       const account = svc.account(a.agentId, tenantId);
@@ -527,12 +535,28 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       const identityReject = enforceIdentityGate();
       if (identityReject) return identityReject;
 
-      const { jobId, outcome } = await svc.createJob(account, {
-        skillId,
-        taskHash,
-        deadlineSecs: BigInt(a.deadlineSecs ?? 86_400),
-        value: skill.pricePerCall,
-      });
+      const evaluatorFee = a.evaluatorFeeWei ? BigInt(a.evaluatorFeeWei) : 0n;
+      const totalValue = skill.pricePerCall + evaluatorFee;
+
+      let jobId: bigint | null;
+      let outcome;
+      if (a.evaluator) {
+        ({ jobId, outcome } = await svc.createJobWithEvaluator(account, {
+          skillId,
+          taskHash,
+          deadlineSecs: BigInt(a.deadlineSecs ?? 86_400),
+          evaluator: a.evaluator as Address,
+          evaluatorFee,
+          value: totalValue,
+        }));
+      } else {
+        ({ jobId, outcome } = await svc.createJob(account, {
+          skillId,
+          taskHash,
+          deadlineSecs: BigInt(a.deadlineSecs ?? 86_400),
+          value: totalValue,
+        }));
+      }
       if (outcome.status === "pending" || jobId == null) {
         return reply(`[KARMA] create_job broadcast; receipt pending tx=${outcome.hash}`, {
           status: "pending",
@@ -543,6 +567,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         status: "confirmed",
         jobId,
         escrowWei: skill.pricePerCall,
+        evaluator: a.evaluator ?? null,
+        evaluatorFeeWei: evaluatorFee,
         txHash: outcome.hash,
       });
     },
@@ -657,6 +683,39 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         jobId: a.jobId,
         txHash: outcome.hash,
       });
+    },
+  };
+
+  const evaluateResult: ToolDefinition = {
+    name: "evaluate_result",
+    description:
+      "P0-A: Neutral evaluator approves or rejects a delivered job result. Only callable by the " +
+      "job's designated evaluator within the review window. approved=true settles like confirmCompletion " +
+      "(provider gets escrow); approved=false settles like disputeResult (requester gets escrow refund). " +
+      "The evaluator fee is released to the evaluator regardless of verdict.",
+    inputSchema: {
+      agentId: z.string().describe("Keystore agent id of the evaluator."),
+      jobId: WEI,
+      approved: z.boolean().describe("true = approve (provider gets escrow), false = reject (requester gets refund)."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string(), jobId: WEI, approved: z.boolean() }).parse(args);
+      const { tenantId } = getRequestContext();
+      const account = svc.account(a.agentId, tenantId);
+      const jobId = BigInt(a.jobId);
+      const targetStatus = a.approved ? JOB_STATUS.Completed : JOB_STATUS.Disputed;
+      const pre = await precheckLifecycle(svc, jobId, "evaluate_result", JOB_STATUS.Delivered, targetStatus);
+      if (pre) return pre;
+      const outcome = await svc.evaluateResult(account, { jobId, approved: a.approved });
+      return reply(
+        `[KARMA] evaluate_result job #${a.jobId} ${a.approved ? "approved" : "rejected"} ${outcome.status} tx=${outcome.hash}`,
+        { status: outcome.status, jobId: a.jobId, approved: a.approved, txHash: outcome.hash },
+      );
     },
   };
 
@@ -815,6 +874,8 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       const jobId = BigInt(a.jobId);
       const j = await svc.readJob(jobId);
       const statusLabel = STATUS_MAP[j.status] ?? `Unknown(${j.status})`;
+      const zeroAddr = "0x0000000000000000000000000000000000000000";
+      const hasEvaluator = j.evaluator.toLowerCase() !== zeroAddr;
       return reply(`[KARMA] job #${jobId}: ${statusLabel} escrow=${weiToPhrs6(j.escrowAmount)} PHRS`, {
         jobId,
         requester: j.requester,
@@ -828,6 +889,9 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
         resultHash: j.resultHash.toLowerCase() === ZERO_HASH ? null : j.resultHash,
         createdAt: Number(j.createdAt),
         completedAt: Number(j.completedAt),
+        evaluator: hasEvaluator ? j.evaluator : null,
+        evaluatorFeeWei: hasEvaluator ? j.evaluatorFee : null,
+        evaluatorFeePHRS: hasEvaluator ? weiToPhrs6(j.evaluatorFee) : null,
       });
     },
   };
@@ -840,6 +904,7 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
     completeJob,
     disputeResult,
     claimAfterReview,
+    evaluateResult,
     readJob,
     getAgentReputation,
     querySocialGraph,

@@ -1027,3 +1027,491 @@ fn composition_settle_self_deal_leaf_paid_but_no_reputation() {
     assert_eq!(reg.agent_reputation(requester), BASE_REPUTATION + REPUTATION_STEP, "requester one composite-layer bump");
     assert_eq!(reg.agent_reputation(arms), BASE_REPUTATION + REPUTATION_STEP, "arm's-length leaf owner bumped");
 }
+
+// ─── P0-A: Evaluator Agent ──────────────────────────────────────────────────
+//
+// Mirrors the 23 Foundry evaluator tests from `test/AgentSkillRegistry.t.sol`.
+// The evaluator is a neutral third party that can approve or reject a delivered
+// result. Fee routing: evaluator gets paid regardless of verdict; escrow goes
+// to provider on approval, requester on rejection.
+
+const EVAL_FEE: u64 = 100_000; // motes — evaluator's fee
+
+fn open_job_with_evaluator(
+    env: &HostEnv,
+    contract: &mut AgentSkillRegistryHostRef,
+    requester: Address,
+    skill_id: u64,
+    evaluator: Address,
+    label: &str,
+) -> u64 {
+    env.set_caller(requester);
+    contract
+        .with_tokens(U512::from(PRICE + EVAL_FEE))
+        .create_job_with_evaluator(
+            skill_id,
+            task_hash(label),
+            DEADLINE_MS,
+            evaluator,
+            U512::from(EVAL_FEE),
+        )
+}
+
+#[test]
+fn evaluator_create_job_with_evaluator_happy_path() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "eval-t1");
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.evaluator, Some(evaluator));
+    assert_eq!(j.evaluator_fee, U512::from(EVAL_FEE));
+    assert_eq!(j.escrow_amount, U512::from(PRICE));
+}
+
+#[test]
+fn evaluator_rejects_zero_address_not_applicable() {
+    // Odra uses Option<Address> — None is the "no evaluator" case, handled by create_job.
+    // This test ensures backward compat: create_job sets evaluator=None, fee=0.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "no-eval");
+    let j = reg.get_job(job_id);
+    assert_eq!(j.evaluator, None);
+    assert_eq!(j.evaluator_fee, U512::zero());
+}
+
+#[test]
+fn evaluator_rejects_evaluator_is_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE + EVAL_FEE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("self-eval"),
+                DEADLINE_MS,
+                beta, // evaluator == requester
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EvaluatorCannotBeRequester.into())
+    );
+}
+
+#[test]
+fn evaluator_rejects_evaluator_is_provider() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE + EVAL_FEE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("provider-eval"),
+                DEADLINE_MS,
+                alpha, // evaluator == provider (skill owner)
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EvaluatorCannotBeProvider.into())
+    );
+}
+
+#[test]
+fn evaluator_escrow_must_include_fee() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    // Send only PRICE, not PRICE + EVAL_FEE
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("short"),
+                DEADLINE_MS,
+                evaluator,
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EscrowMustEqualPrice.into())
+    );
+}
+
+#[test]
+fn evaluator_approve_pays_provider_and_evaluator() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "approve-1");
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("result"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Provider gets escrow via pull-payment
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Evaluator gets fee
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+    // Requester gets nothing
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Completed);
+}
+
+#[test]
+fn evaluator_reject_refunds_requester_and_pays_evaluator() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "reject-1");
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("result"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    // Requester gets escrow back
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE));
+    // Evaluator gets fee regardless
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+    // Provider gets nothing
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+}
+
+#[test]
+fn evaluator_approve_emits_job_evaluated_event() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "event-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    assert!(env.emitted_event(
+        &reg,
+        JobEvaluated {
+            job_id,
+            evaluator,
+            approved: true,
+            evaluator_payout: U512::from(EVAL_FEE),
+        }
+    ));
+}
+
+#[test]
+fn evaluator_reject_emits_job_evaluated_and_result_disputed() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "event-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    assert!(env.emitted_event(
+        &reg,
+        JobEvaluated {
+            job_id,
+            evaluator,
+            approved: false,
+            evaluator_payout: U512::from(EVAL_FEE),
+        }
+    ));
+    assert!(env.emitted_event(
+        &reg,
+        ResultDisputed {
+            job_id,
+            requester: beta,
+            amount: U512::from(PRICE),
+        }
+    ));
+}
+
+#[test]
+fn evaluator_not_evaluator_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let outsider = env.get_account(4);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Outsider tries to evaluate
+    env.set_caller(outsider);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_requester_cannot_evaluate() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(beta); // requester, not evaluator
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_provider_cannot_evaluate() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-3");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(alpha); // provider, not evaluator
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_double_evaluate_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "double-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Second evaluation → job is already Completed, not Delivered
+    env.set_caller(evaluator);
+    assert_eq!(reg.try_evaluate_result(job_id, false), Err(Error::JobNotDelivered.into()));
+}
+
+#[test]
+fn evaluator_after_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "late-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    env.set_caller(evaluator);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::ReviewWindowClosed.into()));
+}
+
+#[test]
+fn evaluator_on_job_without_evaluator_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let outsider = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "no-eval-job");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+// ── Fee routing for requester-override paths ──
+
+#[test]
+fn evaluator_confirm_completion_refunds_fee_to_requester() {
+    // Requester uses confirm_completion directly (bypassing evaluator) → evaluator fee refunded.
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "confirm-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(beta);
+    reg.confirm_completion(job_id);
+
+    // Provider gets escrow
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Requester gets evaluator fee refund
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+    // Evaluator gets nothing (didn't act)
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_dispute_result_refunds_escrow_and_fee_to_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "dispute-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(beta);
+    reg.dispute_result(job_id);
+
+    // Requester gets escrow + evaluator fee
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE + EVAL_FEE));
+    // Provider and evaluator get nothing
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_claim_after_review_refunds_fee_to_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "claim-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    env.set_caller(alpha);
+    reg.claim_after_review(job_id);
+
+    // Provider gets escrow
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Requester gets evaluator fee refund
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+    // Evaluator gets nothing (didn't act)
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_claim_refund_returns_escrow_and_fee() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "refund-fee-1");
+
+    env.advance_block_time(DEADLINE_MS + 1);
+    env.set_caller(beta);
+    reg.claim_refund(job_id);
+
+    // Requester gets escrow + evaluator fee
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE + EVAL_FEE));
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_approve_bumps_reputation() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "rep-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    let s = reg.get_skill(skill_id);
+    assert_eq!(s.reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(s.total_invocations, 1);
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(beta), BASE_REPUTATION + REPUTATION_STEP);
+}
+
+#[test]
+fn evaluator_reject_freezes_reputation() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "rep-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    let s = reg.get_skill(skill_id);
+    assert_eq!(s.reputation_score, BASE_REPUTATION, "rejected → no rep change");
+    assert_eq!(s.total_invocations, 0);
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION);
+    assert_eq!(reg.agent_reputation(beta), BASE_REPUTATION);
+}
+
+#[test]
+fn evaluator_zero_fee_approve_still_works() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+
+    env.set_caller(beta);
+    let job_id = reg
+        .with_tokens(U512::from(PRICE))
+        .create_job_with_evaluator(skill_id, task_hash("zero-fee"), DEADLINE_MS, evaluator, U512::zero());
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero()); // zero fee
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+}
+
+#[test]
+fn evaluator_backward_compat_create_job_still_works() {
+    // Old create_job path must still work unchanged — evaluator=None, fee=0.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "compat-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(beta);
+    reg.confirm_completion(job_id);
+
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero()); // no fee to refund
+}
+
+#[test]
+fn evaluator_get_job_evaluator_view() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "view-1");
+
+    let (ev, fee) = reg.get_job_evaluator(job_id);
+    assert_eq!(ev, Some(evaluator));
+    assert_eq!(fee, U512::from(EVAL_FEE));
+
+    // Job without evaluator
+    let job_id2 = open_job(&env, &mut reg, beta, skill_id, "view-2");
+    let (ev2, fee2) = reg.get_job_evaluator(job_id2);
+    assert_eq!(ev2, None);
+    assert_eq!(fee2, U512::zero());
+}
+
+#[test]
+fn evaluator_withdraw_flow_after_approve() {
+    // Full end-to-end: evaluator approves → both provider and evaluator withdraw
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "withdraw-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Provider withdraws escrow
+    let bal_before_alpha = env.balance_of(&alpha);
+    env.set_caller(alpha);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&alpha), bal_before_alpha + U512::from(PRICE));
+
+    // Evaluator withdraws fee
+    let bal_before_eval = env.balance_of(&evaluator);
+    env.set_caller(evaluator);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&evaluator), bal_before_eval + U512::from(EVAL_FEE));
+}

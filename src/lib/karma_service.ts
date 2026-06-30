@@ -45,6 +45,8 @@ export interface OnchainJob {
   resultHash: Hash;
   createdAt: bigint;
   completedAt: bigint;
+  evaluator: Address;
+  evaluatorFee: bigint;
 }
 
 export interface KarmaService {
@@ -64,12 +66,21 @@ export interface KarmaService {
     account: Account,
     p: { skillId: bigint; taskHash: Hash; deadlineSecs: bigint; value: bigint },
   ): Promise<{ jobId: bigint | null; outcome: WriteOutcome }>;
+  /** Create a job with a neutral third-party evaluator (P0-A). */
+  createJobWithEvaluator(
+    account: Account,
+    p: { skillId: bigint; taskHash: Hash; deadlineSecs: bigint; evaluator: Address; evaluatorFee: bigint; value: bigint },
+  ): Promise<{ jobId: bigint | null; outcome: WriteOutcome }>;
   deliverResult(account: Account, p: { jobId: bigint; resultHash: Hash }): Promise<WriteOutcome>;
   confirmCompletion(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
   /** Requester rejects a delivered result within the review window and reclaims escrow (v2). */
   disputeResult(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
   /** Provider claims payment after the review window if the requester ghosted (v2). */
   claimAfterReview(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** Evaluator approves or rejects a delivered result (P0-A). */
+  evaluateResult(account: Account, p: { jobId: bigint; approved: boolean }): Promise<WriteOutcome>;
+  /** Read the evaluator address and fee for a job (P0-A). */
+  getJobEvaluator(jobId: bigint): Promise<{ evaluator: Address; evaluatorFee: bigint }>;
   /** Owner adjusts a skill's on-chain Trust Gate threshold (v2). */
   setMinReputation(account: Account, p: { skillId: bigint; minReputation: number }): Promise<WriteOutcome>;
   /** Owner sets a skill's on-chain Identity Gate policy (P0). Declarative; server-enforced. */
@@ -169,6 +180,8 @@ export const realKarmaService: KarmaService = {
       resultHash: t[7] as Hash,
       createdAt: t[8] as bigint,
       completedAt: t[9] as bigint,
+      evaluator: t[10] as Address,
+      evaluatorFee: t[11] as bigint,
     };
   },
 
@@ -188,6 +201,15 @@ export const realKarmaService: KarmaService = {
     return { jobId: extractId(outcome, "JobCreated", "jobId"), outcome };
   },
 
+  async createJobWithEvaluator(account, p) {
+    const outcome = await writeContractBounded(account, {
+      functionName: "createJobWithEvaluator",
+      args: [p.skillId, p.taskHash, p.deadlineSecs, p.evaluator, p.evaluatorFee],
+      value: p.value,
+    });
+    return { jobId: extractId(outcome, "JobCreated", "jobId"), outcome };
+  },
+
   deliverResult: (account, p) =>
     writeContractBounded(account, { functionName: "deliverResult", args: [p.jobId, p.resultHash] }),
 
@@ -199,6 +221,14 @@ export const realKarmaService: KarmaService = {
 
   claimAfterReview: (account, p) =>
     writeContractBounded(account, { functionName: "claimAfterReview", args: [p.jobId] }),
+
+  evaluateResult: (account, p) =>
+    writeContractBounded(account, { functionName: "evaluateResult", args: [p.jobId, p.approved] }),
+
+  async getJobEvaluator(jobId) {
+    const t = await read<readonly [Address, bigint]>("getJobEvaluator", [jobId]);
+    return { evaluator: t[0], evaluatorFee: t[1] };
+  },
 
   setMinReputation: (account, p) =>
     writeContractBounded(account, { functionName: "setMinReputation", args: [p.skillId, BigInt(p.minReputation)] }),

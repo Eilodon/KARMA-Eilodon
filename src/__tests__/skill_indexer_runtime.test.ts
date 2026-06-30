@@ -40,6 +40,8 @@ const job = (over: Partial<OnchainJob> = {}): OnchainJob => ({
   resultHash: ZERO32,
   createdAt: 1n,
   completedAt: 2n,
+  evaluator: `0x${"00".repeat(20)}` as `0x${string}`,
+  evaluatorFee: 0n,
   ...over,
 });
 

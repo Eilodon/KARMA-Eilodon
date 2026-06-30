@@ -170,6 +170,7 @@ export type IndexedEvent =
   | { type: "SkillDeactivated"; blockNumber: bigint; skillId: bigint }
   | { type: "JobCompleted"; blockNumber: bigint; jobId: bigint; provider: Address; payout: bigint; newReputation: bigint }
   | { type: "ResultDisputed"; blockNumber: bigint; jobId: bigint; requester: Address; amount: bigint }
+  | { type: "JobEvaluated"; blockNumber: bigint; jobId: bigint; evaluator: Address; approved: boolean; evaluatorPayout: bigint }
   | { type: "BondUpdated"; blockNumber: bigint; agent: Address; bondedAmount: bigint; seedEligible: bigint }
   | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint };
 
@@ -360,12 +361,16 @@ export function mapLog(raw: unknown): IndexedEvent | null {
         payout: a.payout as bigint, newReputation: a.newReputation as bigint,
       };
     case "ResultDisputed":
-      // T0.1 P3-lite: feed dispute signal into the flow_reputation soft-penalty path.
-      // Event lacks provider (only requester is indexed) — indexer resolves via readJob(jobId).
       return {
         type: "ResultDisputed", blockNumber: bn,
         jobId: a.jobId as bigint, requester: a.requester as Address,
         amount: a.amount as bigint,
+      };
+    case "JobEvaluated":
+      return {
+        type: "JobEvaluated", blockNumber: bn,
+        jobId: a.jobId as bigint, evaluator: a.evaluator as Address,
+        approved: a.approved as boolean, evaluatorPayout: a.evaluatorPayout as bigint,
       };
     case "BondUpdated":
       return {

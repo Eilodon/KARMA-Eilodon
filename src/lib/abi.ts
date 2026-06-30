@@ -43,6 +43,11 @@ export const agentSkillRegistryAbi = [
   { type: "function", name: "claimAfterReview", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
   { type: "function", name: "disputeResult", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
 
+  // ── P0-A: evaluator agent ──
+  { type: "function", name: "createJobWithEvaluator", stateMutability: "payable", inputs: [{ name: "skillId", type: "uint256" }, { name: "taskHash", type: "bytes32" }, { name: "deadlineSecs", type: "uint256" }, { name: "evaluator", type: "address" }, { name: "evaluatorFee", type: "uint256" }], outputs: [{ name: "jobId", type: "uint256" }] },
+  { type: "function", name: "evaluateResult", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }, { name: "approved", type: "bool" }], outputs: [] },
+  { type: "function", name: "getJobEvaluator", stateMutability: "view", inputs: [{ name: "jobId", type: "uint256" }], outputs: [{ name: "", type: "address" }, { name: "", type: "uint256" }] },
+
   // ── views ──
   { type: "function", name: "agentReputation", stateMutability: "view", inputs: [{ name: "agent", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
   { type: "function", name: "jobByTaskHash", stateMutability: "view", inputs: [{ name: "", type: "bytes32" }], outputs: [{ name: "", type: "uint256" }] },
@@ -66,6 +71,8 @@ export const agentSkillRegistryAbi = [
       { name: "resultHash", type: "bytes32" },
       { name: "createdAt", type: "uint256" },
       { name: "completedAt", type: "uint256" },
+      { name: "evaluator", type: "address" },
+      { name: "evaluatorFee", type: "uint256" },
     ],
   },
   {
@@ -106,6 +113,7 @@ export const agentSkillRegistryAbi = [
   { type: "event", name: "JobCompleted", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "provider", type: "address", indexed: true }, { name: "payout", type: "uint256", indexed: false }, { name: "newReputation", type: "uint256", indexed: false }] },
   { type: "event", name: "JobRefunded", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "ResultDisputed", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
+  { type: "event", name: "JobEvaluated", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "evaluator", type: "address", indexed: true }, { name: "approved", type: "bool", indexed: false }, { name: "evaluatorPayout", type: "uint256", indexed: false }] },
   { type: "event", name: "MinReputationSet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "minReputation", type: "uint256", indexed: false }] },
   { type: "event", name: "IdentityPolicySet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "policy", type: "uint8", indexed: false }] },
   { type: "event", name: "Withdrawn", inputs: [{ name: "who", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },

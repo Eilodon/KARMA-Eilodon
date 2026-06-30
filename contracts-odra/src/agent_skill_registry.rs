@@ -70,6 +70,11 @@ pub enum Error {
     LeafIsComposite = 30,
     // ── Cross-chain reputation consumer (P0.1) ──
     NotContractOwner = 31,
+    // ── P0-A: Evaluator Agent ──
+    EvaluatorRequired = 32,
+    EvaluatorCannotBeRequester = 33,
+    EvaluatorCannotBeProvider = 34,
+    NotEvaluator = 35,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -114,6 +119,10 @@ pub struct Job {
     pub result_hash: Bytes,
     pub created_at: u64,
     pub completed_at: u64,
+    /// P0-A: neutral 3rd-party verifier; `None` = no evaluator (opt-in).
+    pub evaluator: Option<Address>,
+    /// P0-A: fee held for the evaluator; refunded to requester if unused.
+    pub evaluator_fee: U512,
 }
 
 // ─── Events ────────────────────────────────────────────────────────────────
@@ -192,6 +201,15 @@ pub struct BondUpdated {
     pub seed_eligible: U512,
 }
 
+// ── P0-A Evaluator event ────────────────────────────────────────────────────
+#[odra::event]
+pub struct JobEvaluated {
+    pub job_id: u64,
+    pub evaluator: Address,
+    pub approved: bool,
+    pub evaluator_payout: U512,
+}
+
 // ── Cross-chain reputation consumer events (P0.1) ───────────────────────────
 #[odra::event]
 pub struct CrossChainRepUpdated {
@@ -231,8 +249,8 @@ pub struct Composition {
 // ─── Contract ──────────────────────────────────────────────────────────────
 #[odra::module(events = [
     SkillRegistered, SkillDeactivated, JobCreated, ResultDelivered, JobCompleted,
-    JobRefunded, ResultDisputed, MinReputationSet, IdentityPolicySet, Withdrawn,
-    BondUpdated, CompositionRegistered, CompositionLeafPayout, CrossChainRepUpdated,
+    JobRefunded, ResultDisputed, JobEvaluated, MinReputationSet, IdentityPolicySet,
+    Withdrawn, BondUpdated, CompositionRegistered, CompositionLeafPayout, CrossChainRepUpdated,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -448,67 +466,28 @@ impl AgentSkillRegistry {
     }
 
     // ── Job lifecycle ──────────────────────────────────────────────────────
-    /// Payable. `deadline_secs` is a duration in **milliseconds** added to `now` to form the
-    /// absolute open-state deadline (kept the Solidity name for surface compatibility).
+    /// Payable. Backward-compatible wrapper — creates a job without an evaluator.
     #[odra(payable)]
     pub fn create_job(&mut self, skill_id: u64, task_hash: Bytes, deadline_secs: u64) -> u64 {
-        let s = self.require_skill(skill_id);
-        if !s.active {
-            self.env().revert(Error::SkillInactive);
-        }
-        let attached = self.env().attached_value();
-        if attached != s.price_per_call {
-            self.env().revert(Error::EscrowMustEqualPrice);
-        }
-        if deadline_secs == 0 {
-            self.env().revert(Error::DeadlineRequired);
-        }
+        self._create_job(skill_id, task_hash, deadline_secs, None, U512::zero())
+    }
+
+    /// Payable. Create a job with a neutral third-party evaluator (P0-A).
+    /// `attached_value` must equal `price_per_call + evaluator_fee`.
+    #[odra(payable)]
+    pub fn create_job_with_evaluator(
+        &mut self,
+        skill_id: u64,
+        task_hash: Bytes,
+        deadline_secs: u64,
+        evaluator: Address,
+        evaluator_fee: U512,
+    ) -> u64 {
         let caller = self.env().caller();
-        if self.agent_reputation(caller) < s.min_reputation_to_invoke {
-            self.env().revert(Error::InsufficientReputation);
+        if evaluator == caller {
+            self.env().revert(Error::EvaluatorCannotBeRequester);
         }
-        // Fix 5 (Solidity): durable on-chain exactly-once. A second escrow for the same task_hash
-        // would let a lost-ack retry double-escrow before the first tx finalised.
-        if self.job_by_task_hash.get(&task_hash).unwrap_or(0) != 0 {
-            self.env().revert(Error::DuplicateTaskHash);
-        }
-
-        let job_id = self.job_id_counter.get_or_default() + 1;
-        self.job_id_counter.set(job_id);
-
-        let now = self.env().get_block_time();
-        let job = Job {
-            requester: caller,
-            provider: s.owner,
-            skill_id,
-            task_hash: task_hash.clone(),
-            escrow_amount: attached,
-            deadline: now + deadline_secs,
-            status: JobStatus::Open,
-            result_hash: Bytes::new(),
-            created_at: now,
-            completed_at: 0,
-        };
-        self.jobs.set(&job_id, job.clone());
-
-        let mut rq = self.agent_requester_jobs.get(&caller).unwrap_or_default();
-        rq.push(job_id);
-        self.agent_requester_jobs.set(&caller, rq);
-
-        let mut pv = self.agent_provider_jobs.get(&s.owner).unwrap_or_default();
-        pv.push(job_id);
-        self.agent_provider_jobs.set(&s.owner, pv);
-
-        self.job_by_task_hash.set(&task_hash, job_id);
-
-        self.env().emit_event(JobCreated {
-            job_id,
-            requester: caller,
-            skill_id,
-            escrow: job.escrow_amount,
-            deadline: job.deadline,
-        });
-        job_id
+        self._create_job(skill_id, task_hash, deadline_secs, Some(evaluator), evaluator_fee)
     }
 
     pub fn deliver_result(&mut self, job_id: u64, result_hash: Bytes) {
@@ -536,7 +515,11 @@ impl AgentSkillRegistry {
         if j.status != JobStatus::Delivered {
             self.env().revert(Error::JobNotDelivered);
         }
-        // Good-faith requester may confirm at any time while Delivered — no `<= deadline` guard.
+        // Evaluator fee refund: requester acted directly, evaluator didn't — fee returns to requester.
+        if !j.evaluator_fee.is_zero() {
+            let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default() + j.evaluator_fee;
+            self.pending_withdrawals.set(&j.requester, credit);
+        }
         self.settle_completion(&mut j, job_id);
         self.jobs.set(&job_id, j);
     }
@@ -551,6 +534,11 @@ impl AgentSkillRegistry {
         }
         if self.env().get_block_time() <= j.deadline {
             self.env().revert(Error::ReviewWindowOpen);
+        }
+        // Evaluator fee refund: evaluator didn't act — fee returns to requester.
+        if !j.evaluator_fee.is_zero() {
+            let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default() + j.evaluator_fee;
+            self.pending_withdrawals.set(&j.requester, credit);
         }
         self.settle_completion(&mut j, job_id);
         self.jobs.set(&job_id, j);
@@ -568,12 +556,55 @@ impl AgentSkillRegistry {
             self.env().revert(Error::ReviewWindowClosed);
         }
         j.status = JobStatus::Disputed;
-        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default() + j.escrow_amount;
+        // Escrow + evaluator fee both return to requester (evaluator didn't act).
+        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
+            + j.escrow_amount + j.evaluator_fee;
         self.pending_withdrawals.set(&j.requester, credit);
         let amount = j.escrow_amount;
         let requester = j.requester;
         self.jobs.set(&job_id, j);
         self.env().emit_event(ResultDisputed { job_id, requester, amount });
+    }
+
+    /// Evaluator approves or rejects a delivered result (P0-A). Only callable by the job's
+    /// designated evaluator within the review window. The evaluator fee is released regardless.
+    pub fn evaluate_result(&mut self, job_id: u64, approved: bool) {
+        let mut j = self.require_job(job_id);
+        let caller = self.env().caller();
+        match j.evaluator {
+            Some(ev) if ev == caller => {},
+            _ => self.env().revert(Error::NotEvaluator),
+        }
+        if j.status != JobStatus::Delivered {
+            self.env().revert(Error::JobNotDelivered);
+        }
+        if self.env().get_block_time() > j.deadline {
+            self.env().revert(Error::ReviewWindowClosed);
+        }
+
+        // Evaluator fee released to evaluator regardless of verdict.
+        if !j.evaluator_fee.is_zero() {
+            let credit = self.pending_withdrawals.get(&caller).unwrap_or_default() + j.evaluator_fee;
+            self.pending_withdrawals.set(&caller, credit);
+        }
+        self.env().emit_event(JobEvaluated {
+            job_id,
+            evaluator: caller,
+            approved,
+            evaluator_payout: j.evaluator_fee,
+        });
+
+        if approved {
+            self.settle_completion(&mut j, job_id);
+        } else {
+            j.status = JobStatus::Disputed;
+            let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default() + j.escrow_amount;
+            self.pending_withdrawals.set(&j.requester, credit);
+            let amount = j.escrow_amount;
+            let requester = j.requester;
+            self.env().emit_event(ResultDisputed { job_id, requester, amount });
+        }
+        self.jobs.set(&job_id, j);
     }
 
     pub fn claim_refund(&mut self, job_id: u64) {
@@ -588,7 +619,9 @@ impl AgentSkillRegistry {
             self.env().revert(Error::BeforeDeadline);
         }
         j.status = JobStatus::Refunded;
-        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default() + j.escrow_amount;
+        // Escrow + evaluator fee both return to requester.
+        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
+            + j.escrow_amount + j.evaluator_fee;
         self.pending_withdrawals.set(&j.requester, credit);
         let amount = j.escrow_amount;
         let requester = j.requester;
@@ -699,7 +732,7 @@ impl AgentSkillRegistry {
 
     /// Set an agent's cross-chain reputation. Owner-only (trusted bridge from Soroban).
     pub fn set_cross_chain_rep(&mut self, agent: Address, score: u32, source_chain: String) {
-        let owner = self.owner.get_or_default();
+        let owner = self.owner.get().unwrap_or_else(|| self.env().revert(Error::NotContractOwner));
         if owner != self.env().caller() {
             self.env().revert(Error::NotContractOwner);
         }
@@ -767,10 +800,88 @@ impl AgentSkillRegistry {
     pub fn bond_unlock_at_of(&self, agent: Address) -> u64 {
         self.bond_unlock_at.get(&agent).unwrap_or(0)
     }
+
+    /// P0-A view: returns the evaluator address and fee for a job.
+    pub fn get_job_evaluator(&self, job_id: u64) -> (Option<Address>, U512) {
+        let j = self.require_job(job_id);
+        (j.evaluator, j.evaluator_fee)
+    }
 }
 
 // Private helpers — `#[odra::module]` impl block above only carries the public surface.
 impl AgentSkillRegistry {
+    fn _create_job(
+        &mut self,
+        skill_id: u64,
+        task_hash: Bytes,
+        deadline_secs: u64,
+        evaluator: Option<Address>,
+        evaluator_fee: U512,
+    ) -> u64 {
+        let s = self.require_skill(skill_id);
+        if !s.active {
+            self.env().revert(Error::SkillInactive);
+        }
+        let attached = self.env().attached_value();
+        if attached != s.price_per_call + evaluator_fee {
+            self.env().revert(Error::EscrowMustEqualPrice);
+        }
+        if deadline_secs == 0 {
+            self.env().revert(Error::DeadlineRequired);
+        }
+        let caller = self.env().caller();
+        if self.agent_reputation(caller) < s.min_reputation_to_invoke {
+            self.env().revert(Error::InsufficientReputation);
+        }
+        if let Some(ev) = evaluator {
+            if ev == s.owner {
+                self.env().revert(Error::EvaluatorCannotBeProvider);
+            }
+        }
+        if self.job_by_task_hash.get(&task_hash).unwrap_or(0) != 0 {
+            self.env().revert(Error::DuplicateTaskHash);
+        }
+
+        let job_id = self.job_id_counter.get_or_default() + 1;
+        self.job_id_counter.set(job_id);
+
+        let now = self.env().get_block_time();
+        let job = Job {
+            requester: caller,
+            provider: s.owner,
+            skill_id,
+            task_hash: task_hash.clone(),
+            escrow_amount: s.price_per_call,
+            deadline: now + deadline_secs,
+            status: JobStatus::Open,
+            result_hash: Bytes::new(),
+            created_at: now,
+            completed_at: 0,
+            evaluator,
+            evaluator_fee,
+        };
+        self.jobs.set(&job_id, job.clone());
+
+        let mut rq = self.agent_requester_jobs.get(&caller).unwrap_or_default();
+        rq.push(job_id);
+        self.agent_requester_jobs.set(&caller, rq);
+
+        let mut pv = self.agent_provider_jobs.get(&s.owner).unwrap_or_default();
+        pv.push(job_id);
+        self.agent_provider_jobs.set(&s.owner, pv);
+
+        self.job_by_task_hash.set(&task_hash, job_id);
+
+        self.env().emit_event(JobCreated {
+            job_id,
+            requester: caller,
+            skill_id,
+            escrow: job.escrow_amount,
+            deadline: job.deadline,
+        });
+        job_id
+    }
+
     fn require_skill(&self, skill_id: u64) -> Skill {
         self.skills
             .get(&skill_id)
