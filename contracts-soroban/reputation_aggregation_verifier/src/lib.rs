@@ -45,6 +45,8 @@ pub enum Error {
     InvalidVerifyingKey = 7,
     InvalidPublicInputs = 8,
     EpochRootMismatch = 9,
+    CredentialNotFound = 10,
+    AgentMismatch = 11,
 }
 
 // ── Storage types ───────────────────────────────────────────────────────────
@@ -69,6 +71,7 @@ enum DataKey {
     Nullifier(BytesN<32>),
     Credential(BytesN<32>),
     CredentialCounter,
+    CrossChainRep(Address),
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -90,6 +93,11 @@ fn event_credential_issued(
         (Symbol::new(env, "rep_agg_credential"), epoch_id),
         (nullifier.clone(), agent.clone()),
     );
+}
+#[allow(deprecated)]
+fn event_cross_chain_rep_updated(env: &Env, agent: &Address, score: u32) {
+    env.events()
+        .publish((Symbol::new(env, "cross_chain_rep"),), (agent.clone(), score));
 }
 
 // ── Contract impl ───────────────────────────────────────────────────────────
@@ -216,6 +224,62 @@ impl ReputationAggregationVerifier {
         );
         event_credential_issued(&env, &nullifier, &agent, epoch_id);
         counter
+    }
+
+    // ── Cross-chain reputation consumer (P0.1) ───────────────────────────
+    //
+    // Given a verified credential (identified by nullifier), computes a queryable
+    // cross-chain reputation score and stores it keyed by agent address. This is the
+    // missing consumer that T5.2's demo needs — without it, verified proofs produce
+    // credentials but nothing downstream reads them into a usable reputation value.
+
+    /// Consume a verified credential to update the agent's cross-chain reputation.
+    /// The credential must exist (i.e. `submit_proof` succeeded for this nullifier)
+    /// and the caller must be the credential's agent. The reputation value is the
+    /// credential's `min_avg_score` — the floor the agent proved in-circuit.
+    pub fn update_cross_chain_rep(env: Env, agent: Address, nullifier: BytesN<32>) -> u32 {
+        agent.require_auth();
+
+        let cred: CredentialRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Credential(nullifier))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::CredentialNotFound));
+
+        if cred.agent != agent {
+            panic_with_error!(&env, Error::AgentMismatch);
+        }
+
+        let score = cred.min_avg_score;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainRep(agent.clone()), &score);
+        event_cross_chain_rep_updated(&env, &agent, score);
+        score
+    }
+
+    /// Admin override: set cross-chain reputation directly (for bridge attestations
+    /// from other chains where the proof was verified remotely).
+    pub fn admin_set_cross_chain_rep(env: Env, agent: Address, score: u32) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAdmin));
+        admin.require_auth();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossChainRep(agent.clone()), &score);
+        event_cross_chain_rep_updated(&env, &agent, score);
+    }
+
+    /// Query the cross-chain reputation for an agent. Returns `None` if no credential
+    /// has been consumed yet.
+    pub fn cross_chain_rep(env: Env, agent: Address) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CrossChainRep(agent))
     }
 
     // ── Views ───────────────────────────────────────────────────────────────

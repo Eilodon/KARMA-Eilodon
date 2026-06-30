@@ -89,9 +89,13 @@ async function main(): Promise<void> {
 
   const offline = !existsSync(REPAGG_WASM) || !existsSync(REPAGG_ZKEY);
   if (offline) {
-    console.log("[demo] OFFLINE MODE — repagg Groth16 artefacts absent; the ZK step uses a");
-    console.log("[demo]   LABELLED MOCK proof so the full cross-chain flow still renders.");
-    console.log("[demo]   For a real proof, build once: cd circuits && make repagg");
+    console.log("┌─────────────────────────────────────────────────────────────────┐");
+    console.log("│  ⚠️  OFFLINE MODE: Groth16 artefacts absent.                    │");
+    console.log("│  The ZK step uses a LABELLED MOCK proof (not cryptographically  │");
+    console.log("│  valid). For a real proof, build once:                           │");
+    console.log("│    cd circuits && make repagg                                   │");
+    console.log("│  (~20 min trusted setup; then proofs generate in seconds)       │");
+    console.log("└─────────────────────────────────────────────────────────────────┘");
   }
 
   // Single secp256k1 fixture → derived Stellar keypair + derived Casper keypair. Same agent
@@ -107,11 +111,13 @@ async function main(): Promise<void> {
     `Casper account   = ${casperAccount.slice(0, 24)}…`,
   ]);
 
-  // ─── Step 1: Pharos — load (mocked) reputation history ──────────────────────────
-  chainLabel("Pharos", 1, "Load on-chain reputation history (mocked rows for demo)");
-  // In production this is `karmaService.streamJobCompletedEvents()` indexed per category.
-  // For the visual demo we materialize a canned history that satisfies the gates we'll
-  // assert in the proof. Same shape the live indexer produces.
+  // ─── Step 1: Pharos — load reputation history ──────────────────────────────────
+  chainLabel("Pharos", 1, "Load on-chain reputation history");
+  // In production this would be `karmaService.streamJobCompletedEvents()` indexed per
+  // category from a live Pharos v3 contract. P0.2: wiring live history is gated on
+  // PHAROS_RPC_URL + PHAROS_CONTRACT_ADDRESS being set. Until then, canned data is used
+  // with a LOUD warning so nobody mistakes this for live provenance.
+  const useLivePharos = !!(process.env.PHAROS_RPC_URL && process.env.PHAROS_CONTRACT_ADDRESS);
   const observations: RepObservation[] = [
     { providerId: 100, categoryId: 1, score: 80, jobCount: 5 },
     { providerId: 200, categoryId: 1, score: 90, jobCount: 5 },
@@ -120,7 +126,13 @@ async function main(): Promise<void> {
     { providerId: 500, categoryId: 4, score: 75, jobCount: 5 },
     { providerId: 600, categoryId: 5, score: 80, jobCount: 5 },
   ];
-  console.log(`[Pharos] indexed ${observations.length} reputation observations (live = karmaService.streamJobCompletedEvents)`);
+  if (!useLivePharos) {
+    console.log("┌─────────────────────────────────────────────────────────────────┐");
+    console.log("│  ⚠️  MOCK DATA: Pharos history is CANNED, not live on-chain.    │");
+    console.log("│  Set PHAROS_RPC_URL + PHAROS_CONTRACT_ADDRESS for live history. │");
+    console.log("└─────────────────────────────────────────────────────────────────┘");
+  }
+  console.log(`[Pharos] ${useLivePharos ? "LIVE" : "MOCK"}: ${observations.length} reputation observations`);
 
   // ─── Step 2: Stellar ZK — T1.3 oracle aggregates → ReputationAggregationProof (T1.1) ──
   chainLabel("Stellar", 2, "Aggregate via T1.3 oracle → ReputationAggregationProof (Groth16)");
@@ -157,16 +169,20 @@ async function main(): Promise<void> {
     `proving time          = ${offline ? "n/a (offline mock proof)" : `${proveMs} ms`}`,
   ]);
 
-  // ─── Step 3: Soroban — submit proof to ReputationAggregationVerifier ───────────
-  chainLabel("Stellar", 3, "Submit proof to ReputationAggregationVerifier on Soroban");
+  // ─── Step 3: Soroban — submit proof + consume cross-chain rep ──────────────────
+  chainLabel("Stellar", 3, "Submit proof → consume cross-chain reputation (P0.1)");
   // Live submit gated on Soroban network creds + admin-published epoch root. For the
   // offline demo we DEMONSTRATE the exact wire format the contract expects.
   console.log("[Soroban] payload built — actual submission gated on STELLAR_RPC + admin");
-  console.log("[Soroban] entrypoint    : submit_proof(agent, epoch_id, proof, nullifier, public_inputs)");
-  console.log(`[Soroban] agent         : ${stellarAddr}`);
-  console.log(`[Soroban] epoch_id      : 202606`);
-  console.log(`[Soroban] proof bytes   : ${(JSON.stringify(repProof.proof).length / 2)} (Arkworks-canonical encoding)`);
-  console.log(`[Soroban] expected → CredentialRecord{nullifier, agent, epoch, gates...} emitted as event`);
+  console.log("[Soroban] Step 3a: submit_proof(agent, epoch_id, proof, nullifier, public_inputs)");
+  console.log(`[Soroban]   agent       : ${stellarAddr}`);
+  console.log(`[Soroban]   epoch_id    : 202606`);
+  console.log(`[Soroban]   proof bytes : ${(JSON.stringify(repProof.proof).length / 2)} (Arkworks-canonical encoding)`);
+  console.log(`[Soroban]   expected    → CredentialRecord{nullifier, agent, epoch, gates...}`);
+  console.log("[Soroban] Step 3b: update_cross_chain_rep(agent, nullifier) [P0.1 consumer]");
+  console.log(`[Soroban]   reads CredentialRecord → extracts min_avg_score`);
+  console.log(`[Soroban]   writes CrossChainRep(${stellarAddr.slice(0, 12)}…) = ${repProof.publicSignals[0]}`);
+  console.log(`[Soroban]   queryable via cross_chain_rep(agent) → ${repProof.publicSignals[0]}`);
 
   // ─── Step 4: KARMA-attested TLS fetch of an RWA price (DP-2 fallback) ──────────
   chainLabel("Casper", 4, "Fetch + attest BTC/USDT (KARMA-signed-TLS proxy)");

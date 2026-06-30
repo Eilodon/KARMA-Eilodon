@@ -842,6 +842,71 @@ fn composition_wrapper_can_include_itself_as_leaf_for_explicit_cut() {
     );
 }
 
+// ─── Cross-chain reputation consumer (P0.1) ───────────────────────────────────
+
+#[test]
+fn cross_chain_rep_defaults_to_zero() {
+    let (env, reg, _, _) = setup();
+    let fresh = env.get_account(7);
+    assert_eq!(reg.get_cross_chain_rep(fresh), 0);
+}
+
+#[test]
+fn set_cross_chain_rep_stores_and_reads() {
+    let (env, mut reg, _, _) = setup();
+    let agent = env.get_account(3);
+    // Owner is the deployer (account 0), set during init().
+    let owner = env.get_account(0);
+    env.set_caller(owner);
+    reg.set_cross_chain_rep(agent, 85, "stellar".to_string());
+    assert_eq!(reg.get_cross_chain_rep(agent), 85);
+
+    assert!(env.emitted_event(
+        &reg,
+        CrossChainRepUpdated {
+            agent,
+            score: 85,
+            source_chain: "stellar".to_string(),
+        }
+    ));
+}
+
+#[test]
+fn set_cross_chain_rep_overwrites() {
+    let (env, mut reg, _, _) = setup();
+    let agent = env.get_account(3);
+    let owner = env.get_account(0);
+    env.set_caller(owner);
+    reg.set_cross_chain_rep(agent, 70, "stellar".to_string());
+    assert_eq!(reg.get_cross_chain_rep(agent), 70);
+    env.set_caller(owner);
+    reg.set_cross_chain_rep(agent, 95, "stellar".to_string());
+    assert_eq!(reg.get_cross_chain_rep(agent), 95);
+}
+
+#[test]
+fn set_cross_chain_rep_rejects_non_owner() {
+    let (env, mut reg, alpha, _) = setup();
+    let agent = env.get_account(3);
+    env.set_caller(alpha); // not the deployer/owner
+    assert_eq!(
+        reg.try_set_cross_chain_rep(agent, 80, "stellar".to_string()),
+        Err(Error::NotContractOwner.into())
+    );
+}
+
+#[test]
+fn set_cross_chain_rep_rejects_score_over_max() {
+    let (env, mut reg, _, _) = setup();
+    let agent = env.get_account(3);
+    let owner = env.get_account(0);
+    env.set_caller(owner);
+    assert_eq!(
+        reg.try_set_cross_chain_rep(agent, 101, "stellar".to_string()),
+        Err(Error::BadThreshold.into())
+    );
+}
+
 // ─── Ported from PR#7 (claude/karma-t2-1-skill-composition-odra) ──────────────
 // PR#7 and this branch implement T2.1 with different revenue-split designs (PR#7:
 // explicit `orchestrator_bps` + dust-to-orchestrator; here: weights sum to 10_000,

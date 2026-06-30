@@ -159,6 +159,104 @@ fn submit_proof_rejects_root_mismatch() {
     client.submit_proof(&agent, &3u64, &Bytes::new(&env), &null, &inputs);
 }
 
+// ── Cross-chain reputation consumer (P0.1) ────────────────────────────────
+// These tests exercise the consumer entrypoints without needing a real Groth16 proof.
+// They manually insert a CredentialRecord to simulate a successful submit_proof.
+
+fn insert_credential(env: &Env, contract_id: &Address, agent: &Address, nullifier: &BytesN<32>, min_avg: u32) {
+    // Directly write a CredentialRecord into contract storage to simulate a successful
+    // submit_proof without needing real Groth16 artefacts.
+    env.as_contract(contract_id, || {
+        let cred = CredentialRecord {
+            agent: agent.clone(),
+            epoch_id: 1,
+            min_avg_score: min_avg,
+            min_distinct_categories: 3,
+            min_jobs: 10,
+            nullifier: nullifier.clone(),
+            created_at: 100,
+        };
+        env.storage().persistent().set(&DataKey::Credential(nullifier.clone()), &cred);
+        env.storage().persistent().set(&DataKey::Nullifier(nullifier.clone()), &true);
+    });
+}
+
+#[test]
+fn cross_chain_rep_returns_none_by_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let agent = Address::generate(&env);
+    assert_eq!(client.cross_chain_rep(&agent), None);
+}
+
+#[test]
+fn update_cross_chain_rep_stores_min_avg_score() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let agent = Address::generate(&env);
+    let null = BytesN::<32>::from_array(&env, &[42u8; 32]);
+    insert_credential(&env, &client.address, &agent, &null, 85);
+
+    let score = client.update_cross_chain_rep(&agent, &null);
+    assert_eq!(score, 85);
+    assert_eq!(client.cross_chain_rep(&agent), Some(85));
+}
+
+#[test]
+fn update_cross_chain_rep_overwrites_on_newer_credential() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let agent = Address::generate(&env);
+
+    let null1 = BytesN::<32>::from_array(&env, &[10u8; 32]);
+    insert_credential(&env, &client.address, &agent, &null1, 70);
+    client.update_cross_chain_rep(&agent, &null1);
+    assert_eq!(client.cross_chain_rep(&agent), Some(70));
+
+    let null2 = BytesN::<32>::from_array(&env, &[20u8; 32]);
+    insert_credential(&env, &client.address, &agent, &null2, 90);
+    client.update_cross_chain_rep(&agent, &null2);
+    assert_eq!(client.cross_chain_rep(&agent), Some(90));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // CredentialNotFound
+fn update_cross_chain_rep_rejects_unknown_nullifier() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let agent = Address::generate(&env);
+    let null = BytesN::<32>::from_array(&env, &[99u8; 32]);
+    client.update_cross_chain_rep(&agent, &null);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")] // AgentMismatch
+fn update_cross_chain_rep_rejects_wrong_agent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let real_agent = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    let null = BytesN::<32>::from_array(&env, &[77u8; 32]);
+    insert_credential(&env, &client.address, &real_agent, &null, 80);
+    client.update_cross_chain_rep(&impostor, &null);
+}
+
+#[test]
+fn admin_set_cross_chain_rep_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let agent = Address::generate(&env);
+
+    client.admin_set_cross_chain_rep(&agent, &75u32);
+    assert_eq!(client.cross_chain_rep(&agent), Some(75));
+}
+
 // Note: the full happy-path test (set_vkey + submit_proof with a real Groth16 proof) is
 // gated behind `#[cfg(feature = "groth16_fixtures")]` and ships alongside the
 // snarkjs → Arkworks-canonical converter (shared follow-on with T5).

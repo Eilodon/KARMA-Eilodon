@@ -1,13 +1,14 @@
 /**
- * In-process model of the Casper/Odra `AgentSkillRegistry` (T2.1, Option B).
+ * Casper/Odra `AgentSkillRegistry` client (T2.1, P0.4).
  *
- * This is a faithful JS twin of `contracts-odra/src/agent_skill_registry.rs` (45/45 Rust tests) —
- * the same composition primitive, validation order, weighted escrow split (last leaf absorbs the
- * rounding remainder), and self-deal reputation carve-out. It exists so the Casper composition
- * primitive is invocable + discoverable through an MCP-shaped tool surface (see
- * `composition_tools.ts`) without a live Casper RPC / WASM deploy — mirroring the established
- * `demo_casper_e2e` / `demo_casper_composability` in-process pattern ("drop-in swappable for a
- * live StdioMcpClient"). The Pharos/Solidity port + real `karma.tool.ts` wiring stay P3 backlog.
+ * Two implementations behind a common `IAgentSkillRegistry` interface:
+ *   • `InProcessRegistry` — faithful JS twin of `contracts-odra/src/agent_skill_registry.rs`
+ *     (same composition primitive, validation order, weighted escrow split). Used when no live
+ *     Casper RPC is available (demos, tests, MCP tool surface via `composition_tools.ts`).
+ *   • `RpcRegistry` — thin RPC client against a deployed Odra contract. Activated when
+ *     `CASPER_RPC_URL` + `CASPER_CONTRACT_HASH` env vars are set.
+ *
+ * Factory: `createRegistry()` picks the right implementation based on env.
  */
 
 export const MAX_COMPOSITION_LEAVES = 8;
@@ -78,7 +79,29 @@ export interface NewSkill {
   identityPolicy?: number;
 }
 
-export class OdraRegistry {
+/** Common interface for both in-process and RPC-backed registries (P0.4). */
+export interface IAgentSkillRegistry {
+  register_skill(owner: string, s: NewSkill): number | Promise<number>;
+  deactivate_skill(skillId: number, caller: string): void | Promise<void>;
+  register_composition(wrapperOwner: string, wrapper: NewSkill, leafSkillIds: number[], weightsBps: number[]): number | Promise<number>;
+  is_composite(skillId: number): boolean | Promise<boolean>;
+  get_composition(skillId: number): Composition | null | Promise<Composition | null>;
+  list_composites(): Array<{ skillId: number; composition: Composition }> | Promise<Array<{ skillId: number; composition: Composition }>>;
+  get_skill(skillId: number): SkillRow | Promise<SkillRow>;
+  create_job(skillId: number, requester: string, taskHash: string, escrow: bigint): number | Promise<number>;
+  deliver_result(jobId: number, provider: string, resultHash: string): void | Promise<void>;
+  confirm_completion(jobId: number, requester: string): void | Promise<void>;
+  dispute_result(jobId: number, requester: string): void | Promise<void>;
+  pending_withdrawals_of(agent: string): bigint | Promise<bigint>;
+  agent_reputation(agent: string): number | Promise<number>;
+  withdraw(agent: string): bigint | Promise<bigint>;
+  deposit_bond(agent: string, amount: bigint): void | Promise<void>;
+  bonded_of(agent: string): bigint | Promise<bigint>;
+  cross_chain_rep(agent: string): number | Promise<number>;
+  set_cross_chain_rep(agent: string, score: number, sourceChain: string): void | Promise<void>;
+}
+
+export class InProcessRegistry implements IAgentSkillRegistry {
   private readonly skills = new Map<number, SkillRow>();
   private readonly compositions = new Map<number, Composition>();
   private readonly jobs = new Map<number, JobRow>();
@@ -237,6 +260,18 @@ export class OdraRegistry {
     return this.bondedAmount.get(agent) ?? 0n;
   }
 
+  // ── Cross-chain reputation (P0.1 mirror) ──────────────────────────────────
+  private readonly crossChainRep = new Map<string, number>();
+
+  cross_chain_rep(agent: string): number {
+    return this.crossChainRep.get(agent) ?? 0;
+  }
+
+  set_cross_chain_rep(agent: string, score: number, _sourceChain: string): void {
+    if (score > MAX_REPUTATION) throw new CompositionError("EscrowMismatch"); // reuse for "bad threshold"
+    this.crossChainRep.set(agent, score);
+  }
+
   // ── Internals ─────────────────────────────────────────────────────────────
   private settleCompletion(job: JobRow): void {
     job.status = "Completed";
@@ -303,4 +338,63 @@ export class OdraRegistry {
     if (!job) throw new CompositionError("JobNotFound");
     return job;
   }
+}
+
+/**
+ * RPC-backed registry client (P0.4). Delegates to a deployed Odra contract via Casper JSON-RPC.
+ * Activated when `CASPER_RPC_URL` + `CASPER_CONTRACT_HASH` are set.
+ *
+ * Stub: method signatures match `IAgentSkillRegistry` but throw until casper-js-sdk wiring
+ * lands (requires the contract to be deployed on testnet first).
+ */
+export class RpcRegistry implements IAgentSkillRegistry {
+  constructor(
+    readonly rpcUrl: string,
+    readonly contractHash: string,
+  ) {}
+
+  private notImplemented(): never {
+    throw new Error(
+      `RpcRegistry: casper-js-sdk wiring not yet implemented. ` +
+      `Using CASPER_RPC_URL=${this.rpcUrl} contract=${this.contractHash}. ` +
+      `Unset CASPER_RPC_URL to fall back to InProcessRegistry.`,
+    );
+  }
+
+  async register_skill(_owner: string, _s: NewSkill): Promise<number> { this.notImplemented(); }
+  async deactivate_skill(_skillId: number, _caller: string): Promise<void> { this.notImplemented(); }
+  async register_composition(_wrapperOwner: string, _wrapper: NewSkill, _leafSkillIds: number[], _weightsBps: number[]): Promise<number> { this.notImplemented(); }
+  async is_composite(_skillId: number): Promise<boolean> { this.notImplemented(); }
+  async get_composition(_skillId: number): Promise<Composition | null> { this.notImplemented(); }
+  async list_composites(): Promise<Array<{ skillId: number; composition: Composition }>> { this.notImplemented(); }
+  async get_skill(_skillId: number): Promise<SkillRow> { this.notImplemented(); }
+  async create_job(_skillId: number, _requester: string, _taskHash: string, _escrow: bigint): Promise<number> { this.notImplemented(); }
+  async deliver_result(_jobId: number, _provider: string, _resultHash: string): Promise<void> { this.notImplemented(); }
+  async confirm_completion(_jobId: number, _requester: string): Promise<void> { this.notImplemented(); }
+  async dispute_result(_jobId: number, _requester: string): Promise<void> { this.notImplemented(); }
+  async pending_withdrawals_of(_agent: string): Promise<bigint> { this.notImplemented(); }
+  async agent_reputation(_agent: string): Promise<number> { this.notImplemented(); }
+  async withdraw(_agent: string): Promise<bigint> { this.notImplemented(); }
+  async deposit_bond(_agent: string, _amount: bigint): Promise<void> { this.notImplemented(); }
+  async bonded_of(_agent: string): Promise<bigint> { this.notImplemented(); }
+  async cross_chain_rep(_agent: string): Promise<number> { this.notImplemented(); }
+  async set_cross_chain_rep(_agent: string, _score: number, _sourceChain: string): Promise<void> { this.notImplemented(); }
+}
+
+/** Backward-compatible alias — both as value (constructor) and type. */
+export const OdraRegistry = InProcessRegistry;
+export type OdraRegistry = InProcessRegistry;
+
+/**
+ * Factory: picks InProcessRegistry or RpcRegistry based on env.
+ * - `CASPER_RPC_URL` + `CASPER_CONTRACT_HASH` set → RpcRegistry
+ * - Otherwise → InProcessRegistry (current default, network-free)
+ */
+export function createRegistry(env: Record<string, string | undefined> = process.env): IAgentSkillRegistry {
+  const rpcUrl = env.CASPER_RPC_URL;
+  const contractHash = env.CASPER_CONTRACT_HASH;
+  if (rpcUrl && contractHash) {
+    return new RpcRegistry(rpcUrl, contractHash);
+  }
+  return new InProcessRegistry();
 }
