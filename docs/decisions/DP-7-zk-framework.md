@@ -1,8 +1,24 @@
 # DP-7 — ZK framework: Circom + snarkjs (NOT Noir + Barretenberg)
 
-**Status:** Decided · 2026-06-24
+**Status:** Decided · 2026-06-24 · **Amended 2026-07-01** (see below)
 **Scope:** All ZK circuits in this repo (AgentCredentialProof T4, ReputationAggregationProof T1.1, JobCommitmentProof T1.2, cross-chain rep oracle T1.3).
 **Reverses:** Roadmap §B.T1 framework recommendation.
+
+## Amendment — 2026-07-01: the "BN254 native" claim below was wrong
+
+Point 2 below claimed CAP-0074 didn't cover the Groth16 pairing check yet, and the
+"When to revisit" list treated `bn254_pairing` as not-yet-shipped. Both are false —
+verified directly against [CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0074.md)
+(shipped in Protocol 25 "X-Ray", *ahead of* this decision's 2026-06-24 date) and the
+`soroban-sdk` 26 source (`env.crypto().bn254()` exposes `g1_add`, `g1_mul`,
+`pairing_check` — backed by the host's `bn254_multi_pairing_check`). Both
+`agent_credential_verifier` and `reputation_aggregation_verifier` have since been
+migrated off the software Arkworks path described below onto these native host
+functions (no `ark-*` dependency remains in either contract). The **Circom + snarkjs
++ Groth16-over-BN254 choice itself still stands** — only the *on-chain verifier's*
+implementation changed, from software pairing to native host calls. Left the
+original text below unedited (struck through where superseded) so the reasoning
+trail stays honest about what was known when.
 
 ## Decision
 
@@ -22,13 +38,14 @@ what is already in this repo:
    gap.
 
 2. **"BN254 native on Soroban / EVM."**
-   The verifier we already shipped
-   (`contracts-soroban/agent_credential_verifier/src/lib.rs`) hardcodes Arkworks
-   `Bn254 + Groth16` and ingests `PreparedVerifyingKey<Bn254>` plus
-   `Proof<Bn254>` in Arkworks-canonical compressed form. That is exactly what
-   `snarkjs zkey export` produces (after the standard Arkworks re-serialization
-   helper). Barretenberg's default output is UltraHonk, **not** Groth16-compatible
-   with this verifier — switching backends means rewriting the verifier contract
+   ~~The verifier we already shipped hardcodes Arkworks `Bn254 + Groth16`.~~
+   **Superseded by the 2026-07-01 amendment above** — the verifier now runs the
+   pairing check on native `env.crypto().bn254()` host functions (CAP-0074), not
+   Arkworks. The point stands regardless: `snarkjs zkey export` output packs
+   directly into the native BN254 byte layout (big-endian coordinates), so this
+   was never a real blocker either way. Barretenberg's default output is
+   UltraHonk, **not** Groth16-compatible with this verifier — switching backends
+   means rewriting the verifier contract
    from scratch.
 
 3. **"Cleaner syntax, easier to audit."**
@@ -66,9 +83,13 @@ what is already in this repo:
 
 Revisit Noir/Barretenberg if any of these become true:
 
-1. Stellar's `rs-soroban-env` ships native `bn254_pairing` host functions AND
-   the cost model favors UltraHonk over Groth16 in-contract. (Today CAP-0074
-   only covers scalar arith + MSM — Groth16 still wins for the pairing.)
+1. ~~Stellar's `rs-soroban-env` ships native `bn254_pairing` host functions~~ —
+   **already true** (CAP-0074 `bn254_multi_pairing_check`, Protocol 25; both
+   verifiers migrated to it, see 2026-07-01 amendment above). The live
+   condition going forward: revisit Noir/Barretenberg only if the cost model
+   comes to favor UltraHonk over native-BN254 Groth16 in-contract — no
+   evidence of that yet, and native Groth16 is now the cheaper of the two
+   (no in-contract EC arithmetic at all).
 2. We need recursion (proof-of-proof) for the cross-chain rep oracle (T1.3).
    Groth16-on-BN254 supports recursion but the tooling story in snarkjs is
    weaker than Aztec's. T1.3 first cut can avoid recursion (off-chain prover

@@ -153,8 +153,8 @@ demos fall back to a clearly-labelled mock proof when the `make repagg` artefact
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet (owner-driven) |
 | x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` | testnet (owner-driven) |
-| **AgentCredentialProof** — Circom Groth16 + Soroban verifier | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | demo / testnet |
-| **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`) | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | demo / testnet |
+| **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | demo / testnet |
+| **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | demo / testnet |
 | **Cross-chain reputation oracle** (T1.3) — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
 | **Signed-TLS attestation** (T1.4 fallback) — verifiable RWA price feed | `src/lib/zk/signed_tls_attestation.ts` | in-repo, tested |
 | **Skill composition** (T2.1) — weighted revenue split + reputation propagation | `contracts-odra/src/agent_skill_registry.rs` · `src/lib/casper/{odra_registry,composition_tools}.ts` | Odra + in-process, tested |

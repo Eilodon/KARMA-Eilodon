@@ -17,18 +17,16 @@
 //!
 //! Trust gates per synthesis §5.4:
 //!   1. Per-epoch nullifier replay guard — Poseidon(agentSecret, epoch).
-//!   2. Groth16 proof verification — Arkworks BN254, exact same path as T5.
+//!   2. Groth16 proof verification — native BN254 host functions, exact same path as T5.
 //!   3. epochRoot must match the admin-published root for the declared epoch_id.
 //!
 //! Trusted-setup story matches T5: testnet uses a single-contributor zkey, mainnet
 //! gets a multi-party ceremony. Documented in `docs/decisions/DP-7-zk-framework.md`.
 
-extern crate alloc;
-
-use alloc::vec::Vec as StdVec;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
-    Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype,
+    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine},
+    panic_with_error, vec, Address, BytesN, Env, Symbol, Vec,
 };
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -48,6 +46,32 @@ pub enum Error {
     CredentialNotFound = 10,
     AgentMismatch = 11,
 }
+
+// ── Groth16 / BN254 types ─────────────────────────────────────────────────
+// Same layout + native-host-function verifier as `agent_credential_verifier` — see that
+// contract's module doc for the point-encoding details (Ethereum-compatible uncompressed
+// BN254, per `soroban_sdk::crypto::bn254`).
+#[contracttype]
+#[derive(Clone)]
+pub struct VerifyingKey {
+    pub alpha: Bn254G1Affine,
+    pub beta: Bn254G2Affine,
+    pub gamma: Bn254G2Affine,
+    pub delta: Bn254G2Affine,
+    /// `ic[0]` is the constant term; `ic[1..]` pair one-to-one with public inputs.
+    /// For this circuit (5 public signals) `ic.len()` MUST be 6.
+    pub ic: Vec<Bn254G1Affine>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Groth16Proof {
+    pub a: Bn254G1Affine,
+    pub b: Bn254G2Affine,
+    pub c: Bn254G1Affine,
+}
+
+const PUBLIC_INPUT_COUNT: u32 = 5;
 
 // ── Storage types ───────────────────────────────────────────────────────────
 #[contracttype]
@@ -75,7 +99,7 @@ enum DataKey {
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
-// soroban-sdk 26 prefers #[contractevent] structs; keeping the publish() flow here to match
+// soroban-sdk 26 prefers #[contractevent] structs, keeping the publish() flow here to match
 // the T5 verifier's quieter migration path.
 #[allow(deprecated)]
 fn event_epoch_root_set(env: &Env, epoch_id: u64, root: &BytesN<32>) {
@@ -117,18 +141,19 @@ impl ReputationAggregationVerifier {
         env.storage().instance().set(&DataKey::CredentialCounter, &0u64);
     }
 
-    /// Set the global verifying key (Arkworks-canonical PreparedVerifyingKey<Bn254>).
-    /// Admin-only, idempotent — late-setting is supported so the ceremony can complete after
-    /// contract deploy. Sanity-checks deserialization up front to fail fast.
-    pub fn set_vkey(env: Env, vkey: Bytes) {
+    /// Set the global verifying key. Admin-only, idempotent — late-setting is supported so
+    /// the ceremony can complete after contract deploy. Sanity-checks `ic` arity up front to
+    /// fail fast.
+    pub fn set_vkey(env: Env, vkey: VerifyingKey) {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotAdmin));
         admin.require_auth();
-        crypto::deserialize_vkey(&vkey)
-            .unwrap_or_else(|_| panic_with_error!(&env, Error::InvalidVerifyingKey));
+        if vkey.ic.len() != PUBLIC_INPUT_COUNT + 1 {
+            panic_with_error!(&env, Error::InvalidVerifyingKey);
+        }
         env.storage().persistent().set(&DataKey::Vkey, &vkey);
     }
 
@@ -151,14 +176,15 @@ impl ReputationAggregationVerifier {
     ///
     /// `public_inputs` MUST be the 5-element vector the circuit produces, in circuit order:
     ///   [ minAvgScore, minDistinctCategories, minJobs, nullifier, epochRoot ]
-    /// Asserted by circuits/test/reputation_aggregation.test.mjs.
+    /// Asserted by circuits/test/reputation_aggregation.test.mjs. Each element is a
+    /// big-endian BN254 scalar-field element (`Bn254Fr`).
     pub fn submit_proof(
         env: Env,
         agent: Address,
         epoch_id: u64,
-        proof: Bytes,
+        proof: Groth16Proof,
         nullifier: BytesN<32>,
-        public_inputs: Vec<BytesN<32>>,
+        public_inputs: Vec<Bn254Fr>,
     ) -> u64 {
         agent.require_auth();
 
@@ -168,13 +194,13 @@ impl ReputationAggregationVerifier {
         }
 
         // 2. Public-input arity + on-chain binding checks.
-        if public_inputs.len() != 5 {
+        if public_inputs.len() != PUBLIC_INPUT_COUNT {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
         // public_inputs[3] = nullifier; public_inputs[4] = epochRoot.
         let pi_nullifier = public_inputs.get(3).unwrap();
         let pi_epoch_root = public_inputs.get(4).unwrap();
-        if pi_nullifier != nullifier {
+        if pi_nullifier != Bn254Fr::from_bytes(nullifier.clone()) {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
         let known_root: BytesN<32> = env
@@ -182,26 +208,26 @@ impl ReputationAggregationVerifier {
             .persistent()
             .get(&DataKey::EpochRoot(epoch_id))
             .unwrap_or_else(|| panic_with_error!(&env, Error::EpochRootNotSet));
-        if pi_epoch_root != known_root {
+        if pi_epoch_root != Bn254Fr::from_bytes(known_root) {
             panic_with_error!(&env, Error::EpochRootMismatch);
         }
 
-        // 3. Groth16 pairing check.
-        let vkey: Bytes = env
+        // 3. Groth16 pairing check — native BN254 host functions (CAP-0074).
+        let vkey: VerifyingKey = env
             .storage()
             .persistent()
             .get(&DataKey::Vkey)
             .unwrap_or_else(|| panic_with_error!(&env, Error::VkeyNotSet));
-        let ok = crypto::verify_groth16(&vkey, &proof, &public_inputs);
+        let ok = crypto::verify_groth16(&env, &vkey, &proof, &public_inputs);
         if !ok {
             panic_with_error!(&env, Error::InvalidProof);
         }
 
         // 4. Effects: extract the agent-chosen thresholds for the on-chain record, claim
         //    nullifier, mint credential record.
-        let min_avg = crypto::bytes32_to_u32(&public_inputs.get(0).unwrap());
-        let min_dist = crypto::bytes32_to_u32(&public_inputs.get(1).unwrap());
-        let min_jobs = crypto::bytes32_to_u32(&public_inputs.get(2).unwrap());
+        let min_avg = crypto::fr_to_u32(&public_inputs.get(0).unwrap());
+        let min_dist = crypto::fr_to_u32(&public_inputs.get(1).unwrap());
+        let min_jobs = crypto::fr_to_u32(&public_inputs.get(2).unwrap());
         let counter: u64 = env
             .storage()
             .instance()
@@ -311,59 +337,40 @@ impl ReputationAggregationVerifier {
 // ── Crypto helpers ──────────────────────────────────────────────────────────
 mod crypto {
     use super::*;
-    use ark_bn254::{Bn254, Fr};
-    use ark_groth16::{Groth16, PreparedVerifyingKey, Proof};
-    use ark_serialize::CanonicalDeserialize;
 
-    pub(super) fn deserialize_vkey(vkey: &Bytes) -> Result<PreparedVerifyingKey<Bn254>, ()> {
-        let buf = bytes_to_vec(vkey);
-        PreparedVerifyingKey::<Bn254>::deserialize_compressed(buf.as_slice()).map_err(|_| ())
-    }
-
+    /// Groth16 verification via Stellar's native BN254 host functions
+    /// (`env.crypto().bn254()`, CAP-0074 `bn254_multi_pairing_check`). Identical equation
+    /// to `agent_credential_verifier::crypto::verify_groth16` (T5) — kept duplicated rather
+    /// than shared so the two verifiers' audit surfaces stay independent (per module doc).
     pub(super) fn verify_groth16(
-        vkey_bytes: &Bytes,
-        proof_bytes: &Bytes,
-        public_inputs: &Vec<BytesN<32>>,
+        env: &Env,
+        vk: &VerifyingKey,
+        proof: &Groth16Proof,
+        public_inputs: &Vec<Bn254Fr>,
     ) -> bool {
-        let pvk = match deserialize_vkey(vkey_bytes) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let proof_buf = bytes_to_vec(proof_bytes);
-        let proof = match Proof::<Bn254>::deserialize_compressed(proof_buf.as_slice()) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        let mut fr_inputs: StdVec<Fr> = StdVec::with_capacity(public_inputs.len() as usize);
+        let bn254 = env.crypto().bn254();
+        if public_inputs.len() + 1 != vk.ic.len() {
+            return false;
+        }
+        let mut vk_x = vk.ic.get(0).unwrap();
         for i in 0..public_inputs.len() {
-            let b: BytesN<32> = public_inputs.get(i).unwrap();
-            let raw = b.to_array();
-            match Fr::deserialize_compressed(raw.as_slice()) {
-                Ok(fr) => fr_inputs.push(fr),
-                Err(_) => return false,
-            }
+            let s = public_inputs.get(i).unwrap();
+            let v = vk.ic.get(i + 1).unwrap();
+            let prod = bn254.g1_mul(&v, &s);
+            vk_x = bn254.g1_add(&vk_x, &prod);
         }
-        Groth16::<Bn254>::verify_proof(&pvk, &proof, &fr_inputs).unwrap_or(false)
+        let neg_a = -proof.a.clone();
+        let vp1 = vec![env, neg_a, vk.alpha.clone(), vk_x, proof.c.clone()];
+        let vp2 = vec![env, proof.b.clone(), vk.beta.clone(), vk.gamma.clone(), vk.delta.clone()];
+        bn254.pairing_check(vp1, vp2)
     }
 
-    /// Decode a public-input BytesN<32> as a little-endian u32. Upper bytes silently truncated
-    /// — caller is responsible for ensuring the on-chain threshold value fits in a u32, which
-    /// it does for all three RepAgg threshold inputs (avg ≤ 100, distinct ≤ 32, jobs ≤ 2^16
-    /// per-tuple × N ≤ 2^20).
-    pub(super) fn bytes32_to_u32(b: &BytesN<32>) -> u32 {
-        let raw = b.to_array();
-        let mut le4 = [0u8; 4];
-        le4.copy_from_slice(&raw[0..4]);
-        u32::from_le_bytes(le4)
-    }
-
-    fn bytes_to_vec(b: &Bytes) -> StdVec<u8> {
-        let len = b.len() as usize;
-        let mut out = StdVec::with_capacity(len);
-        for i in 0..b.len() {
-            out.push(b.get(i).unwrap());
-        }
-        out
+    /// Reads a `Bn254Fr` back out as a `u32` (upper 28 bytes are expected to be zero — true
+    /// for all three RepAgg threshold inputs: avg ≤ 100, distinct ≤ 32, jobs ≤ 2^16 per-tuple
+    /// × N ≤ 2^20). Big-endian, mirroring how the off-chain prover packs them.
+    pub(super) fn fr_to_u32(fr: &Bn254Fr) -> u32 {
+        let bytes = fr.to_bytes().to_array();
+        u32::from_be_bytes(bytes[28..32].try_into().unwrap())
     }
 }
 

@@ -16,6 +16,8 @@ Agent (client-side, off-chain)             Provider / Soroban verifier (on-chain
 1. Generate AgentCredentialProof           1. Decode X-Reputation-Proof
    (Circom, Groth16 over BN254)               and call agent_credential_verifier
                                               (Soroban): Groth16 pairing check
+                                              via native BN254 host functions
+                                              (env.crypto().bn254(), CAP-0074)
 2. Build x402 payment payload              2. Verify X-Payment-Receipt with the
    (USDC on Stellar Testnet, $0.01)           Coinbase x402 facilitator on Stellar
                                               → USDC moved at the same instant
@@ -41,7 +43,7 @@ Closes two open architectural problems in KARMA's production trust model
 | Layer | Path | Status |
 |---|---|---|
 | Circuit + Groth16 setup | [`circuits/`](circuits/) (T4) | `make credential` passes |
-| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 6/6 |
+| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 8/8 — native BN254 host functions, no Arkworks |
 | Stellar ed25519 keypair derivation | [`src/lib/stellar/keypair.ts`](src/lib/stellar/keypair.ts) (T6) | 10/10 |
 | x402Plugin/Stellar | [`src/plugins/x402_stellar.ts`](src/plugins/x402_stellar.ts) (T7) | 15/15 |
 | Offline orchestration demo | [`src/scripts/demo_stellar_zk.ts`](src/scripts/demo_stellar_zk.ts) (T8) | runs end-to-end |
@@ -96,10 +98,13 @@ stellar contract deploy \
 ### Step 2 — Register the skill with the verifying key
 
 ```bash
-# Convert circuits/build/agent_credential/verification_key.json into Arkworks-canonical
-# bytes (the format the Soroban verifier expects — see contracts-soroban/.../README.md).
-# A converter helper is a planned follow-on; for the demo the snarkjs JSON can be
-# Ark-serialized via ark-groth16 from a small Rust helper (~30 lines).
+# Pack circuits/build/agent_credential/verification_key.json (snarkjs decimal-string
+# coordinates) into the contract's native VerifyingKey shape — alpha/beta/gamma/delta as
+# Bn254G1Affine/Bn254G2Affine (64/128-byte big-endian), ic as a Vec of Bn254G1Affine. This is
+# a plain fixed-width byte-packing step (no EC-point re-serialization library needed, unlike
+# the Arkworks-canonical format the verifier used before the CAP-0074 native-host-function
+# migration — see contracts-soroban/agent_credential_verifier/README.md). A packing helper is
+# a planned follow-on (T8).
 
 stellar contract invoke \
   --id $STELLAR_VERIFIER_CONTRACT \
@@ -107,7 +112,7 @@ stellar contract invoke \
   --network testnet \
   -- register_skill \
   --skill_id 42 \
-  --vkey @vkey.bin \
+  --vkey '{"alpha": "<64B hex>", "beta": "<128B hex>", "gamma": "<128B hex>", "delta": "<128B hex>", "ic": ["<64B hex>", "..."]}' \
   --min_reputation 60 \
   --price_per_call 100000 \
   --owner $PROVIDER_ADDRESS
@@ -165,7 +170,11 @@ server. That's the closing argument of synthesis §5 + plan §1A.
 - **Trusted setup ceremony** for the demo is single-contributor (locally
   generated `pot13_final.ptau`). Mainnet would require Hermez. Documented in
   `circuits/README.md` — not concealed.
-- **Stellar BN254 host functions** ship pairing in Protocol 26's CAP-0074
-  staged release. Until rs-soroban-env exposes `bn254_pairing` natively, the
-  verifier uses Arkworks `ark-groth16` over `ark-bn254` (no_std, WASM-friendly).
-  The single swap point is `contracts-soroban/.../src/lib.rs:crypto::verify_groth16`.
+- **Stellar BN254 host functions.** The pairing check is *not* a software
+  Arkworks fallback — it calls `env.crypto().bn254().pairing_check(...)`
+  directly, backed by the host's `bn254_multi_pairing_check`
+  ([CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0074.md),
+  shipped in Protocol 25 "X-Ray", confirmed live well ahead of this hackathon).
+  `contracts-soroban/.../src/lib.rs:crypto::verify_groth16` has no `ark-*`
+  dependency at all — see `contracts-soroban/agent_credential_verifier/README.md`
+  for the exact host-function call sequence and point encoding.
