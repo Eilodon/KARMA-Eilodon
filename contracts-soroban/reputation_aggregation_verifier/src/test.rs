@@ -338,6 +338,102 @@ fn admin_set_cross_chain_rep_works() {
     assert_eq!(client.cross_chain_rep(&agent), Some(75));
 }
 
-// Note: the full happy-path test (set_vkey + submit_proof with a real Groth16 proof) is
-// gated behind `#[cfg(feature = "groth16_fixtures")]` and ships alongside the
-// snarkjs → native-BN254 packing script (shared follow-on with T5).
+// Real circuit fixture (T8): `circuits/scripts/pack-bn254.mjs` packs the snarkjs output of
+// `circuits/build/reputation_aggregation/` (produced by `make repagg`) into the native BN254
+// byte layout below — same script + pattern as agent_credential_verifier (T5). Regenerate via:
+//   cd circuits && make repagg
+//   node scripts/pack-bn254.mjs \
+//     build/reputation_aggregation/verification_key.json \
+//     build/reputation_aggregation/happy.proof.json \
+//     build/reputation_aggregation/happy.public.json \
+//     ../contracts-soroban/reputation_aggregation_verifier/src/test_fixtures/reputation_aggregation_happy.rs
+mod real_fixture {
+    include!("test_fixtures/reputation_aggregation_happy.rs");
+}
+
+const HAPPY_EPOCH_ID: u64 = 202606;
+
+fn real_vkey(env: &Env) -> VerifyingKey {
+    let mut ic = SVec::new(env);
+    for entry in real_fixture::IC.iter() {
+        ic.push_back(Bn254G1Affine::from_array(env, entry));
+    }
+    VerifyingKey {
+        alpha: Bn254G1Affine::from_array(env, &real_fixture::ALPHA),
+        beta: Bn254G2Affine::from_array(env, &real_fixture::BETA),
+        gamma: Bn254G2Affine::from_array(env, &real_fixture::GAMMA),
+        delta: Bn254G2Affine::from_array(env, &real_fixture::DELTA),
+        ic,
+    }
+}
+
+fn real_proof(env: &Env) -> Groth16Proof {
+    Groth16Proof {
+        a: Bn254G1Affine::from_array(env, &real_fixture::PROOF_A),
+        b: Bn254G2Affine::from_array(env, &real_fixture::PROOF_B),
+        c: Bn254G1Affine::from_array(env, &real_fixture::PROOF_C),
+    }
+}
+
+fn real_public_inputs(env: &Env) -> SVec<Bn254Fr> {
+    let mut inputs = SVec::new(env);
+    for sig in real_fixture::PUBLIC_INPUTS.iter() {
+        inputs.push_back(Bn254Fr::from_bytes(BytesN::from_array(env, sig)));
+    }
+    inputs
+}
+
+// Public-signal order: [ minAvgScore, minDistinctCategories, minJobs, nullifier, epochRoot ].
+fn real_nullifier(env: &Env) -> BytesN<32> {
+    BytesN::<32>::from_array(env, &real_fixture::PUBLIC_INPUTS[3])
+}
+fn real_epoch_root(env: &Env) -> BytesN<32> {
+    BytesN::<32>::from_array(env, &real_fixture::PUBLIC_INPUTS[4])
+}
+
+#[test]
+fn submit_proof_verifies_real_circuit_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+
+    client.set_vkey(&real_vkey(&env));
+    client.set_epoch_root(&HAPPY_EPOCH_ID, &real_epoch_root(&env));
+
+    let agent = Address::generate(&env);
+    let nullifier = real_nullifier(&env);
+    let counter = client.submit_proof(
+        &agent,
+        &HAPPY_EPOCH_ID,
+        &real_proof(&env),
+        &nullifier,
+        &real_public_inputs(&env),
+    );
+
+    assert_eq!(counter, 1);
+    assert!(client.is_nullifier_used(&nullifier));
+    let cred = client.get_credential(&nullifier).unwrap();
+    // circuits/test/reputation_aggregation.test.mjs happy path: minAvgScore=80,
+    // minDistinctCategories=5, minJobs=10.
+    assert_eq!(cred.min_avg_score, 80);
+    assert_eq!(cred.min_distinct_categories, 5);
+    assert_eq!(cred.min_jobs, 10);
+    assert_eq!(cred.agent, agent);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // NullifierReused
+fn submit_proof_rejects_replayed_real_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+
+    client.set_vkey(&real_vkey(&env));
+    client.set_epoch_root(&HAPPY_EPOCH_ID, &real_epoch_root(&env));
+
+    let agent = Address::generate(&env);
+    let nullifier = real_nullifier(&env);
+    client.submit_proof(&agent, &HAPPY_EPOCH_ID, &real_proof(&env), &nullifier, &real_public_inputs(&env));
+    // Same proof + nullifier again — must be rejected by the replay guard, not re-verified.
+    client.submit_proof(&agent, &HAPPY_EPOCH_ID, &real_proof(&env), &nullifier, &real_public_inputs(&env));
+}
