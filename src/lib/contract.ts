@@ -170,8 +170,16 @@ export type IndexedEvent =
   | { type: "SkillDeactivated"; blockNumber: bigint; skillId: bigint }
   | { type: "JobCompleted"; blockNumber: bigint; jobId: bigint; provider: Address; payout: bigint; newReputation: bigint }
   | { type: "ResultDisputed"; blockNumber: bigint; jobId: bigint; requester: Address; amount: bigint }
+  | { type: "JobEvaluated"; blockNumber: bigint; jobId: bigint; evaluator: Address; approved: boolean; evaluatorPayout: bigint }
   | { type: "BondUpdated"; blockNumber: bigint; agent: Address; bondedAmount: bigint; seedEligible: bigint }
-  | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint };
+  | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint }
+  | { type: "CrossChainRepUpdated"; blockNumber: bigint; agent: Address; score: bigint; sourceChain: string }
+  | { type: "DisputeBondPosted"; blockNumber: bigint; jobId: bigint; requester: Address; bond: bigint }
+  | { type: "DisputeResponsePosted"; blockNumber: bigint; jobId: bigint; provider: Address; bond: bigint }
+  | { type: "DisputeConceded"; blockNumber: bigint; jobId: bigint; provider: Address }
+  | { type: "DisputeArbitrated"; blockNumber: bigint; jobId: bigint; verdict: number; arbiter: Address }
+  | { type: "ArbiterUpdated"; blockNumber: bigint; oldArbiter: Address; newArbiter: Address }
+  | { type: "DisputeBondBpsUpdated"; blockNumber: bigint; oldBps: bigint; newBps: bigint };
 
 export interface IndexerWatchHandlers {
   onLogs: (events: IndexedEvent[]) => void;
@@ -360,12 +368,16 @@ export function mapLog(raw: unknown): IndexedEvent | null {
         payout: a.payout as bigint, newReputation: a.newReputation as bigint,
       };
     case "ResultDisputed":
-      // T0.1 P3-lite: feed dispute signal into the flow_reputation soft-penalty path.
-      // Event lacks provider (only requester is indexed) — indexer resolves via readJob(jobId).
       return {
         type: "ResultDisputed", blockNumber: bn,
         jobId: a.jobId as bigint, requester: a.requester as Address,
         amount: a.amount as bigint,
+      };
+    case "JobEvaluated":
+      return {
+        type: "JobEvaluated", blockNumber: bn,
+        jobId: a.jobId as bigint, evaluator: a.evaluator as Address,
+        approved: a.approved as boolean, evaluatorPayout: a.evaluatorPayout as bigint,
       };
     case "BondUpdated":
       return {
@@ -377,6 +389,45 @@ export function mapLog(raw: unknown): IndexedEvent | null {
       return {
         type: "MinReputationSet", blockNumber: bn,
         skillId: a.skillId as bigint, minReputation: a.minReputation as bigint,
+      };
+    case "CrossChainRepUpdated":
+      return {
+        type: "CrossChainRepUpdated", blockNumber: bn,
+        agent: a.agent as Address, score: a.score as bigint,
+        sourceChain: a.sourceChain as string,
+      };
+    case "DisputeBondPosted":
+      return {
+        type: "DisputeBondPosted", blockNumber: bn,
+        jobId: a.jobId as bigint, requester: a.requester as Address,
+        bond: a.bond as bigint,
+      };
+    case "DisputeResponsePosted":
+      return {
+        type: "DisputeResponsePosted", blockNumber: bn,
+        jobId: a.jobId as bigint, provider: a.provider as Address,
+        bond: a.bond as bigint,
+      };
+    case "DisputeConceded":
+      return {
+        type: "DisputeConceded", blockNumber: bn,
+        jobId: a.jobId as bigint, provider: a.provider as Address,
+      };
+    case "DisputeArbitrated":
+      return {
+        type: "DisputeArbitrated", blockNumber: bn,
+        jobId: a.jobId as bigint, verdict: Number(a.verdict),
+        arbiter: a.arbiter as Address,
+      };
+    case "ArbiterUpdated":
+      return {
+        type: "ArbiterUpdated", blockNumber: bn,
+        oldArbiter: a.oldArbiter as Address, newArbiter: a.newArbiter as Address,
+      };
+    case "DisputeBondBpsUpdated":
+      return {
+        type: "DisputeBondBpsUpdated", blockNumber: bn,
+        oldBps: a.oldBps as bigint, newBps: a.newBps as bigint,
       };
     default:
       return null;

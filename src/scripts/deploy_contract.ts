@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const hash = await walletClient.deployContract({
     abi: agentSkillRegistryAbi,
     bytecode,
-    args: [REVIEW_WINDOW_SECS],
+    args: [REVIEW_WINDOW_SECS, account.address],
     account,
     chain: pharosAtlantic,
   });

@@ -16,7 +16,7 @@ const confirmed = { status: "confirmed" as const, hash: TXH, receipt: {} as neve
 const jobAt = (status: number, over: Record<string, unknown> = {}) => ({
   requester: ALPHA, provider: ALPHA, skillId: 1n, taskHash: `0x${"00".repeat(32)}`,
   escrowAmount: 0n, deadline: 0n, status, resultHash: `0x${"00".repeat(32)}`,
-  createdAt: 1750145678n, completedAt: 0n, ...over,
+  createdAt: 1750145678n, completedAt: 0n, evaluator: `0x${"00".repeat(20)}`, evaluatorFee: 0n, ...over,
 }) as never;
 
 const skill = (over: Partial<OnchainSkill> = {}): OnchainSkill => ({
@@ -44,14 +44,27 @@ function fakeService(over: Partial<KarmaService> = {}): KarmaService {
       requester: ALPHA, provider: ALPHA, skillId: 1n, taskHash: `0x${"00".repeat(32)}`,
       escrowAmount: 0n, deadline: 0n, status: 0, resultHash: `0x${"00".repeat(32)}`,
       createdAt: 1750145678n, completedAt: 0n,
+      evaluator: `0x${"00".repeat(20)}`, evaluatorFee: 0n,
     }) as never),
     deriveTaskHash: vi.fn(() => `0x${"de".repeat(32)}` as `0x${string}`),
     findExistingJob: vi.fn(async () => null),
     createJob: vi.fn(async () => ({ jobId: 4n, outcome: confirmed })),
+    createJobWithEvaluator: vi.fn(async () => ({ jobId: 4n, outcome: confirmed })),
     deliverResult: vi.fn(async () => confirmed),
     confirmCompletion: vi.fn(async () => confirmed),
     disputeResult: vi.fn(async () => confirmed),
     claimAfterReview: vi.fn(async () => confirmed),
+    respondToDispute: vi.fn(async () => confirmed),
+    concedeDispute: vi.fn(async () => confirmed),
+    resolveDefaultConcede: vi.fn(async () => confirmed),
+    arbitrate: vi.fn(async () => confirmed),
+    setDisputeBondBps: vi.fn(async () => confirmed),
+    setArbiter: vi.fn(async () => confirmed),
+    getDisputeInfo: vi.fn(async () => ({ disputeBond: 0n, providerBond: 0n, disputedAt: 0n })),
+    getDisputeBondBps: vi.fn(async () => 10_000n),
+    getArbiter: vi.fn(async () => ALPHA),
+    evaluateResult: vi.fn(async () => confirmed),
+    getJobEvaluator: vi.fn(async () => ({ evaluator: `0x${"00".repeat(20)}` as `0x${string}`, evaluatorFee: 0n })),
     setMinReputation: vi.fn(async () => confirmed),
     setIdentityPolicy: vi.fn(async () => confirmed),
     getAgentReputation: vi.fn(async () => 50),
@@ -66,6 +79,9 @@ function fakeService(over: Partial<KarmaService> = {}): KarmaService {
     getByOwner: vi.fn(() => null),
     getSkillThreshold: vi.fn(() => 0), // default: no Trust Gate
     getReputation: vi.fn(() => 0),
+    getCrossChainRep: vi.fn(async () => 0n),
+    getOwner: vi.fn(async () => ALPHA),
+    getPendingOwner: vi.fn(async () => `0x${"00".repeat(20)}` as `0x${string}`),
     search: vi.fn(() => [
       {
         skill_id: 7,
@@ -601,7 +617,7 @@ describe("P6 KARMA tools", () => {
     const job = (over: Record<string, unknown>) => ({
       requester: ALPHA, provider: ALPHA, skillId: 1n, taskHash: `0x${"00".repeat(32)}`,
       escrowAmount: 0n, deadline: 0n, status: 0, resultHash: `0x${"00".repeat(32)}`,
-      createdAt: 1750145678n, completedAt: 0n, ...over,
+      createdAt: 1750145678n, completedAt: 0n, evaluator: `0x${"00".repeat(20)}`, evaluatorFee: 0n, ...over,
     });
     svc = fakeService({
       // ALPHA provided jobs 4 & 9 (counterpart = requester), requested job 2 (counterpart = provider)
@@ -740,7 +756,7 @@ describe("A3 social-graph fan-out cap (DoS)", () => {
       readJob: vi.fn(async () => ({
         requester: ALPHA, provider: ALPHA, skillId: 1n, taskHash: `0x${"00".repeat(32)}`,
         escrowAmount: 0n, deadline: 0n, status: 0, resultHash: `0x${"00".repeat(32)}`,
-        createdAt: 1n, completedAt: 0n,
+        createdAt: 1n, completedAt: 0n, evaluator: `0x${"00".repeat(20)}`, evaluatorFee: 0n,
       }) as never),
     });
     const tools = createKarmaTools(svc);

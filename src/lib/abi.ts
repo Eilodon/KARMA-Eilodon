@@ -6,8 +6,8 @@
  * surface changes without a matching update here.
  */
 export const agentSkillRegistryAbi = [
-  // ── constructor (review window is deploy-time config, then immutable) ──
-  { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "reviewWindowSecs", type: "uint256" }] },
+  // ── constructor (review window + initial owner — P0-B: Ownable2Step) ──
+  { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "reviewWindowSecs", type: "uint256" }, { name: "initialOwner", type: "address" }] },
 
   // ── constants ──
   { type: "function", name: "BASE_REPUTATION", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
@@ -41,7 +41,35 @@ export const agentSkillRegistryAbi = [
 
   // ── job resolution (v2) ──
   { type: "function", name: "claimAfterReview", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
-  { type: "function", name: "disputeResult", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
+  { type: "function", name: "disputeResult", stateMutability: "payable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
+
+  // ── P1-A: Symmetric dispute bond ──
+  { type: "function", name: "respondToDispute", stateMutability: "payable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
+  { type: "function", name: "concedeDispute", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
+  { type: "function", name: "resolveDefaultConcede", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }], outputs: [] },
+  { type: "function", name: "arbitrate", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }, { name: "verdict", type: "uint8" }], outputs: [] },
+  { type: "function", name: "setDisputeBondBps", stateMutability: "nonpayable", inputs: [{ name: "bps", type: "uint256" }], outputs: [] },
+  { type: "function", name: "setArbiter", stateMutability: "nonpayable", inputs: [{ name: "newArbiter", type: "address" }], outputs: [] },
+  { type: "function", name: "disputeBondBps", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "arbiter", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  {
+    type: "function", name: "disputes", stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "disputeBond", type: "uint256" },
+      { name: "providerBond", type: "uint256" },
+      { name: "disputedAt", type: "uint256" },
+    ],
+  },
+  { type: "function", name: "REP_SLASH_STEP", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "REP_FLOOR", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "MIN_DISPUTE_BOND", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "RESPONSE_WINDOW", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+
+  // ── P0-A: evaluator agent ──
+  { type: "function", name: "createJobWithEvaluator", stateMutability: "payable", inputs: [{ name: "skillId", type: "uint256" }, { name: "taskHash", type: "bytes32" }, { name: "deadlineSecs", type: "uint256" }, { name: "evaluator", type: "address" }, { name: "evaluatorFee", type: "uint256" }], outputs: [{ name: "jobId", type: "uint256" }] },
+  { type: "function", name: "evaluateResult", stateMutability: "nonpayable", inputs: [{ name: "jobId", type: "uint256" }, { name: "approved", type: "bool" }], outputs: [] },
+  { type: "function", name: "getJobEvaluator", stateMutability: "view", inputs: [{ name: "jobId", type: "uint256" }], outputs: [{ name: "", type: "address" }, { name: "", type: "uint256" }] },
 
   // ── views ──
   { type: "function", name: "agentReputation", stateMutability: "view", inputs: [{ name: "agent", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
@@ -66,6 +94,8 @@ export const agentSkillRegistryAbi = [
       { name: "resultHash", type: "bytes32" },
       { name: "createdAt", type: "uint256" },
       { name: "completedAt", type: "uint256" },
+      { name: "evaluator", type: "address" },
+      { name: "evaluatorFee", type: "uint256" },
     ],
   },
   {
@@ -98,6 +128,15 @@ export const agentSkillRegistryAbi = [
   // ── pull-payment ──
   { type: "function", name: "withdraw", stateMutability: "nonpayable", inputs: [], outputs: [] },
 
+  // ── P0-B: cross-chain reputation + ownership (Ownable2Step) ──
+  { type: "function", name: "setCrossChainRep", stateMutability: "nonpayable", inputs: [{ name: "agent", type: "address" }, { name: "score", type: "uint256" }, { name: "sourceChain", type: "string" }], outputs: [] },
+  { type: "function", name: "crossChainRep", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "pendingOwner", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "transferOwnership", stateMutability: "nonpayable", inputs: [{ name: "newOwner", type: "address" }], outputs: [] },
+  { type: "function", name: "acceptOwnership", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "renounceOwnership", stateMutability: "nonpayable", inputs: [], outputs: [] },
+
   // ── events ──
   { type: "event", name: "SkillRegistered", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "owner", type: "address", indexed: true }, { name: "name", type: "string", indexed: false }, { name: "pricePerCall", type: "uint256", indexed: false }] },
   { type: "event", name: "SkillDeactivated", inputs: [{ name: "skillId", type: "uint256", indexed: true }] },
@@ -106,8 +145,20 @@ export const agentSkillRegistryAbi = [
   { type: "event", name: "JobCompleted", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "provider", type: "address", indexed: true }, { name: "payout", type: "uint256", indexed: false }, { name: "newReputation", type: "uint256", indexed: false }] },
   { type: "event", name: "JobRefunded", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "ResultDisputed", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
+  { type: "event", name: "JobEvaluated", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "evaluator", type: "address", indexed: true }, { name: "approved", type: "bool", indexed: false }, { name: "evaluatorPayout", type: "uint256", indexed: false }] },
   { type: "event", name: "MinReputationSet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "minReputation", type: "uint256", indexed: false }] },
   { type: "event", name: "IdentityPolicySet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "policy", type: "uint8", indexed: false }] },
   { type: "event", name: "Withdrawn", inputs: [{ name: "who", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "BondUpdated", inputs: [{ name: "agent", type: "address", indexed: true }, { name: "bondedAmount", type: "uint256", indexed: false }, { name: "seedEligible", type: "uint256", indexed: false }] },
+  // ── P1-A events ──
+  { type: "event", name: "DisputeBondPosted", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "requester", type: "address", indexed: true }, { name: "bond", type: "uint256", indexed: false }] },
+  { type: "event", name: "DisputeResponsePosted", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "provider", type: "address", indexed: true }, { name: "bond", type: "uint256", indexed: false }] },
+  { type: "event", name: "DisputeConceded", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "provider", type: "address", indexed: true }] },
+  { type: "event", name: "DisputeArbitrated", inputs: [{ name: "jobId", type: "uint256", indexed: true }, { name: "verdict", type: "uint8", indexed: false }, { name: "arbiter", type: "address", indexed: true }] },
+  { type: "event", name: "ArbiterUpdated", inputs: [{ name: "oldArbiter", type: "address", indexed: true }, { name: "newArbiter", type: "address", indexed: true }] },
+  { type: "event", name: "DisputeBondBpsUpdated", inputs: [{ name: "oldBps", type: "uint256", indexed: false }, { name: "newBps", type: "uint256", indexed: false }] },
+  // ── P0-B events ──
+  { type: "event", name: "CrossChainRepUpdated", inputs: [{ name: "agent", type: "address", indexed: true }, { name: "score", type: "uint256", indexed: false }, { name: "sourceChain", type: "string", indexed: false }] },
+  { type: "event", name: "OwnershipTransferred", inputs: [{ name: "previousOwner", type: "address", indexed: true }, { name: "newOwner", type: "address", indexed: true }] },
+  { type: "event", name: "OwnershipTransferStarted", inputs: [{ name: "previousOwner", type: "address", indexed: true }, { name: "newOwner", type: "address", indexed: true }] },
 ] as const;

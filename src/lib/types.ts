@@ -75,6 +75,8 @@ export interface JobDetail {
   status: JobStatus;
   result_hash: string | null; // 0x + 64 hex, or null if not yet delivered (all-zero)
   created_at: number; // unix seconds
+  evaluator: string | null; // address, or null if no evaluator (address(0))
+  evaluator_fee_phrs: string | null; // wei / 1e18, 6 dp; null if no evaluator
 }
 
 /** Aggregate stats over an agent's job edges. */

@@ -45,6 +45,8 @@ export interface OnchainJob {
   resultHash: Hash;
   createdAt: bigint;
   completedAt: bigint;
+  evaluator: Address;
+  evaluatorFee: bigint;
 }
 
 export interface KarmaService {
@@ -64,12 +66,39 @@ export interface KarmaService {
     account: Account,
     p: { skillId: bigint; taskHash: Hash; deadlineSecs: bigint; value: bigint },
   ): Promise<{ jobId: bigint | null; outcome: WriteOutcome }>;
+  /** Create a job with a neutral third-party evaluator (P0-A). */
+  createJobWithEvaluator(
+    account: Account,
+    p: { skillId: bigint; taskHash: Hash; deadlineSecs: bigint; evaluator: Address; evaluatorFee: bigint; value: bigint },
+  ): Promise<{ jobId: bigint | null; outcome: WriteOutcome }>;
   deliverResult(account: Account, p: { jobId: bigint; resultHash: Hash }): Promise<WriteOutcome>;
   confirmCompletion(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
-  /** Requester rejects a delivered result within the review window and reclaims escrow (v2). */
-  disputeResult(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Requester disputes a delivered result within the review window — bond-backed. */
+  disputeResult(account: Account, p: { jobId: bigint; value: bigint }): Promise<WriteOutcome>;
   /** Provider claims payment after the review window if the requester ghosted (v2). */
   claimAfterReview(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Provider matches the dispute bond to contest. */
+  respondToDispute(account: Account, p: { jobId: bigint; value: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Provider concedes the dispute. */
+  concedeDispute(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Anyone triggers default concede after RESPONSE_WINDOW. */
+  resolveDefaultConcede(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Arbiter adjudicates a contested dispute. verdict: 0=ProviderAtFault, 1=RequesterAtFault. */
+  arbitrate(account: Account, p: { jobId: bigint; verdict: number }): Promise<WriteOutcome>;
+  /** P1-A: Owner sets the dispute bond basis points. */
+  setDisputeBondBps(account: Account, p: { bps: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Owner sets the arbiter address. */
+  setArbiter(account: Account, p: { newArbiter: Address }): Promise<WriteOutcome>;
+  /** P1-A: Read dispute info for a job. */
+  getDisputeInfo(jobId: bigint): Promise<{ disputeBond: bigint; providerBond: bigint; disputedAt: bigint }>;
+  /** P1-A: Read the current dispute bond bps. */
+  getDisputeBondBps(): Promise<bigint>;
+  /** P1-A: Read the arbiter address. */
+  getArbiter(): Promise<Address>;
+  /** Evaluator approves or rejects a delivered result (P0-A). */
+  evaluateResult(account: Account, p: { jobId: bigint; approved: boolean }): Promise<WriteOutcome>;
+  /** Read the evaluator address and fee for a job (P0-A). */
+  getJobEvaluator(jobId: bigint): Promise<{ evaluator: Address; evaluatorFee: bigint }>;
   /** Owner adjusts a skill's on-chain Trust Gate threshold (v2). */
   setMinReputation(account: Account, p: { skillId: bigint; minReputation: number }): Promise<WriteOutcome>;
   /** Owner sets a skill's on-chain Identity Gate policy (P0). Declarative; server-enforced. */
@@ -95,6 +124,12 @@ export interface KarmaService {
   getSkillThreshold(skillId: bigint): number;
   /** Trust Gate (Phase 1): an address's requester reputation (max owned-skill rep, else 0). 0 RPC. */
   getReputation(addr: Address): number;
+  /** P0-B: cross-chain reputation score for an agent, 0 if none set. */
+  getCrossChainRep(addr: Address): Promise<bigint>;
+  /** P0-B: current registry owner (Ownable2Step). */
+  getOwner(): Promise<Address>;
+  /** P0-B: pending owner (Ownable2Step two-step transfer). */
+  getPendingOwner(): Promise<Address>;
 }
 
 function read<T>(functionName: string, args: readonly unknown[]): Promise<T> {
@@ -169,6 +204,8 @@ export const realKarmaService: KarmaService = {
       resultHash: t[7] as Hash,
       createdAt: t[8] as bigint,
       completedAt: t[9] as bigint,
+      evaluator: t[10] as Address,
+      evaluatorFee: t[11] as bigint,
     };
   },
 
@@ -188,6 +225,15 @@ export const realKarmaService: KarmaService = {
     return { jobId: extractId(outcome, "JobCreated", "jobId"), outcome };
   },
 
+  async createJobWithEvaluator(account, p) {
+    const outcome = await writeContractBounded(account, {
+      functionName: "createJobWithEvaluator",
+      args: [p.skillId, p.taskHash, p.deadlineSecs, p.evaluator, p.evaluatorFee],
+      value: p.value,
+    });
+    return { jobId: extractId(outcome, "JobCreated", "jobId"), outcome };
+  },
+
   deliverResult: (account, p) =>
     writeContractBounded(account, { functionName: "deliverResult", args: [p.jobId, p.resultHash] }),
 
@@ -195,10 +241,44 @@ export const realKarmaService: KarmaService = {
     writeContractBounded(account, { functionName: "confirmCompletion", args: [p.jobId] }),
 
   disputeResult: (account, p) =>
-    writeContractBounded(account, { functionName: "disputeResult", args: [p.jobId] }),
+    writeContractBounded(account, { functionName: "disputeResult", args: [p.jobId], value: p.value }),
 
   claimAfterReview: (account, p) =>
     writeContractBounded(account, { functionName: "claimAfterReview", args: [p.jobId] }),
+
+  respondToDispute: (account, p) =>
+    writeContractBounded(account, { functionName: "respondToDispute", args: [p.jobId], value: p.value }),
+
+  concedeDispute: (account, p) =>
+    writeContractBounded(account, { functionName: "concedeDispute", args: [p.jobId] }),
+
+  resolveDefaultConcede: (account, p) =>
+    writeContractBounded(account, { functionName: "resolveDefaultConcede", args: [p.jobId] }),
+
+  arbitrate: (account, p) =>
+    writeContractBounded(account, { functionName: "arbitrate", args: [p.jobId, p.verdict] }),
+
+  setDisputeBondBps: (account, p) =>
+    writeContractBounded(account, { functionName: "setDisputeBondBps", args: [p.bps] }),
+
+  setArbiter: (account, p) =>
+    writeContractBounded(account, { functionName: "setArbiter", args: [p.newArbiter] }),
+
+  async getDisputeInfo(jobId) {
+    const t = await read<readonly [bigint, bigint, bigint]>("disputes", [jobId]);
+    return { disputeBond: t[0], providerBond: t[1], disputedAt: t[2] };
+  },
+
+  getDisputeBondBps: () => read("disputeBondBps", []),
+  getArbiter: () => read("arbiter", []),
+
+  evaluateResult: (account, p) =>
+    writeContractBounded(account, { functionName: "evaluateResult", args: [p.jobId, p.approved] }),
+
+  async getJobEvaluator(jobId) {
+    const t = await read<readonly [Address, bigint]>("getJobEvaluator", [jobId]);
+    return { evaluator: t[0], evaluatorFee: t[1] };
+  },
 
   setMinReputation: (account, p) =>
     writeContractBounded(account, { functionName: "setMinReputation", args: [p.skillId, BigInt(p.minReputation)] }),
@@ -227,4 +307,7 @@ export const realKarmaService: KarmaService = {
   getByOwner: (addr) => skillIndex.getByOwner(addr),
   getSkillThreshold: (skillId) => skillIndex.getThreshold(Number(skillId)),
   getReputation: (addr) => skillIndex.getReputation(addr),
+  getCrossChainRep: (addr) => read("crossChainRep", [addr]),
+  getOwner: () => read("owner", []),
+  getPendingOwner: () => read("pendingOwner", []),
 };

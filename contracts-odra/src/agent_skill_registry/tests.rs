@@ -11,8 +11,12 @@ const DEADLINE_MS: u64 = 24 * 60 * 60 * 1_000; // 1 day
 
 fn setup() -> (HostEnv, AgentSkillRegistryHostRef, Address, Address) {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let init_args = AgentSkillRegistryInitArgs {
         review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     let contract = AgentSkillRegistry::deploy(&env, init_args);
     let alpha = env.get_account(1); // provider (skill owner)
@@ -64,6 +68,27 @@ fn open_job(
     contract
         .with_tokens(U512::from(PRICE))
         .create_job(skill_id, task_hash(label), DEADLINE_MS)
+}
+
+fn dispute_bond_for(price: u64) -> U512 {
+    let bond = U512::from(10_000u32) * U512::from(price) / U512::from(10_000u32);
+    let min = U512::from(MIN_DISPUTE_BOND_MOTES);
+    if bond < min { min } else { bond }
+}
+
+fn deliver_and_dispute(
+    env: &HostEnv,
+    reg: &mut AgentSkillRegistryHostRef,
+    alpha: Address,
+    beta: Address,
+    job_id: u64,
+) -> U512 {
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+    bond
 }
 
 // ── Happy path ─────────────────────────────────────────────
@@ -169,16 +194,12 @@ fn delivered_junk_result_requester_disputes_within_window() {
     let (env, mut reg, alpha, beta) = setup();
     let skill_id = register_skill(&env, &mut reg, alpha);
     let job_id = open_job(&env, &mut reg, beta, skill_id, "t");
-    env.set_caller(alpha);
-    reg.deliver_result(job_id, task_hash("r"));
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
 
-    env.set_caller(beta);
-    reg.dispute_result(job_id);
-
-    let bal_before = env.balance_of(&beta);
-    env.set_caller(beta);
-    reg.withdraw();
-    assert_eq!(env.balance_of(&beta), bal_before + U512::from(PRICE), "requester refunded on dispute");
+    // P1-A: dispute now holds escrow + bond; not auto-refunded until resolution
+    let d = reg.get_dispute_info(job_id).expect("dispute info present");
+    assert_eq!(d.dispute_bond, bond, "dispute bond recorded");
+    assert!(d.provider_bond.is_zero(), "provider hasn't responded yet");
     assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION, "dispute grants no provider rep");
 }
 
@@ -191,8 +212,12 @@ fn dispute_after_window_reverts() {
     reg.deliver_result(job_id, task_hash("r"));
 
     env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    let bond = dispute_bond_for(PRICE);
     env.set_caller(beta);
-    assert_eq!(reg.try_dispute_result(job_id), Err(Error::ReviewWindowClosed.into()));
+    assert_eq!(
+        reg.with_tokens(bond).try_dispute_result(job_id),
+        Err(Error::ReviewWindowClosed.into())
+    );
 }
 
 #[test]
@@ -385,8 +410,12 @@ fn constructor_default_window() {
 #[test]
 fn constructor_rejects_below_min() {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let bad = AgentSkillRegistryInitArgs {
         review_window_ms: MIN_REVIEW_WINDOW - 1,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     assert_eq!(
         AgentSkillRegistry::try_deploy(&env, bad).err(),
@@ -397,8 +426,12 @@ fn constructor_rejects_below_min() {
 #[test]
 fn constructor_rejects_above_max() {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let bad = AgentSkillRegistryInitArgs {
         review_window_ms: MAX_REVIEW_WINDOW + 1,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     assert_eq!(
         AgentSkillRegistry::try_deploy(&env, bad).err(),
@@ -842,7 +875,7 @@ fn composition_wrapper_can_include_itself_as_leaf_for_explicit_cut() {
     );
 }
 
-// ─── Cross-chain reputation consumer (P0.1) ───────────────────────────────────
+// ─── Cross-chain reputation via governance (P0-B) ──────────────────────────────
 
 #[test]
 fn cross_chain_rep_defaults_to_zero() {
@@ -852,15 +885,21 @@ fn cross_chain_rep_defaults_to_zero() {
 }
 
 #[test]
-fn set_cross_chain_rep_stores_and_reads() {
+fn governance_propose_approve_execute_sets_cross_chain_rep() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    // Owner is the deployer (account 0), set during init().
-    let owner = env.get_account(0);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 85, "stellar".to_string());
-    assert_eq!(reg.get_cross_chain_rep(agent), 85);
+    let signer = env.get_account(0);
 
+    env.set_caller(signer);
+    let pid = reg.propose_set_cross_chain_rep(agent, 85, "stellar".to_string());
+    assert_eq!(pid, 1);
+
+    // 1-of-1 threshold met at proposal time; wait for timelock
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(signer);
+    reg.execute_proposal(pid);
+
+    assert_eq!(reg.get_cross_chain_rep(agent), 85);
     assert!(env.emitted_event(
         &reg,
         CrossChainRepUpdated {
@@ -872,37 +911,43 @@ fn set_cross_chain_rep_stores_and_reads() {
 }
 
 #[test]
-fn set_cross_chain_rep_overwrites() {
+fn governance_overwrite_cross_chain_rep_via_second_proposal() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    let owner = env.get_account(0);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 70, "stellar".to_string());
+    let signer = env.get_account(0);
+
+    env.set_caller(signer);
+    let p1 = reg.propose_set_cross_chain_rep(agent, 70, "stellar".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(p1);
     assert_eq!(reg.get_cross_chain_rep(agent), 70);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 95, "stellar".to_string());
+
+    env.set_caller(signer);
+    let p2 = reg.propose_set_cross_chain_rep(agent, 95, "stellar".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(p2);
     assert_eq!(reg.get_cross_chain_rep(agent), 95);
 }
 
 #[test]
-fn set_cross_chain_rep_rejects_non_owner() {
+fn governance_propose_rejects_non_signer() {
     let (env, mut reg, alpha, _) = setup();
     let agent = env.get_account(3);
-    env.set_caller(alpha); // not the deployer/owner
+    env.set_caller(alpha); // not a governance signer
     assert_eq!(
-        reg.try_set_cross_chain_rep(agent, 80, "stellar".to_string()),
-        Err(Error::NotContractOwner.into())
+        reg.try_propose_set_cross_chain_rep(agent, 80, "stellar".to_string()),
+        Err(Error::NotGovernanceSigner.into())
     );
 }
 
 #[test]
-fn set_cross_chain_rep_rejects_score_over_max() {
+fn governance_propose_rejects_score_over_max() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    let owner = env.get_account(0);
-    env.set_caller(owner);
+    let signer = env.get_account(0);
+    env.set_caller(signer);
     assert_eq!(
-        reg.try_set_cross_chain_rep(agent, 101, "stellar".to_string()),
+        reg.try_propose_set_cross_chain_rep(agent, 101, "stellar".to_string()),
         Err(Error::BadThreshold.into())
     );
 }
@@ -965,17 +1010,25 @@ fn composition_dispute_refunds_full_escrow_and_freezes_reputation() {
     env.set_caller(omega);
     reg.deliver_result(job_id, task_hash("garbage"));
     env.set_caller(requester);
-    reg.dispute_result(job_id);
+    let bond = dispute_bond_for(COMPOSITE_PRICE);
+    reg.with_tokens(bond).dispute_result(job_id);
 
-    // Full escrow back to requester; every producer slice is zero.
-    assert_eq!(reg.pending_withdrawals_of(requester), U512::from(COMPOSITE_PRICE), "full refund");
+    // P1-A: bond-backed dispute holds escrow; concede or arbitrate to release
+    // Force default concede to release funds
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    reg.resolve_default_concede(job_id);
+
+    // Full escrow + bond back to requester; every producer slice is zero.
+    assert_eq!(reg.pending_withdrawals_of(requester), U512::from(COMPOSITE_PRICE) + bond, "full refund + bond");
     assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero(), "leaf A unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(beta), U512::zero(), "leaf B unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(gamma), U512::zero(), "leaf C unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(omega), U512::zero(), "wrapper unpaid on dispute");
 
-    // Dispute never moves trust signals.
-    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION, "composite rep frozen");
+    // P1-A: default concede slashes provider (omega) and composite skill rep.
+    // Leaf skills are unaffected (only the job's skill_id is slashed).
+    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION - REP_SLASH_STEP, "composite rep slashed");
+    assert_eq!(reg.agent_reputation(omega), BASE_REPUTATION - REP_SLASH_STEP, "provider (omega) agent rep slashed");
     assert_eq!(reg.get_skill(leaf_a).reputation_score, BASE_REPUTATION, "leaf A rep frozen");
     assert_eq!(reg.get_skill(leaf_b).reputation_score, BASE_REPUTATION, "leaf B rep frozen");
     assert_eq!(reg.get_skill(leaf_c).reputation_score, BASE_REPUTATION, "leaf C rep frozen");
@@ -1026,4 +1079,1304 @@ fn composition_settle_self_deal_leaf_paid_but_no_reputation() {
     // Requester earns exactly one step (the composite layer), not a second from leaf_a.
     assert_eq!(reg.agent_reputation(requester), BASE_REPUTATION + REPUTATION_STEP, "requester one composite-layer bump");
     assert_eq!(reg.agent_reputation(arms), BASE_REPUTATION + REPUTATION_STEP, "arm's-length leaf owner bumped");
+}
+
+// ─── P0-A: Evaluator Agent ──────────────────────────────────────────────────
+//
+// Mirrors the 23 Foundry evaluator tests from `test/AgentSkillRegistry.t.sol`.
+// The evaluator is a neutral third party that can approve or reject a delivered
+// result. Fee routing: evaluator gets paid regardless of verdict; escrow goes
+// to provider on approval, requester on rejection.
+
+const EVAL_FEE: u64 = 100_000; // motes — evaluator's fee
+
+fn open_job_with_evaluator(
+    env: &HostEnv,
+    contract: &mut AgentSkillRegistryHostRef,
+    requester: Address,
+    skill_id: u64,
+    evaluator: Address,
+    label: &str,
+) -> u64 {
+    env.set_caller(requester);
+    contract
+        .with_tokens(U512::from(PRICE + EVAL_FEE))
+        .create_job_with_evaluator(
+            skill_id,
+            task_hash(label),
+            DEADLINE_MS,
+            evaluator,
+            U512::from(EVAL_FEE),
+        )
+}
+
+#[test]
+fn evaluator_create_job_with_evaluator_happy_path() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "eval-t1");
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.evaluator, Some(evaluator));
+    assert_eq!(j.evaluator_fee, U512::from(EVAL_FEE));
+    assert_eq!(j.escrow_amount, U512::from(PRICE));
+}
+
+#[test]
+fn evaluator_rejects_zero_address_not_applicable() {
+    // Odra uses Option<Address> — None is the "no evaluator" case, handled by create_job.
+    // This test ensures backward compat: create_job sets evaluator=None, fee=0.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "no-eval");
+    let j = reg.get_job(job_id);
+    assert_eq!(j.evaluator, None);
+    assert_eq!(j.evaluator_fee, U512::zero());
+}
+
+#[test]
+fn evaluator_rejects_evaluator_is_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE + EVAL_FEE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("self-eval"),
+                DEADLINE_MS,
+                beta, // evaluator == requester
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EvaluatorCannotBeRequester.into())
+    );
+}
+
+#[test]
+fn evaluator_rejects_evaluator_is_provider() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE + EVAL_FEE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("provider-eval"),
+                DEADLINE_MS,
+                alpha, // evaluator == provider (skill owner)
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EvaluatorCannotBeProvider.into())
+    );
+}
+
+#[test]
+fn evaluator_escrow_must_include_fee() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    env.set_caller(beta);
+    // Send only PRICE, not PRICE + EVAL_FEE
+    assert_eq!(
+        reg.with_tokens(U512::from(PRICE))
+            .try_create_job_with_evaluator(
+                skill_id,
+                task_hash("short"),
+                DEADLINE_MS,
+                evaluator,
+                U512::from(EVAL_FEE),
+            ),
+        Err(Error::EscrowMustEqualPrice.into())
+    );
+}
+
+#[test]
+fn evaluator_approve_pays_provider_and_evaluator() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "approve-1");
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("result"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Provider gets escrow via pull-payment
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Evaluator gets fee
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+    // Requester gets nothing
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Completed);
+}
+
+#[test]
+fn evaluator_reject_refunds_requester_and_pays_evaluator() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "reject-1");
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("result"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    // Requester gets escrow back
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE));
+    // Evaluator gets fee regardless
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+    // Provider gets nothing
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+}
+
+#[test]
+fn evaluator_approve_emits_job_evaluated_event() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "event-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    assert!(env.emitted_event(
+        &reg,
+        JobEvaluated {
+            job_id,
+            evaluator,
+            approved: true,
+            evaluator_payout: U512::from(EVAL_FEE),
+        }
+    ));
+}
+
+#[test]
+fn evaluator_reject_emits_job_evaluated_and_result_disputed() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "event-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    assert!(env.emitted_event(
+        &reg,
+        JobEvaluated {
+            job_id,
+            evaluator,
+            approved: false,
+            evaluator_payout: U512::from(EVAL_FEE),
+        }
+    ));
+    assert!(env.emitted_event(
+        &reg,
+        ResultDisputed {
+            job_id,
+            requester: beta,
+            amount: U512::from(PRICE),
+        }
+    ));
+}
+
+#[test]
+fn evaluator_not_evaluator_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let outsider = env.get_account(4);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Outsider tries to evaluate
+    env.set_caller(outsider);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_requester_cannot_evaluate() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(beta); // requester, not evaluator
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_provider_cannot_evaluate() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "auth-3");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(alpha); // provider, not evaluator
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+#[test]
+fn evaluator_double_evaluate_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "double-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Second evaluation → job is already Completed, not Delivered
+    env.set_caller(evaluator);
+    assert_eq!(reg.try_evaluate_result(job_id, false), Err(Error::JobNotDelivered.into()));
+}
+
+#[test]
+fn evaluator_after_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "late-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    env.set_caller(evaluator);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::ReviewWindowClosed.into()));
+}
+
+#[test]
+fn evaluator_on_job_without_evaluator_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let outsider = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "no-eval-job");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_evaluate_result(job_id, true), Err(Error::NotEvaluator.into()));
+}
+
+// ── Fee routing for requester-override paths ──
+
+#[test]
+fn evaluator_confirm_completion_refunds_fee_to_requester() {
+    // Requester uses confirm_completion directly (bypassing evaluator) → evaluator fee refunded.
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "confirm-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(beta);
+    reg.confirm_completion(job_id);
+
+    // Provider gets escrow
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Requester gets evaluator fee refund
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+    // Evaluator gets nothing (didn't act)
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_dispute_result_refunds_escrow_and_fee_to_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "dispute-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+
+    // P1-A: evaluator fee immediately refunded; escrow held until resolution
+    // Evaluator fee returned immediately on dispute
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE), "eval fee refunded immediately");
+    // Force default concede to release escrow + bond
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    reg.resolve_default_concede(job_id);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE) + U512::from(PRICE) + bond);
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_claim_after_review_refunds_fee_to_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "claim-fee-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    env.set_caller(alpha);
+    reg.claim_after_review(job_id);
+
+    // Provider gets escrow
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    // Requester gets evaluator fee refund
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+    // Evaluator gets nothing (didn't act)
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_claim_refund_returns_escrow_and_fee() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "refund-fee-1");
+
+    env.advance_block_time(DEADLINE_MS + 1);
+    env.set_caller(beta);
+    reg.claim_refund(job_id);
+
+    // Requester gets escrow + evaluator fee
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE + EVAL_FEE));
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
+}
+
+#[test]
+fn evaluator_approve_bumps_reputation() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "rep-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    let s = reg.get_skill(skill_id);
+    assert_eq!(s.reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(s.total_invocations, 1);
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.agent_reputation(beta), BASE_REPUTATION + REPUTATION_STEP);
+}
+
+#[test]
+fn evaluator_reject_freezes_reputation() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "rep-2");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    let s = reg.get_skill(skill_id);
+    assert_eq!(s.reputation_score, BASE_REPUTATION, "rejected → no rep change");
+    assert_eq!(s.total_invocations, 0);
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION);
+    assert_eq!(reg.agent_reputation(beta), BASE_REPUTATION);
+}
+
+#[test]
+fn evaluator_zero_fee_approve_still_works() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+
+    env.set_caller(beta);
+    let job_id = reg
+        .with_tokens(U512::from(PRICE))
+        .create_job_with_evaluator(skill_id, task_hash("zero-fee"), DEADLINE_MS, evaluator, U512::zero());
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero()); // zero fee
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+}
+
+#[test]
+fn evaluator_backward_compat_create_job_still_works() {
+    // Old create_job path must still work unchanged — evaluator=None, fee=0.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "compat-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(beta);
+    reg.confirm_completion(job_id);
+
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE));
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero()); // no fee to refund
+}
+
+#[test]
+fn evaluator_get_job_evaluator_view() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "view-1");
+
+    let (ev, fee) = reg.get_job_evaluator(job_id);
+    assert_eq!(ev, Some(evaluator));
+    assert_eq!(fee, U512::from(EVAL_FEE));
+
+    // Job without evaluator
+    let job_id2 = open_job(&env, &mut reg, beta, skill_id, "view-2");
+    let (ev2, fee2) = reg.get_job_evaluator(job_id2);
+    assert_eq!(ev2, None);
+    assert_eq!(fee2, U512::zero());
+}
+
+// ─── P0-B: Governance multisig + timelock tests ────────────────────────────────
+
+fn setup_multisig() -> (HostEnv, AgentSkillRegistryHostRef, Address, Address, Address) {
+    let env = odra_test::env();
+    let signer_a = env.get_account(0);
+    let signer_b = env.get_account(1);
+    let signer_c = env.get_account(2);
+    let init_args = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![signer_a, signer_b, signer_c],
+        governance_threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    let contract = AgentSkillRegistry::deploy(&env, init_args);
+    (env, contract, signer_a, signer_b, signer_c)
+}
+
+#[test]
+fn governance_multisig_2_of_3_happy_path() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    assert_eq!(reg.proposal_approval_count(pid), 2);
+
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+
+    // Anyone can execute after threshold + timelock
+    let executor = env.get_account(7);
+    env.set_caller(executor);
+    reg.execute_proposal(pid);
+
+    assert_eq!(reg.get_cross_chain_rep(agent), 80);
+}
+
+#[test]
+fn governance_execute_before_threshold_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    // Only 1 approval, threshold is 2
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ThresholdNotMet.into()));
+}
+
+#[test]
+fn governance_execute_before_timelock_reverts() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    // Threshold met but timelock not elapsed
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY - 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::TimelockNotElapsed.into()));
+}
+
+#[test]
+fn governance_duplicate_approval_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    // Proposer already auto-approved; second approval reverts
+    env.set_caller(sa);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::AlreadyApproved.into()));
+}
+
+#[test]
+fn governance_approve_by_non_signer_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+    let outsider = env.get_account(7);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::NotGovernanceSigner.into()));
+}
+
+#[test]
+fn governance_cancel_proposal() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    // Any signer can cancel
+    env.set_caller(sa);
+    reg.cancel_proposal(pid);
+
+    // Cancelled proposal can't be executed
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ProposalCancelled.into()));
+}
+
+#[test]
+fn governance_cancel_by_non_signer_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+    let outsider = env.get_account(7);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_cancel_proposal(pid), Err(Error::NotGovernanceSigner.into()));
+}
+
+#[test]
+fn governance_double_execute_reverts() {
+    let (env, mut reg, _, _) = setup();
+    let sa = env.get_account(0);
+    let agent = env.get_account(3);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ProposalAlreadyExecuted.into()));
+}
+
+#[test]
+fn governance_approve_executed_proposal_reverts() {
+    let (env, mut reg, sa, sb, sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+
+    env.set_caller(sc);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::ProposalAlreadyExecuted.into()));
+}
+
+#[test]
+fn governance_approve_cancelled_proposal_reverts() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.cancel_proposal(pid);
+
+    env.set_caller(sb);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::ProposalCancelled.into()));
+}
+
+#[test]
+fn governance_nonexistent_proposal_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    env.set_caller(sa);
+    assert_eq!(reg.try_approve_proposal(999), Err(Error::ProposalNotFound.into()));
+    assert_eq!(reg.try_execute_proposal(999), Err(Error::ProposalNotFound.into()));
+    assert_eq!(reg.try_cancel_proposal(999), Err(Error::ProposalNotFound.into()));
+}
+
+#[test]
+fn governance_views() {
+    let (env, reg, sa, sb, sc) = setup_multisig();
+
+    assert!(reg.is_governance_signer(sa));
+    assert!(reg.is_governance_signer(sb));
+    assert!(reg.is_governance_signer(sc));
+    assert!(!reg.is_governance_signer(env.get_account(7)));
+    assert_eq!(reg.get_governance_threshold(), 2);
+    assert_eq!(reg.get_governance_signers(), vec![sa, sb, sc]);
+    assert_eq!(reg.get_timelock_delay(), DEFAULT_TIMELOCK_DELAY);
+}
+
+#[test]
+fn governance_proposal_view() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 75, "cosmos".to_string());
+
+    let proposal = reg.get_proposal(pid);
+    assert_eq!(proposal.proposer, sa);
+    assert!(!proposal.executed);
+    assert!(!proposal.cancelled);
+    assert_eq!(reg.proposal_approval_count(pid), 1);
+}
+
+#[test]
+fn governance_emits_events() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    assert!(env.emitted_event(&reg, ProposalCreated { proposal_id: pid, proposer: sa }));
+    assert!(env.emitted_event(&reg, ProposalApproved {
+        proposal_id: pid,
+        signer: sa,
+        approval_count: 1,
+        threshold: 2,
+    }));
+
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalApproved {
+        proposal_id: pid,
+        signer: sb,
+        approval_count: 2,
+        threshold: 2,
+    }));
+
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    let executor = env.get_account(7);
+    env.set_caller(executor);
+    reg.execute_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalExecuted { proposal_id: pid, executor }));
+}
+
+#[test]
+fn governance_cancel_emits_event() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sa);
+    reg.cancel_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalCancelled { proposal_id: pid }));
+}
+
+#[test]
+fn governance_init_emits_configured_event() {
+    let (env, reg, _sa, _sb, _sc) = setup_multisig();
+    assert!(env.emitted_event(&reg, GovernanceConfigured {
+        threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    }));
+}
+
+// ── Governance init validation ──
+
+#[test]
+fn governance_init_rejects_empty_signers() {
+    let env = odra_test::env();
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_threshold_zero() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 0,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_threshold_over_signers() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_duplicate_signers() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer, deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::DuplicateSigner.into())
+    );
+}
+
+#[test]
+fn evaluator_withdraw_flow_after_approve() {
+    // Full end-to-end: evaluator approves → both provider and evaluator withdraw
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "withdraw-1");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, true);
+
+    // Provider withdraws escrow
+    let bal_before_alpha = env.balance_of(&alpha);
+    env.set_caller(alpha);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&alpha), bal_before_alpha + U512::from(PRICE));
+
+    // Evaluator withdraws fee
+    let bal_before_eval = env.balance_of(&evaluator);
+    env.set_caller(evaluator);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&evaluator), bal_before_eval + U512::from(EVAL_FEE));
+}
+
+// ─── P1-A: Symmetric Dispute Bond ──────────────────────────────────────────────
+
+#[test]
+fn p1a_provider_at_fault_full_flow() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-paf");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    // Provider responds
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    // Arbiter rules ProviderAtFault
+    let deployer = env.get_account(0); // = arbiter
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::ProviderAtFault);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Refunded);
+    // Requester gets escrow + both bonds
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond + bond,
+    );
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+    // Provider rep slashed
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_requester_at_fault_full_flow() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-raf");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::RequesterAtFault);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Completed);
+    // Provider gets escrow + both bonds
+    assert_eq!(
+        reg.pending_withdrawals_of(alpha),
+        U512::from(PRICE) + bond + bond,
+    );
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+    // Provider rep bumped (arm's-length)
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+}
+
+#[test]
+fn p1a_provider_concedes() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.concede_dispute(job_id);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Refunded);
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond,
+    );
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_default_concede_after_response_window() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-dflt");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    // Anyone can trigger
+    let outsider = env.get_account(5);
+    env.set_caller(outsider);
+    reg.resolve_default_concede(job_id);
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond,
+    );
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_wrong_bond_amount_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-wrong");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(bond + U512::from(1u64)).try_dispute_result(job_id),
+        Err(Error::WrongDisputeBond.into()),
+    );
+}
+
+#[test]
+fn p1a_zero_escrow_uses_min_dispute_bond() {
+    // When escrow is zero, the dispute bond defaults to MIN_DISPUTE_BOND_MOTES
+    let (env, mut reg, _, _) = setup();
+    let alpha = env.get_account(1);
+    env.set_caller(alpha);
+    let skill_id = reg.register_skill(
+        "free".to_string(), "free skill".to_string(), "mcp://free".to_string(),
+        U512::zero(), 0, IDENTITY_POLICY_NONE,
+    );
+
+    let beta = env.get_account(2);
+    env.set_caller(beta);
+    let job_id = reg.with_tokens(U512::zero()).create_job(skill_id, task_hash("free-job"), DEADLINE_MS);
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+    env.set_caller(beta);
+    reg.with_tokens(min_bond).dispute_result(job_id);
+
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, min_bond, "MIN_DISPUTE_BOND_MOTES used for zero-escrow");
+}
+
+#[test]
+fn p1a_response_after_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-late-resp");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond).try_respond_to_dispute(job_id),
+        Err(Error::ResponseWindowClosed.into()),
+    );
+}
+
+#[test]
+fn p1a_double_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-dbl");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond).try_respond_to_dispute(job_id),
+        Err(Error::AlreadyResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_concede_after_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc-resp");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.try_concede_dispute(job_id),
+        Err(Error::AlreadyResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_arbitrate_before_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-arb-early");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    assert_eq!(
+        reg.try_arbitrate(job_id, Verdict::ProviderAtFault),
+        Err(Error::ProviderNotResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_not_arbiter_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-na");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha); // alpha is not arbiter
+    assert_eq!(
+        reg.try_arbitrate(job_id, Verdict::ProviderAtFault),
+        Err(Error::NotArbiter.into()),
+    );
+}
+
+#[test]
+fn p1a_default_concede_before_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-early-dflt");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(beta);
+    assert_eq!(
+        reg.try_resolve_default_concede(job_id),
+        Err(Error::ResponseWindowOpen.into()),
+    );
+}
+
+#[test]
+fn p1a_rep_slash_floors_at_rep_floor() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+
+    // Slash multiple times to drive rep to floor
+    for i in 0..10u64 {
+        let job_id = open_job(&env, &mut reg, beta, skill_id, &format!("slash-{i}"));
+        let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+        env.set_caller(alpha);
+        reg.concede_dispute(job_id);
+    }
+
+    assert_eq!(reg.agent_reputation(alpha), REP_FLOOR, "agent rep floored at REP_FLOOR, not 0");
+    assert_eq!(reg.get_skill(skill_id).reputation_score, REP_FLOOR, "skill rep floored at REP_FLOOR");
+}
+
+#[test]
+fn p1a_set_dispute_bond_bps() {
+    let (env, mut reg, _, _) = setup();
+    let deployer = env.get_account(0); // governance signer
+    env.set_caller(deployer);
+    reg.set_dispute_bond_bps(5_000);
+    assert_eq!(reg.get_dispute_bond_bps(), 5_000);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeBondBpsUpdated { old_bps: 10_000, new_bps: 5_000 },
+    ));
+}
+
+#[test]
+fn p1a_set_arbiter() {
+    let (env, mut reg, alpha, _) = setup();
+    let deployer = env.get_account(0);
+    let old_arbiter = reg.get_arbiter();
+    assert_eq!(old_arbiter, deployer);
+
+    env.set_caller(deployer);
+    reg.set_arbiter(alpha);
+    assert_eq!(reg.get_arbiter(), alpha);
+
+    assert!(env.emitted_event(
+        &reg,
+        ArbiterUpdated { old_arbiter: deployer, new_arbiter: alpha },
+    ));
+}
+
+#[test]
+fn p1a_set_dispute_bond_bps_non_signer_reverts() {
+    let (env, mut reg, alpha, _) = setup();
+    env.set_caller(alpha); // not governance signer
+    assert_eq!(
+        reg.try_set_dispute_bond_bps(5_000),
+        Err(Error::NotGovernanceSigner.into()),
+    );
+}
+
+#[test]
+fn p1a_set_arbiter_non_signer_reverts() {
+    let (env, mut reg, alpha, _) = setup();
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.try_set_arbiter(alpha),
+        Err(Error::NotGovernanceSigner.into()),
+    );
+}
+
+#[test]
+fn p1a_evaluator_rejection_still_terminal() {
+    // Evaluator rejection (evaluate_result(false)) is still terminal —
+    // no bonded dispute, no need for resolution
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "eval-rej");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+    // No dispute info → evaluator rejection, not bonded dispute
+    assert!(reg.get_dispute_info(job_id).is_none(), "no DisputeInfo for evaluator rejection");
+    // Requester gets escrow refund immediately
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE));
+    // Evaluator gets fee
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+}
+
+#[test]
+fn p1a_requester_can_still_dispute_with_bond_after_evaluator_set() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "req-disp-eval");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Requester can dispute (with bond) even when there's an evaluator set
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, bond);
+    // Evaluator fee returned to requester immediately
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+}
+
+#[test]
+fn p1a_provider_wrong_bond_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-wrong-prov");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond + U512::from(1u64)).try_respond_to_dispute(job_id),
+        Err(Error::WrongDisputeBond.into()),
+    );
+}
+
+#[test]
+fn p1a_full_withdrawal_after_arbitration() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-withdraw");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::ProviderAtFault);
+
+    // Requester withdraws everything
+    let expected = U512::from(PRICE) + bond + bond;
+    assert_eq!(reg.pending_withdrawals_of(beta), expected);
+    let bal_before = env.balance_of(&beta);
+    env.set_caller(beta);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&beta), bal_before + expected);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+}
+
+#[test]
+fn p1a_events_emitted_on_dispute_and_response() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-events");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeBondPosted { job_id, requester: beta, bond },
+    ));
+    assert!(env.emitted_event(
+        &reg,
+        ResultDisputed { job_id, requester: beta, amount: U512::from(PRICE) },
+    ));
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    assert!(env.emitted_event(
+        &reg,
+        DisputeResponsePosted { job_id, provider: alpha, bond },
+    ));
+}
+
+#[test]
+fn p1a_concede_event_emitted() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc-ev");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.concede_dispute(job_id);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeConceded { job_id, provider: alpha },
+    ));
+}
+
+#[test]
+fn p1a_arbitrate_event_emitted() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-arb-ev");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::RequesterAtFault);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeArbitrated {
+            job_id,
+            verdict: Verdict::RequesterAtFault,
+            arbiter: deployer,
+        },
+    ));
+}
+
+#[test]
+fn p1a_lower_bps_changes_required_bond() {
+    let (env, mut reg, _, _) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.set_dispute_bond_bps(5_000); // 0.5× escrow
+
+    let alpha = env.get_account(1);
+    let beta = env.get_account(2);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-lowbps");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Bond should be 0.5 × PRICE
+    let expected_bond = U512::from(5_000u32) * U512::from(PRICE) / U512::from(10_000u32);
+    let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+    let bond = if expected_bond < min_bond { min_bond } else { expected_bond };
+
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, bond);
 }
