@@ -6,8 +6,8 @@
  * surface changes without a matching update here.
  */
 export const agentSkillRegistryAbi = [
-  // ── constructor (review window is deploy-time config, then immutable) ──
-  { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "reviewWindowSecs", type: "uint256" }] },
+  // ── constructor (review window + initial owner — P0-B: Ownable2Step) ──
+  { type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "reviewWindowSecs", type: "uint256" }, { name: "initialOwner", type: "address" }] },
 
   // ── constants ──
   { type: "function", name: "BASE_REPUTATION", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
@@ -105,6 +105,15 @@ export const agentSkillRegistryAbi = [
   // ── pull-payment ──
   { type: "function", name: "withdraw", stateMutability: "nonpayable", inputs: [], outputs: [] },
 
+  // ── P0-B: cross-chain reputation + ownership (Ownable2Step) ──
+  { type: "function", name: "setCrossChainRep", stateMutability: "nonpayable", inputs: [{ name: "agent", type: "address" }, { name: "score", type: "uint256" }, { name: "sourceChain", type: "string" }], outputs: [] },
+  { type: "function", name: "crossChainRep", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "pendingOwner", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "transferOwnership", stateMutability: "nonpayable", inputs: [{ name: "newOwner", type: "address" }], outputs: [] },
+  { type: "function", name: "acceptOwnership", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "renounceOwnership", stateMutability: "nonpayable", inputs: [], outputs: [] },
+
   // ── events ──
   { type: "event", name: "SkillRegistered", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "owner", type: "address", indexed: true }, { name: "name", type: "string", indexed: false }, { name: "pricePerCall", type: "uint256", indexed: false }] },
   { type: "event", name: "SkillDeactivated", inputs: [{ name: "skillId", type: "uint256", indexed: true }] },
@@ -118,4 +127,8 @@ export const agentSkillRegistryAbi = [
   { type: "event", name: "IdentityPolicySet", inputs: [{ name: "skillId", type: "uint256", indexed: true }, { name: "policy", type: "uint8", indexed: false }] },
   { type: "event", name: "Withdrawn", inputs: [{ name: "who", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }] },
   { type: "event", name: "BondUpdated", inputs: [{ name: "agent", type: "address", indexed: true }, { name: "bondedAmount", type: "uint256", indexed: false }, { name: "seedEligible", type: "uint256", indexed: false }] },
+  // ── P0-B events ──
+  { type: "event", name: "CrossChainRepUpdated", inputs: [{ name: "agent", type: "address", indexed: true }, { name: "score", type: "uint256", indexed: false }, { name: "sourceChain", type: "string", indexed: false }] },
+  { type: "event", name: "OwnershipTransferred", inputs: [{ name: "previousOwner", type: "address", indexed: true }, { name: "newOwner", type: "address", indexed: true }] },
+  { type: "event", name: "OwnershipTransferStarted", inputs: [{ name: "previousOwner", type: "address", indexed: true }, { name: "newOwner", type: "address", indexed: true }] },
 ] as const;

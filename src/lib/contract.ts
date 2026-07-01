@@ -172,7 +172,8 @@ export type IndexedEvent =
   | { type: "ResultDisputed"; blockNumber: bigint; jobId: bigint; requester: Address; amount: bigint }
   | { type: "JobEvaluated"; blockNumber: bigint; jobId: bigint; evaluator: Address; approved: boolean; evaluatorPayout: bigint }
   | { type: "BondUpdated"; blockNumber: bigint; agent: Address; bondedAmount: bigint; seedEligible: bigint }
-  | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint };
+  | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint }
+  | { type: "CrossChainRepUpdated"; blockNumber: bigint; agent: Address; score: bigint; sourceChain: string };
 
 export interface IndexerWatchHandlers {
   onLogs: (events: IndexedEvent[]) => void;
@@ -382,6 +383,12 @@ export function mapLog(raw: unknown): IndexedEvent | null {
       return {
         type: "MinReputationSet", blockNumber: bn,
         skillId: a.skillId as bigint, minReputation: a.minReputation as bigint,
+      };
+    case "CrossChainRepUpdated":
+      return {
+        type: "CrossChainRepUpdated", blockNumber: bn,
+        agent: a.agent as Address, score: a.score as bigint,
+        sourceChain: a.sourceChain as string,
       };
     default:
       return null;

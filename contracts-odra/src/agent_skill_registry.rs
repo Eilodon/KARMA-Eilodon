@@ -27,6 +27,10 @@ pub const IDENTITY_POLICY_NONE: u8 = 0;
 pub const IDENTITY_POLICY_T3N: u8 = 1;
 pub const IDENTITY_POLICY_T3N_FRESH: u8 = 2;
 
+// P0-B: governance constants. Multisig + timelock replaces single-EOA admin.
+pub const DEFAULT_TIMELOCK_DELAY: u64 = 48 * 60 * 60 * 1_000; // 48 hours in ms
+pub const MAX_GOVERNANCE_SIGNERS: u32 = 11;
+
 // Composition primitive (T2.1). Weights live on a basis-points axis (10_000 = 100%) so
 // integer arithmetic stays exact and the `register_composition` validation is a clean
 // `sum == WEIGHT_DENOMINATOR` check. Single-level only for hackathon scope: a leaf may
@@ -75,6 +79,16 @@ pub enum Error {
     EvaluatorCannotBeRequester = 33,
     EvaluatorCannotBeProvider = 34,
     NotEvaluator = 35,
+    // ── P0-B: Governance (multisig + timelock) ──
+    InvalidGovernanceConfig = 36,
+    DuplicateSigner = 37,
+    NotGovernanceSigner = 38,
+    ProposalNotFound = 39,
+    AlreadyApproved = 40,
+    ThresholdNotMet = 41,
+    TimelockNotElapsed = 42,
+    ProposalAlreadyExecuted = 43,
+    ProposalCancelled = 44,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -123,6 +137,25 @@ pub struct Job {
     pub evaluator: Option<Address>,
     /// P0-A: fee held for the evaluator; refunded to requester if unused.
     pub evaluator_fee: U512,
+}
+
+// ── P0-B: Governance types ──────────────────────────────────────────────────
+#[odra::odra_type]
+pub enum ProposalAction {
+    SetCrossChainRep {
+        agent: Address,
+        score: u32,
+        source_chain: String,
+    },
+}
+
+#[odra::odra_type]
+pub struct GovernanceProposal {
+    pub action: ProposalAction,
+    pub proposer: Address,
+    pub proposed_at: u64,
+    pub executed: bool,
+    pub cancelled: bool,
 }
 
 // ─── Events ────────────────────────────────────────────────────────────────
@@ -218,6 +251,38 @@ pub struct CrossChainRepUpdated {
     pub source_chain: String,
 }
 
+// ── P0-B Governance events ──────────────────────────────────────────────────
+#[odra::event]
+pub struct ProposalCreated {
+    pub proposal_id: u64,
+    pub proposer: Address,
+}
+
+#[odra::event]
+pub struct ProposalApproved {
+    pub proposal_id: u64,
+    pub signer: Address,
+    pub approval_count: u32,
+    pub threshold: u32,
+}
+
+#[odra::event]
+pub struct ProposalExecuted {
+    pub proposal_id: u64,
+    pub executor: Address,
+}
+
+#[odra::event]
+pub struct ProposalCancelled {
+    pub proposal_id: u64,
+}
+
+#[odra::event]
+pub struct GovernanceConfigured {
+    pub threshold: u32,
+    pub timelock_delay_ms: u64,
+}
+
 // ── Composition events (T2.1) ────────────────────────────────────────────────
 #[odra::event]
 pub struct CompositionRegistered {
@@ -251,6 +316,7 @@ pub struct Composition {
     SkillRegistered, SkillDeactivated, JobCreated, ResultDelivered, JobCompleted,
     JobRefunded, ResultDisputed, JobEvaluated, MinReputationSet, IdentityPolicySet,
     Withdrawn, BondUpdated, CompositionRegistered, CompositionLeafPayout, CrossChainRepUpdated,
+    ProposalCreated, ProposalApproved, ProposalExecuted, ProposalCancelled, GovernanceConfigured,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -271,19 +337,50 @@ pub struct AgentSkillRegistry {
     compositions: Mapping<u64, Composition>,
     /// Cross-chain reputation (P0.1). Admin-gated bridge from Soroban verifier attestations.
     cross_chain_rep: Mapping<Address, u32>,
-    /// Contract owner (set at init, used for admin-gated cross-chain rep updates).
-    owner: Var<Address>,
+    // ── P0-B: Governance (multisig + timelock) ─────────────────────────────────
+    governance_signers: Var<Vec<Address>>,
+    governance_threshold: Var<u32>,
+    timelock_delay: Var<u64>,
+    proposal_counter: Var<u64>,
+    proposals: Mapping<u64, GovernanceProposal>,
+    proposal_approvals: Mapping<u64, Vec<Address>>,
 }
 
 #[odra::module]
 impl AgentSkillRegistry {
     /// Deploy-time configured, then immutable. Bounded to `[MIN_REVIEW_WINDOW, MAX_REVIEW_WINDOW]`.
-    pub fn init(&mut self, review_window_ms: u64) {
+    /// P0-B: governance signers + threshold + timelock replace single-EOA owner.
+    pub fn init(
+        &mut self,
+        review_window_ms: u64,
+        governance_signers: Vec<Address>,
+        governance_threshold: u32,
+        timelock_delay_ms: u64,
+    ) {
         if review_window_ms < MIN_REVIEW_WINDOW || review_window_ms > MAX_REVIEW_WINDOW {
             self.env().revert(Error::BadReviewWindow);
         }
+        if governance_signers.is_empty() || governance_signers.len() as u32 > MAX_GOVERNANCE_SIGNERS {
+            self.env().revert(Error::InvalidGovernanceConfig);
+        }
+        if governance_threshold == 0 || governance_threshold > governance_signers.len() as u32 {
+            self.env().revert(Error::InvalidGovernanceConfig);
+        }
+        for i in 0..governance_signers.len() {
+            for j in (i + 1)..governance_signers.len() {
+                if governance_signers[i] == governance_signers[j] {
+                    self.env().revert(Error::DuplicateSigner);
+                }
+            }
+        }
         self.review_window.set(review_window_ms);
-        self.owner.set(self.env().caller());
+        self.governance_signers.set(governance_signers);
+        self.governance_threshold.set(governance_threshold);
+        self.timelock_delay.set(timelock_delay_ms);
+        self.env().emit_event(GovernanceConfigured {
+            threshold: governance_threshold,
+            timelock_delay_ms,
+        });
     }
 
     // ── Skill lifecycle ────────────────────────────────────────────────────
@@ -724,32 +821,137 @@ impl AgentSkillRegistry {
         });
     }
 
-    // ── Cross-chain reputation consumer (P0.1) ──────────────────────────────
+    // ── Cross-chain reputation consumer (P0.1, governed by P0-B) ────────────
     //
-    // Odra cannot verify Soroban Groth16 proofs directly. Instead, the contract owner
-    // (trusted bridge) attests cross-chain reputation based on verified Soroban credentials.
-    // This mirrors the Soroban `admin_set_cross_chain_rep` pattern.
-
-    /// Set an agent's cross-chain reputation. Owner-only (trusted bridge from Soroban).
-    pub fn set_cross_chain_rep(&mut self, agent: Address, score: u32, source_chain: String) {
-        let owner = self.owner.get().unwrap_or_else(|| self.env().revert(Error::NotContractOwner));
-        if owner != self.env().caller() {
-            self.env().revert(Error::NotContractOwner);
-        }
-        if score > MAX_REPUTATION {
-            self.env().revert(Error::BadThreshold);
-        }
-        self.cross_chain_rep.set(&agent, score);
-        self.env().emit_event(CrossChainRepUpdated {
-            agent,
-            score,
-            source_chain,
-        });
-    }
+    // Odra cannot verify Soroban Groth16 proofs directly. Cross-chain reputation is set
+    // through the governance proposal lifecycle (multisig + timelock), eliminating the
+    // single-EOA admin backdoor.
 
     /// Query cross-chain reputation for an agent. Returns 0 if no attestation exists.
     pub fn get_cross_chain_rep(&self, agent: Address) -> u32 {
         self.cross_chain_rep.get(&agent).unwrap_or(0)
+    }
+
+    // ── P0-B: Governance proposal lifecycle ───────────────────────────────────
+
+    /// Propose a cross-chain reputation update. Governance-signer only.
+    /// The proposer's approval is counted automatically.
+    pub fn propose_set_cross_chain_rep(
+        &mut self,
+        agent: Address,
+        score: u32,
+        source_chain: String,
+    ) -> u64 {
+        self.require_governance_signer();
+        if score > MAX_REPUTATION {
+            self.env().revert(Error::BadThreshold);
+        }
+        let caller = self.env().caller();
+        let proposal_id = self.proposal_counter.get_or_default() + 1;
+        self.proposal_counter.set(proposal_id);
+
+        let proposal = GovernanceProposal {
+            action: ProposalAction::SetCrossChainRep { agent, score, source_chain },
+            proposer: caller,
+            proposed_at: self.env().get_block_time(),
+            executed: false,
+            cancelled: false,
+        };
+        self.proposals.set(&proposal_id, proposal);
+        self.proposal_approvals.set(&proposal_id, vec![caller]);
+
+        self.env().emit_event(ProposalCreated { proposal_id, proposer: caller });
+        self.env().emit_event(ProposalApproved {
+            proposal_id,
+            signer: caller,
+            approval_count: 1,
+            threshold: self.governance_threshold.get_or_default(),
+        });
+        proposal_id
+    }
+
+    /// Approve an existing proposal. Governance-signer only. Each signer can approve once.
+    pub fn approve_proposal(&mut self, proposal_id: u64) {
+        self.require_governance_signer();
+        let proposal = self.proposals.get(&proposal_id)
+            .unwrap_or_else(|| self.env().revert(Error::ProposalNotFound));
+        if proposal.executed {
+            self.env().revert(Error::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            self.env().revert(Error::ProposalCancelled);
+        }
+
+        let caller = self.env().caller();
+        let mut approvals = self.proposal_approvals.get(&proposal_id).unwrap_or_default();
+        if approvals.contains(&caller) {
+            self.env().revert(Error::AlreadyApproved);
+        }
+        approvals.push(caller);
+        let count = approvals.len() as u32;
+        self.proposal_approvals.set(&proposal_id, approvals);
+
+        self.env().emit_event(ProposalApproved {
+            proposal_id,
+            signer: caller,
+            approval_count: count,
+            threshold: self.governance_threshold.get_or_default(),
+        });
+    }
+
+    /// Execute a proposal after threshold approvals + timelock elapsed. Anyone can call.
+    pub fn execute_proposal(&mut self, proposal_id: u64) {
+        let mut proposal = self.proposals.get(&proposal_id)
+            .unwrap_or_else(|| self.env().revert(Error::ProposalNotFound));
+        if proposal.executed {
+            self.env().revert(Error::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            self.env().revert(Error::ProposalCancelled);
+        }
+
+        let approvals = self.proposal_approvals.get(&proposal_id).unwrap_or_default();
+        if (approvals.len() as u32) < self.governance_threshold.get_or_default() {
+            self.env().revert(Error::ThresholdNotMet);
+        }
+
+        let elapsed = self.env().get_block_time().saturating_sub(proposal.proposed_at);
+        if elapsed < self.timelock_delay.get_or_default() {
+            self.env().revert(Error::TimelockNotElapsed);
+        }
+
+        proposal.executed = true;
+        self.proposals.set(&proposal_id, proposal.clone());
+
+        match &proposal.action {
+            ProposalAction::SetCrossChainRep { agent, score, source_chain } => {
+                self.cross_chain_rep.set(agent, *score);
+                self.env().emit_event(CrossChainRepUpdated {
+                    agent: *agent,
+                    score: *score,
+                    source_chain: source_chain.clone(),
+                });
+            }
+        }
+
+        let executor = self.env().caller();
+        self.env().emit_event(ProposalExecuted { proposal_id, executor });
+    }
+
+    /// Cancel a pending proposal. Governance-signer only.
+    pub fn cancel_proposal(&mut self, proposal_id: u64) {
+        self.require_governance_signer();
+        let mut proposal = self.proposals.get(&proposal_id)
+            .unwrap_or_else(|| self.env().revert(Error::ProposalNotFound));
+        if proposal.executed {
+            self.env().revert(Error::ProposalAlreadyExecuted);
+        }
+        if proposal.cancelled {
+            self.env().revert(Error::ProposalCancelled);
+        }
+        proposal.cancelled = true;
+        self.proposals.set(&proposal_id, proposal);
+        self.env().emit_event(ProposalCancelled { proposal_id });
     }
 
     // ── Views ──────────────────────────────────────────────────────────────
@@ -805,6 +1007,33 @@ impl AgentSkillRegistry {
     pub fn get_job_evaluator(&self, job_id: u64) -> (Option<Address>, U512) {
         let j = self.require_job(job_id);
         (j.evaluator, j.evaluator_fee)
+    }
+
+    // ── P0-B: Governance views ────────────────────────────────────────────────
+
+    pub fn is_governance_signer(&self, addr: Address) -> bool {
+        self.governance_signers.get_or_default().contains(&addr)
+    }
+
+    pub fn get_governance_threshold(&self) -> u32 {
+        self.governance_threshold.get_or_default()
+    }
+
+    pub fn get_governance_signers(&self) -> Vec<Address> {
+        self.governance_signers.get_or_default()
+    }
+
+    pub fn get_timelock_delay(&self) -> u64 {
+        self.timelock_delay.get_or_default()
+    }
+
+    pub fn get_proposal(&self, proposal_id: u64) -> GovernanceProposal {
+        self.proposals.get(&proposal_id)
+            .unwrap_or_else(|| self.env().revert(Error::ProposalNotFound))
+    }
+
+    pub fn proposal_approval_count(&self, proposal_id: u64) -> u32 {
+        self.proposal_approvals.get(&proposal_id).unwrap_or_default().len() as u32
     }
 }
 
@@ -892,6 +1121,14 @@ impl AgentSkillRegistry {
         self.jobs
             .get(&job_id)
             .unwrap_or_else(|| self.env().revert(Error::JobNotOpen))
+    }
+
+    fn require_governance_signer(&self) {
+        let caller = self.env().caller();
+        let signers = self.governance_signers.get_or_default();
+        if !signers.contains(&caller) {
+            self.env().revert(Error::NotGovernanceSigner);
+        }
     }
 
     fn bump_agent_rep(&mut self, agent: Address) {

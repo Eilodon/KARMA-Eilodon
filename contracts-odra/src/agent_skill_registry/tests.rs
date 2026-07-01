@@ -11,8 +11,12 @@ const DEADLINE_MS: u64 = 24 * 60 * 60 * 1_000; // 1 day
 
 fn setup() -> (HostEnv, AgentSkillRegistryHostRef, Address, Address) {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let init_args = AgentSkillRegistryInitArgs {
         review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     let contract = AgentSkillRegistry::deploy(&env, init_args);
     let alpha = env.get_account(1); // provider (skill owner)
@@ -385,8 +389,12 @@ fn constructor_default_window() {
 #[test]
 fn constructor_rejects_below_min() {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let bad = AgentSkillRegistryInitArgs {
         review_window_ms: MIN_REVIEW_WINDOW - 1,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     assert_eq!(
         AgentSkillRegistry::try_deploy(&env, bad).err(),
@@ -397,8 +405,12 @@ fn constructor_rejects_below_min() {
 #[test]
 fn constructor_rejects_above_max() {
     let env = odra_test::env();
+    let deployer = env.get_account(0);
     let bad = AgentSkillRegistryInitArgs {
         review_window_ms: MAX_REVIEW_WINDOW + 1,
+        governance_signers: vec![deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
     };
     assert_eq!(
         AgentSkillRegistry::try_deploy(&env, bad).err(),
@@ -842,7 +854,7 @@ fn composition_wrapper_can_include_itself_as_leaf_for_explicit_cut() {
     );
 }
 
-// ─── Cross-chain reputation consumer (P0.1) ───────────────────────────────────
+// ─── Cross-chain reputation via governance (P0-B) ──────────────────────────────
 
 #[test]
 fn cross_chain_rep_defaults_to_zero() {
@@ -852,15 +864,21 @@ fn cross_chain_rep_defaults_to_zero() {
 }
 
 #[test]
-fn set_cross_chain_rep_stores_and_reads() {
+fn governance_propose_approve_execute_sets_cross_chain_rep() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    // Owner is the deployer (account 0), set during init().
-    let owner = env.get_account(0);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 85, "stellar".to_string());
-    assert_eq!(reg.get_cross_chain_rep(agent), 85);
+    let signer = env.get_account(0);
 
+    env.set_caller(signer);
+    let pid = reg.propose_set_cross_chain_rep(agent, 85, "stellar".to_string());
+    assert_eq!(pid, 1);
+
+    // 1-of-1 threshold met at proposal time; wait for timelock
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(signer);
+    reg.execute_proposal(pid);
+
+    assert_eq!(reg.get_cross_chain_rep(agent), 85);
     assert!(env.emitted_event(
         &reg,
         CrossChainRepUpdated {
@@ -872,37 +890,43 @@ fn set_cross_chain_rep_stores_and_reads() {
 }
 
 #[test]
-fn set_cross_chain_rep_overwrites() {
+fn governance_overwrite_cross_chain_rep_via_second_proposal() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    let owner = env.get_account(0);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 70, "stellar".to_string());
+    let signer = env.get_account(0);
+
+    env.set_caller(signer);
+    let p1 = reg.propose_set_cross_chain_rep(agent, 70, "stellar".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(p1);
     assert_eq!(reg.get_cross_chain_rep(agent), 70);
-    env.set_caller(owner);
-    reg.set_cross_chain_rep(agent, 95, "stellar".to_string());
+
+    env.set_caller(signer);
+    let p2 = reg.propose_set_cross_chain_rep(agent, 95, "stellar".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(p2);
     assert_eq!(reg.get_cross_chain_rep(agent), 95);
 }
 
 #[test]
-fn set_cross_chain_rep_rejects_non_owner() {
+fn governance_propose_rejects_non_signer() {
     let (env, mut reg, alpha, _) = setup();
     let agent = env.get_account(3);
-    env.set_caller(alpha); // not the deployer/owner
+    env.set_caller(alpha); // not a governance signer
     assert_eq!(
-        reg.try_set_cross_chain_rep(agent, 80, "stellar".to_string()),
-        Err(Error::NotContractOwner.into())
+        reg.try_propose_set_cross_chain_rep(agent, 80, "stellar".to_string()),
+        Err(Error::NotGovernanceSigner.into())
     );
 }
 
 #[test]
-fn set_cross_chain_rep_rejects_score_over_max() {
+fn governance_propose_rejects_score_over_max() {
     let (env, mut reg, _, _) = setup();
     let agent = env.get_account(3);
-    let owner = env.get_account(0);
-    env.set_caller(owner);
+    let signer = env.get_account(0);
+    env.set_caller(signer);
     assert_eq!(
-        reg.try_set_cross_chain_rep(agent, 101, "stellar".to_string()),
+        reg.try_propose_set_cross_chain_rep(agent, 101, "stellar".to_string()),
         Err(Error::BadThreshold.into())
     );
 }
@@ -1489,6 +1513,335 @@ fn evaluator_get_job_evaluator_view() {
     let (ev2, fee2) = reg.get_job_evaluator(job_id2);
     assert_eq!(ev2, None);
     assert_eq!(fee2, U512::zero());
+}
+
+// ─── P0-B: Governance multisig + timelock tests ────────────────────────────────
+
+fn setup_multisig() -> (HostEnv, AgentSkillRegistryHostRef, Address, Address, Address) {
+    let env = odra_test::env();
+    let signer_a = env.get_account(0);
+    let signer_b = env.get_account(1);
+    let signer_c = env.get_account(2);
+    let init_args = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![signer_a, signer_b, signer_c],
+        governance_threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    let contract = AgentSkillRegistry::deploy(&env, init_args);
+    (env, contract, signer_a, signer_b, signer_c)
+}
+
+#[test]
+fn governance_multisig_2_of_3_happy_path() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    assert_eq!(reg.proposal_approval_count(pid), 2);
+
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+
+    // Anyone can execute after threshold + timelock
+    let executor = env.get_account(7);
+    env.set_caller(executor);
+    reg.execute_proposal(pid);
+
+    assert_eq!(reg.get_cross_chain_rep(agent), 80);
+}
+
+#[test]
+fn governance_execute_before_threshold_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    // Only 1 approval, threshold is 2
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ThresholdNotMet.into()));
+}
+
+#[test]
+fn governance_execute_before_timelock_reverts() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    // Threshold met but timelock not elapsed
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY - 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::TimelockNotElapsed.into()));
+}
+
+#[test]
+fn governance_duplicate_approval_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    // Proposer already auto-approved; second approval reverts
+    env.set_caller(sa);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::AlreadyApproved.into()));
+}
+
+#[test]
+fn governance_approve_by_non_signer_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+    let outsider = env.get_account(7);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::NotGovernanceSigner.into()));
+}
+
+#[test]
+fn governance_cancel_proposal() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+
+    // Any signer can cancel
+    env.set_caller(sa);
+    reg.cancel_proposal(pid);
+
+    // Cancelled proposal can't be executed
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ProposalCancelled.into()));
+}
+
+#[test]
+fn governance_cancel_by_non_signer_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+    let outsider = env.get_account(7);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    env.set_caller(outsider);
+    assert_eq!(reg.try_cancel_proposal(pid), Err(Error::NotGovernanceSigner.into()));
+}
+
+#[test]
+fn governance_double_execute_reverts() {
+    let (env, mut reg, _, _) = setup();
+    let sa = env.get_account(0);
+    let agent = env.get_account(3);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+
+    env.set_caller(sa);
+    assert_eq!(reg.try_execute_proposal(pid), Err(Error::ProposalAlreadyExecuted.into()));
+}
+
+#[test]
+fn governance_approve_executed_proposal_reverts() {
+    let (env, mut reg, sa, sb, sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+
+    env.set_caller(sc);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::ProposalAlreadyExecuted.into()));
+}
+
+#[test]
+fn governance_approve_cancelled_proposal_reverts() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sb);
+    reg.cancel_proposal(pid);
+
+    env.set_caller(sb);
+    assert_eq!(reg.try_approve_proposal(pid), Err(Error::ProposalCancelled.into()));
+}
+
+#[test]
+fn governance_nonexistent_proposal_reverts() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    env.set_caller(sa);
+    assert_eq!(reg.try_approve_proposal(999), Err(Error::ProposalNotFound.into()));
+    assert_eq!(reg.try_execute_proposal(999), Err(Error::ProposalNotFound.into()));
+    assert_eq!(reg.try_cancel_proposal(999), Err(Error::ProposalNotFound.into()));
+}
+
+#[test]
+fn governance_views() {
+    let (env, reg, sa, sb, sc) = setup_multisig();
+
+    assert!(reg.is_governance_signer(sa));
+    assert!(reg.is_governance_signer(sb));
+    assert!(reg.is_governance_signer(sc));
+    assert!(!reg.is_governance_signer(env.get_account(7)));
+    assert_eq!(reg.get_governance_threshold(), 2);
+    assert_eq!(reg.get_governance_signers(), vec![sa, sb, sc]);
+    assert_eq!(reg.get_timelock_delay(), DEFAULT_TIMELOCK_DELAY);
+}
+
+#[test]
+fn governance_proposal_view() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 75, "cosmos".to_string());
+
+    let proposal = reg.get_proposal(pid);
+    assert_eq!(proposal.proposer, sa);
+    assert!(!proposal.executed);
+    assert!(!proposal.cancelled);
+    assert_eq!(reg.proposal_approval_count(pid), 1);
+}
+
+#[test]
+fn governance_emits_events() {
+    let (env, mut reg, sa, sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+
+    assert!(env.emitted_event(&reg, ProposalCreated { proposal_id: pid, proposer: sa }));
+    assert!(env.emitted_event(&reg, ProposalApproved {
+        proposal_id: pid,
+        signer: sa,
+        approval_count: 1,
+        threshold: 2,
+    }));
+
+    env.set_caller(sb);
+    reg.approve_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalApproved {
+        proposal_id: pid,
+        signer: sb,
+        approval_count: 2,
+        threshold: 2,
+    }));
+
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    let executor = env.get_account(7);
+    env.set_caller(executor);
+    reg.execute_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalExecuted { proposal_id: pid, executor }));
+}
+
+#[test]
+fn governance_cancel_emits_event() {
+    let (env, mut reg, sa, _sb, _sc) = setup_multisig();
+    let agent = env.get_account(5);
+
+    env.set_caller(sa);
+    let pid = reg.propose_set_cross_chain_rep(agent, 80, "soroban".to_string());
+    env.set_caller(sa);
+    reg.cancel_proposal(pid);
+    assert!(env.emitted_event(&reg, ProposalCancelled { proposal_id: pid }));
+}
+
+#[test]
+fn governance_init_emits_configured_event() {
+    let (env, reg, _sa, _sb, _sc) = setup_multisig();
+    assert!(env.emitted_event(&reg, GovernanceConfigured {
+        threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    }));
+}
+
+// ── Governance init validation ──
+
+#[test]
+fn governance_init_rejects_empty_signers() {
+    let env = odra_test::env();
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_threshold_zero() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 0,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_threshold_over_signers() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer],
+        governance_threshold: 2,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::InvalidGovernanceConfig.into())
+    );
+}
+
+#[test]
+fn governance_init_rejects_duplicate_signers() {
+    let env = odra_test::env();
+    let deployer = env.get_account(0);
+    let bad = AgentSkillRegistryInitArgs {
+        review_window_ms: DEFAULT_REVIEW_WINDOW,
+        governance_signers: vec![deployer, deployer],
+        governance_threshold: 1,
+        timelock_delay_ms: DEFAULT_TIMELOCK_DELAY,
+    };
+    assert_eq!(
+        AgentSkillRegistry::try_deploy(&env, bad).err(),
+        Some(Error::DuplicateSigner.into())
+    );
 }
 
 #[test]

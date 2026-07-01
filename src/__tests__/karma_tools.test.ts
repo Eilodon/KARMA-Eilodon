@@ -70,6 +70,9 @@ function fakeService(over: Partial<KarmaService> = {}): KarmaService {
     getByOwner: vi.fn(() => null),
     getSkillThreshold: vi.fn(() => 0), // default: no Trust Gate
     getReputation: vi.fn(() => 0),
+    getCrossChainRep: vi.fn(async () => 0n),
+    getOwner: vi.fn(async () => ALPHA),
+    getPendingOwner: vi.fn(async () => `0x${"00".repeat(20)}` as `0x${string}`),
     search: vi.fn(() => [
       {
         skill_id: 7,

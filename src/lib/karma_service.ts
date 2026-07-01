@@ -106,6 +106,12 @@ export interface KarmaService {
   getSkillThreshold(skillId: bigint): number;
   /** Trust Gate (Phase 1): an address's requester reputation (max owned-skill rep, else 0). 0 RPC. */
   getReputation(addr: Address): number;
+  /** P0-B: cross-chain reputation score for an agent, 0 if none set. */
+  getCrossChainRep(addr: Address): Promise<bigint>;
+  /** P0-B: current registry owner (Ownable2Step). */
+  getOwner(): Promise<Address>;
+  /** P0-B: pending owner (Ownable2Step two-step transfer). */
+  getPendingOwner(): Promise<Address>;
 }
 
 function read<T>(functionName: string, args: readonly unknown[]): Promise<T> {
@@ -257,4 +263,7 @@ export const realKarmaService: KarmaService = {
   getByOwner: (addr) => skillIndex.getByOwner(addr),
   getSkillThreshold: (skillId) => skillIndex.getThreshold(Number(skillId)),
   getReputation: (addr) => skillIndex.getReputation(addr),
+  getCrossChainRep: (addr) => read("crossChainRep", [addr]),
+  getOwner: () => read("owner", []),
+  getPendingOwner: () => read("pendingOwner", []),
 };

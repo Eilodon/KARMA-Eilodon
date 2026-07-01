@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {AgentSkillRegistry} from "../contracts/AgentSkillRegistry.sol";
+import {KarmaTimelock} from "../contracts/KarmaTimelock.sol";
 
 contract AgentSkillRegistryTest is Test {
     AgentSkillRegistry internal reg;
@@ -19,7 +20,7 @@ contract AgentSkillRegistryTest is Test {
     event BondUpdated(address indexed agent, uint256 bondedAmount, uint256 seedEligible);
 
     function setUp() public {
-        reg = new AgentSkillRegistry(3 days); // DEFAULT_REVIEW_WINDOW
+        reg = new AgentSkillRegistry(3 days, address(this)); // DEFAULT_REVIEW_WINDOW, owner = test contract
         vm.deal(beta, 10 ether);
         vm.deal(alpha, 10 ether);
     }
@@ -350,24 +351,24 @@ contract AgentSkillRegistryTest is Test {
     }
 
     function test_Constructor_SetsConfigurableImmutableWindow() public {
-        AgentSkillRegistry r = new AgentSkillRegistry(7 days);
+        AgentSkillRegistry r = new AgentSkillRegistry(7 days, address(this));
         assertEq(r.REVIEW_WINDOW(), 7 days, "review window taken from the constructor arg");
     }
 
     function test_Constructor_RejectsBelowMin() public {
         uint256 belowMin = reg.MIN_REVIEW_WINDOW() - 1; // read view BEFORE expectRevert latches
         vm.expectRevert(bytes("bad review window"));
-        new AgentSkillRegistry(belowMin);
+        new AgentSkillRegistry(belowMin, address(this));
     }
 
     function test_Constructor_RejectsAboveMax() public {
         uint256 aboveMax = reg.MAX_REVIEW_WINDOW() + 1; // read view BEFORE expectRevert latches
         vm.expectRevert(bytes("bad review window"));
-        new AgentSkillRegistry(aboveMax);
+        new AgentSkillRegistry(aboveMax, address(this));
     }
 
     function test_Constructor_ConfiguredWindowDrivesDisputeBoundary() public {
-        AgentSkillRegistry r = new AgentSkillRegistry(1 hours);
+        AgentSkillRegistry r = new AgentSkillRegistry(1 hours, address(this));
         vm.prank(alpha);
         uint256 skillId = r.registerSkill("s", "d", "mcp://a", PRICE, 0, 0);
         vm.prank(beta);
@@ -864,6 +865,144 @@ contract AgentSkillRegistryTest is Test {
 
         // Registry fully settled
         assertEq(address(reg).balance, 0, "registry fully settled");
+    }
+    // ══════════════════════════════════════════════════════════════
+    // ── P0-B: Admin Backdoor → Multisig + Timelock ────────────────
+    // ══════════════════════════════════════════════════════════════
+
+    event CrossChainRepUpdated(address indexed agent, uint256 score, string sourceChain);
+
+    // ── Cross-chain rep: owner-gated ──────────────────────────────
+
+    function test_CrossChainRep_DefaultsToZero() public view {
+        assertEq(reg.crossChainRep(address(0x1234)), 0, "fresh agent cross-chain rep is 0");
+    }
+
+    function test_CrossChainRep_OwnerCanSet() public {
+        reg.setCrossChainRep(alpha, 85, "stellar");
+        assertEq(reg.crossChainRep(alpha), 85, "cross-chain rep set");
+    }
+
+    function test_CrossChainRep_EmitsEvent() public {
+        vm.expectEmit(true, false, false, true);
+        emit CrossChainRepUpdated(alpha, 85, "stellar");
+        reg.setCrossChainRep(alpha, 85, "stellar");
+    }
+
+    function test_CrossChainRep_OwnerCanOverwrite() public {
+        reg.setCrossChainRep(alpha, 70, "stellar");
+        assertEq(reg.crossChainRep(alpha), 70);
+        reg.setCrossChainRep(alpha, 95, "stellar");
+        assertEq(reg.crossChainRep(alpha), 95, "overwritten");
+    }
+
+    function test_CrossChainRep_RejectsNonOwner() public {
+        vm.prank(beta);
+        vm.expectRevert();
+        reg.setCrossChainRep(alpha, 80, "stellar");
+    }
+
+    function test_CrossChainRep_RejectsScoreOverMax() public {
+        vm.expectRevert(bytes("bad threshold"));
+        reg.setCrossChainRep(alpha, 101, "stellar");
+    }
+
+    // ── Ownable2Step: two-step ownership transfer ────────────────
+
+    function test_Ownership_InitialOwner() public view {
+        assertEq(reg.owner(), address(this), "test contract is initial owner");
+    }
+
+    function test_Ownership_TransferTwoStep() public {
+        reg.transferOwnership(alpha);
+        assertEq(reg.owner(), address(this), "still old owner until accepted");
+        assertEq(reg.pendingOwner(), alpha, "pending owner set");
+
+        vm.prank(alpha);
+        reg.acceptOwnership();
+        assertEq(reg.owner(), alpha, "alpha is now owner");
+        assertEq(reg.pendingOwner(), address(0), "pending cleared");
+    }
+
+    function test_Ownership_OnlyPendingCanAccept() public {
+        reg.transferOwnership(alpha);
+        vm.prank(beta);
+        vm.expectRevert();
+        reg.acceptOwnership();
+    }
+
+    function test_Ownership_OnlyOwnerCanTransfer() public {
+        vm.prank(beta);
+        vm.expectRevert();
+        reg.transferOwnership(beta);
+    }
+
+    function test_Ownership_NewOwnerCanSetCrossChainRep() public {
+        reg.transferOwnership(alpha);
+        vm.prank(alpha);
+        reg.acceptOwnership();
+
+        vm.prank(alpha);
+        reg.setCrossChainRep(beta, 75, "casper");
+        assertEq(reg.crossChainRep(beta), 75, "new owner can set cross-chain rep");
+
+        // Old owner (test contract) can no longer set
+        vm.expectRevert();
+        reg.setCrossChainRep(beta, 50, "casper");
+    }
+
+    // ── KarmaTimelock integration ────────────────────────────────
+
+    function test_Timelock_ScheduleAndExecuteCrossChainRep() public {
+        // Deploy timelock with test contract as proposer, anyone as executor
+        address[] memory proposers = new address[](1);
+        proposers[0] = address(this);
+        address[] memory executors = new address[](1);
+        executors[0] = address(0); // anyone can execute
+        KarmaTimelock timelock = new KarmaTimelock(proposers, executors);
+
+        // Deploy registry with timelock as owner
+        AgentSkillRegistry timelocked = new AgentSkillRegistry(3 days, address(timelock));
+
+        // Schedule the setCrossChainRep call through the timelock
+        bytes memory data = abi.encodeCall(timelocked.setCrossChainRep, (alpha, 90, "soroban"));
+        bytes32 salt = keccak256("karma-cross-chain-rep-1");
+
+        timelock.schedule(address(timelocked), 0, data, bytes32(0), salt, timelock.KARMA_MIN_DELAY());
+
+        // Cannot execute before the delay
+        vm.expectRevert();
+        timelock.execute(address(timelocked), 0, data, bytes32(0), salt);
+
+        // Warp past 48-hour delay and execute
+        vm.warp(block.timestamp + 48 hours);
+        timelock.execute(address(timelocked), 0, data, bytes32(0), salt);
+
+        assertEq(timelocked.crossChainRep(alpha), 90, "cross-chain rep set via timelock");
+    }
+
+    function test_Timelock_DirectCallBlockedWhenOwnerIsTimelock() public {
+        address[] memory proposers = new address[](1);
+        proposers[0] = address(this);
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        KarmaTimelock timelock = new KarmaTimelock(proposers, executors);
+
+        AgentSkillRegistry timelocked = new AgentSkillRegistry(3 days, address(timelock));
+
+        // Direct call (bypassing timelock) must revert — caller is not the owner (timelock is)
+        vm.expectRevert();
+        timelocked.setCrossChainRep(alpha, 90, "soroban");
+    }
+
+    function test_Timelock_MinDelayIs48Hours() public {
+        address[] memory proposers = new address[](1);
+        proposers[0] = address(this);
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        KarmaTimelock timelock = new KarmaTimelock(proposers, executors);
+
+        assertEq(timelock.getMinDelay(), 48 hours, "KARMA_MIN_DELAY is 48 hours");
     }
 }
 

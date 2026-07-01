@@ -2,11 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title AgentSkillRegistry — on-chain skill registry + escrowed job coordination for KARMA.
 /// @notice Hardened per spec v3.1 D-8: pull-payment + ReentrancyGuard + checks-effects-interactions
 ///         + refund-after-deadline (no permanent fund lock).
-contract AgentSkillRegistry is ReentrancyGuard {
+///         P0-B: inherits Ownable2Step so ownership can transfer to a KarmaTimelock (multisig +
+///         48h delay) — eliminating the single-EOA admin backdoor for setCrossChainRep.
+contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     // ── Types ──────────────────────────────────────────────────
     struct Skill {
         address owner;
@@ -92,6 +96,8 @@ contract AgentSkillRegistry is ReentrancyGuard {
     // register/rank) and NOT slashed here — Sybil cost is the lockup, not punishment.
     mapping(address => uint256) public bondedAmount; // total locked bond per agent
     mapping(address => uint256) public bondUnlockAt; // 0 = active (seeds); >0 = cooling down (no seed)
+    // P0-B / P0.1: cross-chain reputation bridge. Admin-gated (owner = KarmaTimelock in production).
+    mapping(address => uint256) public crossChainRep;
 
     // ── Events ─────────────────────────────────────────────────
     event SkillRegistered(uint256 indexed skillId, address indexed owner, string name, uint256 pricePerCall);
@@ -110,12 +116,16 @@ contract AgentSkillRegistry is ReentrancyGuard {
     /// @param seedEligible bonded amount that currently counts as a flow-reputation seed (0 while
     ///        cooling down). The off-chain indexer mirrors this into FlowReputationParams.seeds.
     event BondUpdated(address indexed agent, uint256 bondedAmount, uint256 seedEligible);
+    /// @notice P0-B / P0.1: cross-chain reputation attestation bridged from another chain (e.g. Soroban ZK proofs).
+    event CrossChainRepUpdated(address indexed agent, uint256 score, string sourceChain);
 
     // ── Constructor ────────────────────────────────────────────
     /// @param reviewWindowSecs post-delivery review window (seconds). Deploy-time config, then
     ///        immutable. Pass DEFAULT_REVIEW_WINDOW (3 days) for the recommended value; bounded
     ///        to [MIN_REVIEW_WINDOW, MAX_REVIEW_WINDOW] = [1 hour, 30 days].
-    constructor(uint256 reviewWindowSecs) {
+    /// @param initialOwner governance address (deploy-time: deployer; production: KarmaTimelock).
+    ///        Two-step transfer via transferOwnership() + acceptOwnership() (Ownable2Step).
+    constructor(uint256 reviewWindowSecs, address initialOwner) Ownable(initialOwner) {
         require(
             reviewWindowSecs >= MIN_REVIEW_WINDOW && reviewWindowSecs <= MAX_REVIEW_WINDOW,
             "bad review window"
@@ -432,6 +442,15 @@ contract AgentSkillRegistry is ReentrancyGuard {
         bondUnlockAt[msg.sender] = 0;
         pendingWithdrawals[msg.sender] += amount; // reuse the audited pull-payment path
         emit BondUpdated(msg.sender, 0, 0);
+    }
+
+    // ── Cross-chain reputation (P0-B / P0.1) ────────────────────
+    /// @notice Set an agent's cross-chain reputation. Owner-only — in production, owner is a
+    ///         KarmaTimelock (multisig + 48h delay), so no single EOA can unilaterally set scores.
+    function setCrossChainRep(address agent, uint256 score, string calldata sourceChain) external onlyOwner {
+        require(score <= MAX_REPUTATION, "bad threshold");
+        crossChainRep[agent] = score;
+        emit CrossChainRepUpdated(agent, score, sourceChain);
     }
 
     // ── Views for evaluator (P0-A) ──────────────────────────────
