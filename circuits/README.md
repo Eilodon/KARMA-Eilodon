@@ -7,11 +7,13 @@ plan T4–T5).
 
 ```
 circuits/
-  src/agent_credential.circom    real circuit (T4)
-  dummy/multiplier.circom        toolchain-validation circuit
-  test/                          end-to-end snarkjs pipelines (compile → setup → prove → verify)
-  scripts/install-toolchain.sh   downloads circom binary + installs snarkjs locally
-  Makefile                       `make all` runs everything
+  src/agent_credential.circom          real circuit (T4)
+  src/reputation_aggregation.circom    real circuit (T1.1)
+  dummy/multiplier.circom              toolchain-validation circuit
+  test/                                end-to-end snarkjs pipelines (compile → setup → prove → verify)
+  scripts/install-toolchain.sh         downloads circom binary + installs snarkjs locally
+  scripts/pack-bn254.mjs               T8: snarkjs output → native Soroban BN254 byte layout
+  Makefile                             `make all` runs everything
 ```
 
 The `bin/`, `build/`, `node_modules/`, and `ptau/*.ptau` directories are
@@ -70,5 +72,25 @@ this as deferred for the hackathon scope.
 ## Output → Soroban verifier
 
 `make credential` writes `build/agent_credential/verification_key.json`
-which is consumed by `contracts-soroban/agent_credential_verifier` (T5) as
-the on-chain verifying-key bytes.
+(plus `happy.proof.json` / `happy.public.json`). The Soroban verifier
+(T5) no longer takes Arkworks-canonical bytes — it calls Stellar's native
+BN254 host functions (`env.crypto().bn254()`, CAP-0074) directly, so the
+snarkjs decimal-string output just needs fixed-width big-endian packing,
+not EC-point re-serialization:
+
+```bash
+node scripts/pack-bn254.mjs \
+  build/agent_credential/verification_key.json \
+  build/agent_credential/happy.proof.json \
+  build/agent_credential/happy.public.json \
+  ../contracts-soroban/agent_credential_verifier/src/test_fixtures/agent_credential_happy.rs
+```
+
+This is exactly how `agent_credential_verifier`'s own real-proof test fixture is
+generated — `cargo test --features testutils` in that crate verifies this packed
+output against a genuine circuit-generated proof via the actual native pairing
+check (`test::create_job_verifies_real_circuit_proof`), not a mock. The same
+script + pattern applies to `reputation_aggregation_verifier` from `make repagg`'s
+output. See `contracts-soroban/agent_credential_verifier/README.md` for the exact
+point-encoding spec (`BE(x) || BE(y)` for G1; `BE(c1) || BE(c0)` per `Fp2`
+coordinate for G2).

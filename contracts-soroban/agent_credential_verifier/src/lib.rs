@@ -12,16 +12,17 @@
 //!      contract just records the reference. Wired in T7 once the Stellar x402
 //!      facilitator client is in place.
 //!
-//! The Groth16 verify uses Arkworks BN254 (no_std, WASM-friendly). When stellar's
-//! rs-soroban-env ships native bn254_pairing host functions, `verify_groth16` is
-//! the only swap point.
+//! The Groth16 pairing check runs on Stellar's **native BN254 host functions**
+//! (`env.crypto().bn254()`, backed by `bn254_multi_pairing_check` / CAP-0074, shipped
+//! in Protocol 25 "X-Ray"). This contract previously shipped a software Arkworks
+//! (`ark-bn254` + `ark-groth16`) verifier because CAP-0074's pairing check was assumed
+//! not yet available — that assumption was wrong (it landed in Protocol 25, ahead of
+//! this contract's first version) and has been corrected: see `docs/decisions/DP-7`.
 
-extern crate alloc;
-
-use alloc::vec::Vec as StdVec;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Bytes, BytesN,
-    Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype,
+    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine},
+    panic_with_error, vec, Address, BytesN, Env, Symbol, Vec,
 };
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -37,15 +38,41 @@ pub enum Error {
     InvalidProof = 6,
     InvalidVerifyingKey = 7,
     InvalidPublicInputs = 8,
-    MalformedBytes = 9,
 }
+
+// ── Groth16 / BN254 types ─────────────────────────────────────────────────
+// Layout mirrors Stellar's canonical `groth16_verifier` example (BLS12-381), swapped
+// to the BN254 host module. Point encodings are the host's Ethereum-compatible
+// uncompressed format: G1 = 64 bytes (BE(X) || BE(Y)), G2 = 128 bytes (BE(X) || BE(Y)
+// where each Fp2 coordinate is BE(c1) || BE(c0)). See `soroban_sdk::crypto::bn254`.
+#[contracttype]
+#[derive(Clone)]
+pub struct VerifyingKey {
+    pub alpha: Bn254G1Affine,
+    pub beta: Bn254G2Affine,
+    pub gamma: Bn254G2Affine,
+    pub delta: Bn254G2Affine,
+    /// `ic[0]` is the constant term; `ic[1..]` pair one-to-one with public inputs.
+    /// For this circuit (5 public signals) `ic.len()` MUST be 6.
+    pub ic: Vec<Bn254G1Affine>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Groth16Proof {
+    pub a: Bn254G1Affine,
+    pub b: Bn254G2Affine,
+    pub c: Bn254G1Affine,
+}
+
+const PUBLIC_INPUT_COUNT: u32 = 5;
 
 // ── Storage types ───────────────────────────────────────────────────────────
 #[contracttype]
 #[derive(Clone)]
 pub struct SkillConfig {
-    pub vkey: Bytes,           // Arkworks-canonical PreparedVerifyingKey<Bn254>
-    pub min_reputation: u32,   // the circuit's public minReputation constraint
+    pub vkey: VerifyingKey,
+    pub min_reputation: u32,
     pub price_per_call: u128,  // declared cost — informational; settlement via x402/escrow
     pub owner: Address,
 }
@@ -58,7 +85,7 @@ pub struct JobRecord {
     pub nullifier: BytesN<32>,
     pub payer: Address,
     pub created_at: u64,
-    pub x402_receipt: Bytes,   // facilitator settlement reference (empty when escrow lane)
+    pub x402_receipt: soroban_sdk::Bytes,   // facilitator settlement reference (empty when escrow lane)
 }
 
 #[contracttype]
@@ -101,13 +128,12 @@ impl AgentCredentialVerifier {
         env.storage().instance().set(&DataKey::JobCounter, &0u64);
     }
 
-    /// Register a skill with its verifying-key bytes and trust-gate parameters.
+    /// Register a skill with its verifying key and trust-gate parameters.
     /// Admin-only — keeps the synthesis §5.4 "not a full marketplace" scope tight.
-    /// `vkey` is the Arkworks-canonical serialization of the circuit's PreparedVerifyingKey<Bn254>.
     pub fn register_skill(
         env: Env,
         skill_id: u64,
-        vkey: Bytes,
+        vkey: VerifyingKey,
         min_reputation: u32,
         price_per_call: u128,
         owner: Address,
@@ -121,9 +147,11 @@ impl AgentCredentialVerifier {
         if env.storage().persistent().has(&DataKey::Skill(skill_id)) {
             panic_with_error!(&env, Error::SkillAlreadyRegistered);
         }
-        // Sanity: vkey must deserialize to a real PreparedVerifyingKey before we accept it
-        // — fail fast at registration rather than at every create_job. (T8 verifier wire-up.)
-        crypto::deserialize_vkey(&vkey).unwrap_or_else(|_| panic_with_error!(&env, Error::InvalidVerifyingKey));
+        // Sanity: `ic` must have exactly PUBLIC_INPUT_COUNT + 1 elements (constant term +
+        // one per public signal) — fail fast at registration rather than at every create_job.
+        if vkey.ic.len() != PUBLIC_INPUT_COUNT + 1 {
+            panic_with_error!(&env, Error::InvalidVerifyingKey);
+        }
         env.storage().persistent().set(
             &DataKey::Skill(skill_id),
             &SkillConfig { vkey, min_reputation, price_per_call, owner: owner.clone() },
@@ -134,16 +162,17 @@ impl AgentCredentialVerifier {
     /// Create a job: verify the AgentCredentialProof, claim the nullifier, store the job record.
     /// `public_inputs` MUST be the 5-element vector the circuit produces:
     ///   [ skillId, minReputation, nullifier, credentialCommitment, jobHistoryRoot ]
-    /// in that exact order (asserted by circuits/test/agent_credential.test.mjs).
+    /// in that exact order (asserted by circuits/test/agent_credential.test.mjs), each packed
+    /// as a big-endian BN254 scalar-field element (`Bn254Fr`).
     pub fn create_job(
         env: Env,
         payer: Address,
         skill_id: u64,
         task_commitment: BytesN<32>,
-        proof: Bytes,
+        proof: Groth16Proof,
         nullifier: BytesN<32>,
-        public_inputs: Vec<BytesN<32>>,
-        x402_receipt: Bytes,
+        public_inputs: Vec<Bn254Fr>,
+        x402_receipt: soroban_sdk::Bytes,
     ) -> u64 {
         payer.require_auth();
 
@@ -162,25 +191,25 @@ impl AgentCredentialVerifier {
 
         // 3. Verify the proof binds to (skill_id, min_reputation, nullifier) by comparing the
         //    contract-known public inputs against what the proof committed to.
-        if public_inputs.len() != 5 {
+        if public_inputs.len() != PUBLIC_INPUT_COUNT {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
         // Element 0: skillId. Element 1: minReputation. Element 2: nullifier.
         let pi_skill = public_inputs.get(0).unwrap();
         let pi_min_rep = public_inputs.get(1).unwrap();
         let pi_nullifier = public_inputs.get(2).unwrap();
-        if !crypto::bytes32_equals_u64(&env, &pi_skill, skill_id) {
+        if pi_skill != crypto::fr_from_u64(&env, skill_id) {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
-        if !crypto::bytes32_equals_u32(&env, &pi_min_rep, skill.min_reputation) {
+        if pi_min_rep != crypto::fr_from_u32(&env, skill.min_reputation) {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
-        if pi_nullifier != nullifier {
+        if pi_nullifier != Bn254Fr::from_bytes(nullifier.clone()) {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
 
-        // 4. Groth16 pairing check — the load-bearing crypto step.
-        let ok = crypto::verify_groth16(&skill.vkey, &proof, &public_inputs);
+        // 4. Groth16 pairing check (native BN254 host functions) — the load-bearing crypto step.
+        let ok = crypto::verify_groth16(&env, &skill.vkey, &proof, &public_inputs);
         if !ok {
             panic_with_error!(&env, Error::InvalidProof);
         }
@@ -228,72 +257,45 @@ impl AgentCredentialVerifier {
 // ── Crypto helpers ──────────────────────────────────────────────────────────
 mod crypto {
     use super::*;
-    use ark_bn254::{Bn254, Fr};
-    use ark_groth16::{Groth16, PreparedVerifyingKey, Proof};
-    use ark_serialize::CanonicalDeserialize;
 
-    pub(super) fn deserialize_vkey(vkey: &Bytes) -> Result<PreparedVerifyingKey<Bn254>, ()> {
-        let buf = bytes_to_vec(vkey);
-        PreparedVerifyingKey::<Bn254>::deserialize_compressed(buf.as_slice()).map_err(|_| ())
-    }
-
+    /// Groth16 verification via Stellar's native BN254 host functions
+    /// (`env.crypto().bn254()`, CAP-0074 `bn254_multi_pairing_check`).
+    /// Same equation as the canonical BLS12-381 `groth16_verifier` example, over BN254:
+    ///   e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1
     pub(super) fn verify_groth16(
-        vkey_bytes: &Bytes,
-        proof_bytes: &Bytes,
-        public_inputs: &Vec<BytesN<32>>,
+        env: &Env,
+        vk: &VerifyingKey,
+        proof: &Groth16Proof,
+        public_inputs: &Vec<Bn254Fr>,
     ) -> bool {
-        let pvk = match deserialize_vkey(vkey_bytes) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let proof_buf = bytes_to_vec(proof_bytes);
-        let proof = match Proof::<Bn254>::deserialize_compressed(proof_buf.as_slice()) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        let mut fr_inputs: StdVec<Fr> = StdVec::with_capacity(public_inputs.len() as usize);
+        let bn254 = env.crypto().bn254();
+        if public_inputs.len() + 1 != vk.ic.len() {
+            return false;
+        }
+        let mut vk_x = vk.ic.get(0).unwrap();
         for i in 0..public_inputs.len() {
-            let b: BytesN<32> = public_inputs.get(i).unwrap();
-            let raw = bytesn_to_array(&b);
-            match Fr::deserialize_compressed(raw.as_slice()) {
-                Ok(fr) => fr_inputs.push(fr),
-                Err(_) => return false,
-            }
+            let s = public_inputs.get(i).unwrap();
+            let v = vk.ic.get(i + 1).unwrap();
+            let prod = bn254.g1_mul(&v, &s);
+            vk_x = bn254.g1_add(&vk_x, &prod);
         }
-        Groth16::<Bn254>::verify_proof(&pvk, &proof, &fr_inputs).unwrap_or(false)
+        let neg_a = -proof.a.clone();
+        let vp1 = vec![env, neg_a, vk.alpha.clone(), vk_x, proof.c.clone()];
+        let vp2 = vec![env, proof.b.clone(), vk.beta.clone(), vk.gamma.clone(), vk.delta.clone()];
+        bn254.pairing_check(vp1, vp2)
     }
 
-    /// True iff `b` (little-endian field element bytes) equals the given u64.
-    pub(super) fn bytes32_equals_u64(_env: &Env, b: &BytesN<32>, v: u64) -> bool {
-        let raw = bytesn_to_array(b);
-        // Lower 8 bytes carry the value; upper 24 bytes must be zero.
-        let mut le8 = [0u8; 8];
-        le8.copy_from_slice(&raw[0..8]);
-        let lo = u64::from_le_bytes(le8);
-        let upper_zero = raw[8..32].iter().all(|x| *x == 0);
-        lo == v && upper_zero
+    /// Packs a `u64` into a big-endian `Bn254Fr` (upper 24 bytes zero) — the encoding the
+    /// off-chain prover uses for scalar public signals like `skillId`.
+    pub(super) fn fr_from_u64(env: &Env, v: u64) -> Bn254Fr {
+        let mut buf = [0u8; 32];
+        buf[24..32].copy_from_slice(&v.to_be_bytes());
+        Bn254Fr::from_bytes(soroban_sdk::BytesN::from_array(env, &buf))
     }
 
-    pub(super) fn bytes32_equals_u32(_env: &Env, b: &BytesN<32>, v: u32) -> bool {
-        let raw = bytesn_to_array(b);
-        let mut le4 = [0u8; 4];
-        le4.copy_from_slice(&raw[0..4]);
-        let lo = u32::from_le_bytes(le4);
-        let upper_zero = raw[4..32].iter().all(|x| *x == 0);
-        lo == v && upper_zero
-    }
-
-    fn bytes_to_vec(b: &Bytes) -> StdVec<u8> {
-        let len = b.len() as usize;
-        let mut out = StdVec::with_capacity(len);
-        for i in 0..b.len() {
-            out.push(b.get(i).unwrap());
-        }
-        out
-    }
-
-    fn bytesn_to_array(b: &BytesN<32>) -> [u8; 32] {
-        b.to_array()
+    /// Packs a `u32` into a big-endian `Bn254Fr` (upper 28 bytes zero).
+    pub(super) fn fr_from_u32(env: &Env, v: u32) -> Bn254Fr {
+        fr_from_u64(env, v as u64)
     }
 }
 

@@ -7,11 +7,10 @@
 //!   3. nullifier replay rejection
 //!
 //! The proof + verifying-key fixtures are produced by `circuits/test/agent_credential.test.mjs`
-//! and converted to Arkworks-canonical bytes by a follow-up script in T8 (the convert step keeps
-//! this contract independent of snarkjs format internals). For the host-side test, we vendor
-//! a tiny pair (`fixtures/vkey.bin`, `fixtures/proof.bin`, `fixtures/public_inputs.json`) that
-//! the test framework loads via include_bytes!. Until T8 lands, the load is gated behind a
-//! `groth16_fixtures` cfg flag so `cargo test` stays green with the schema-level tests below.
+//! and packed into the native BN254 big-endian byte layout by a follow-up conversion script
+//! (T8). For the host-side test, we vendor a tiny pair (`fixtures/vkey.json`, `fixtures/proof.json`)
+//! that the test framework loads. Until T8 lands, the load is gated behind a `groth16_fixtures`
+//! cfg flag so `cargo test` stays green with the schema-level tests below.
 
 extern crate std;
 
@@ -25,6 +24,50 @@ fn boot(env: &Env) -> (Address, AgentCredentialVerifierClient) {
     (admin, client)
 }
 
+fn zero_g1(env: &Env) -> Bn254G1Affine {
+    Bn254G1Affine::from_array(env, &[0u8; 64])
+}
+
+fn zero_g2(env: &Env) -> Bn254G2Affine {
+    Bn254G2Affine::from_array(env, &[0u8; 128])
+}
+
+fn zero_fr(env: &Env) -> Bn254Fr {
+    Bn254Fr::from_bytes(BytesN::from_array(env, &[0u8; 32]))
+}
+
+fn zero_proof(env: &Env) -> Groth16Proof {
+    Groth16Proof { a: zero_g1(env), b: zero_g2(env), c: zero_g1(env) }
+}
+
+fn zero_vkey(env: &Env, ic_len: u32) -> VerifyingKey {
+    let mut ic = SVec::new(env);
+    for _ in 0..ic_len {
+        ic.push_back(zero_g1(env));
+    }
+    VerifyingKey { alpha: zero_g1(env), beta: zero_g2(env), gamma: zero_g2(env), delta: zero_g2(env), ic }
+}
+
+// Real on-curve, in-subgroup BN254 test vectors (go-ethereum bn256Pairing.json, also used by
+// the soroban-sdk v25_bn254 migration-guide example) — used to exercise a non-trivial pairing
+// check without tripping the host's curve-membership trap on malformed points.
+const REAL_G1: [u8; 64] = [
+    0x1c, 0x76, 0x47, 0x6f, 0x4d, 0xef, 0x4b, 0xb9, 0x45, 0x41, 0xd5, 0x7e, 0xbb, 0xa1, 0x19, 0x33,
+    0x81, 0xff, 0xa7, 0xaa, 0x76, 0xad, 0xa6, 0x64, 0xdd, 0x31, 0xc1, 0x60, 0x24, 0xc4, 0x3f, 0x59,
+    0x30, 0x34, 0xdd, 0x29, 0x20, 0xf6, 0x73, 0xe2, 0x04, 0xfe, 0xe2, 0x81, 0x1c, 0x67, 0x87, 0x45,
+    0xfc, 0x81, 0x9b, 0x55, 0xd3, 0xe9, 0xd2, 0x94, 0xe4, 0x5c, 0x9b, 0x03, 0xa7, 0x6a, 0xef, 0x41,
+];
+const REAL_G2: [u8; 128] = [
+    0x20, 0x9d, 0xd1, 0x5e, 0xbf, 0xf5, 0xd4, 0x6c, 0x4b, 0xd8, 0x88, 0xe5, 0x1a, 0x93, 0xcf, 0x99,
+    0xa7, 0x32, 0x96, 0x36, 0xc6, 0x35, 0x14, 0x39, 0x6b, 0x4a, 0x45, 0x20, 0x03, 0xa3, 0x5b, 0xf7,
+    0x04, 0xbf, 0x11, 0xca, 0x01, 0x48, 0x3b, 0xfa, 0x8b, 0x34, 0xb4, 0x35, 0x61, 0x84, 0x8d, 0x28,
+    0x90, 0x59, 0x60, 0x11, 0x4c, 0x8a, 0xc0, 0x40, 0x49, 0xaf, 0x4b, 0x63, 0x15, 0xa4, 0x16, 0x78,
+    0x2b, 0xb8, 0x32, 0x4a, 0xf6, 0xcf, 0xc9, 0x35, 0x37, 0xa2, 0xad, 0x1a, 0x44, 0x5c, 0xfd, 0x0c,
+    0xa2, 0xa7, 0x1a, 0xcd, 0x7a, 0xc4, 0x1f, 0xad, 0xbf, 0x93, 0x3c, 0x2a, 0x51, 0xbe, 0x34, 0x4d,
+    0x12, 0x0a, 0x2a, 0x4c, 0xf3, 0x0c, 0x1b, 0xf9, 0x84, 0x5f, 0x20, 0xc6, 0xfe, 0x39, 0xe0, 0x7e,
+    0xa2, 0xcc, 0xe6, 0x1f, 0x0c, 0x9b, 0xb0, 0x48, 0x16, 0x5f, 0xe5, 0xe4, 0xde, 0x87, 0x75, 0x50,
+];
+
 #[test]
 fn constructor_sets_admin_and_zero_jobs() {
     let env = Env::default();
@@ -36,18 +79,13 @@ fn constructor_sets_admin_and_zero_jobs() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")] // InvalidVerifyingKey
-fn register_skill_rejects_garbage_vkey() {
+fn register_skill_rejects_wrong_ic_arity() {
     let env = Env::default();
     env.mock_all_auths();
     let (_admin, client) = boot(&env);
     let owner = Address::generate(&env);
-    client.register_skill(
-        &1u64,
-        &Bytes::from_array(&env, &[0u8; 4]), // too small to deserialize a vkey
-        &60u32,
-        &1_000_000u128,
-        &owner,
-    );
+    // Circuit has 5 public inputs, so `ic` must have 6 elements — 2 is wrong on purpose.
+    client.register_skill(&1u64, &zero_vkey(&env, 2), &60u32, &1_000_000u128, &owner);
 }
 
 #[test]
@@ -58,21 +96,15 @@ fn create_job_rejects_unknown_skill() {
     let (_admin, client) = boot(&env);
     let payer = Address::generate(&env);
     let null = BytesN::<32>::from_array(&env, &[1u8; 32]);
-    let inputs: SVec<BytesN<32>> = SVec::from_array(
+    let inputs: SVec<Bn254Fr> = SVec::from_array(
         &env,
-        [
-            BytesN::<32>::from_array(&env, &[0u8; 32]),
-            BytesN::<32>::from_array(&env, &[0u8; 32]),
-            null.clone(),
-            BytesN::<32>::from_array(&env, &[0u8; 32]),
-            BytesN::<32>::from_array(&env, &[0u8; 32]),
-        ],
+        [zero_fr(&env), zero_fr(&env), zero_fr(&env), zero_fr(&env), zero_fr(&env)],
     );
     client.create_job(
         &payer,
         &999u64,
         &BytesN::<32>::from_array(&env, &[2u8; 32]),
-        &Bytes::new(&env),
+        &zero_proof(&env),
         &null,
         &inputs,
         &Bytes::new(&env),
@@ -104,8 +136,158 @@ fn get_job_returns_none_for_unknown() {
     assert!(client.get_job(&7u64).is_none());
 }
 
-// Note: the full happy-path test (constructor → register_skill with a real Groth16 vkey →
-// create_job with a real proof) is gated behind `#[cfg(feature = "groth16_fixtures")]` and
-// will be enabled by T8 once the snarkjs→Arkworks-canonical converter is wired. Until then,
-// the cargo `cargo test --features testutils` baseline above asserts the contract's storage
-// + access-control invariants without depending on circuit artifacts.
+#[test]
+fn register_skill_accepts_correct_ic_arity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+    // 5 public inputs + 1 constant term = 6.
+    client.register_skill(&1u64, &zero_vkey(&env, 6), &60u32, &1_000_000u128, &owner);
+    assert!(client.get_skill(&1u64).is_some());
+}
+
+// Real circuit fixture (T8): `circuits/scripts/pack-bn254.mjs` packs the snarkjs output of
+// `circuits/build/agent_credential/` (produced by `make credential`) into the native BN254
+// byte layout below. Regenerate via:
+//   cd circuits && make credential
+//   node scripts/pack-bn254.mjs \
+//     build/agent_credential/verification_key.json \
+//     build/agent_credential/happy.proof.json \
+//     build/agent_credential/happy.public.json \
+//     ../contracts-soroban/agent_credential_verifier/src/test_fixtures/agent_credential_happy.rs
+mod real_fixture {
+    include!("test_fixtures/agent_credential_happy.rs");
+}
+
+#[test]
+fn create_job_verifies_real_circuit_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+
+    let mut ic = SVec::new(&env);
+    for entry in real_fixture::IC.iter() {
+        ic.push_back(Bn254G1Affine::from_array(&env, entry));
+    }
+    let vkey = VerifyingKey {
+        alpha: Bn254G1Affine::from_array(&env, &real_fixture::ALPHA),
+        beta: Bn254G2Affine::from_array(&env, &real_fixture::BETA),
+        gamma: Bn254G2Affine::from_array(&env, &real_fixture::GAMMA),
+        delta: Bn254G2Affine::from_array(&env, &real_fixture::DELTA),
+        ic,
+    };
+    // skillId=42, minReputation=60 — circuits/build/agent_credential/happy.input.json.
+    client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+
+    let proof = Groth16Proof {
+        a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
+        b: Bn254G2Affine::from_array(&env, &real_fixture::PROOF_B),
+        c: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_C),
+    };
+    let mut inputs: SVec<Bn254Fr> = SVec::new(&env);
+    for sig in real_fixture::PUBLIC_INPUTS.iter() {
+        inputs.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, sig)));
+    }
+    // public_inputs[2] is the nullifier (circuit order) — must match `nullifier` bit-for-bit.
+    let nullifier = BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[2]);
+    let payer = Address::generate(&env);
+
+    let job_id = client.create_job(
+        &payer,
+        &42u64,
+        &BytesN::<32>::from_array(&env, &[0u8; 32]),
+        &proof,
+        &nullifier,
+        &inputs,
+        &Bytes::new(&env),
+    );
+
+    assert_eq!(job_id, 1);
+    assert!(client.is_nullifier_used(&nullifier));
+    let job = client.get_job(&job_id).unwrap();
+    assert_eq!(job.skill_id, 42);
+    assert_eq!(job.payer, payer);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")] // NullifierReused
+fn create_job_rejects_replayed_real_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+
+    let mut ic = SVec::new(&env);
+    for entry in real_fixture::IC.iter() {
+        ic.push_back(Bn254G1Affine::from_array(&env, entry));
+    }
+    let vkey = VerifyingKey {
+        alpha: Bn254G1Affine::from_array(&env, &real_fixture::ALPHA),
+        beta: Bn254G2Affine::from_array(&env, &real_fixture::BETA),
+        gamma: Bn254G2Affine::from_array(&env, &real_fixture::GAMMA),
+        delta: Bn254G2Affine::from_array(&env, &real_fixture::DELTA),
+        ic,
+    };
+    client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+
+    let proof = Groth16Proof {
+        a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
+        b: Bn254G2Affine::from_array(&env, &real_fixture::PROOF_B),
+        c: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_C),
+    };
+    let mut inputs: SVec<Bn254Fr> = SVec::new(&env);
+    for sig in real_fixture::PUBLIC_INPUTS.iter() {
+        inputs.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, sig)));
+    }
+    let nullifier = BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[2]);
+    let payer = Address::generate(&env);
+    let commitment = BytesN::<32>::from_array(&env, &[0u8; 32]);
+
+    client.create_job(&payer, &42u64, &commitment, &proof, &nullifier, &inputs, &Bytes::new(&env));
+    // Same proof + nullifier again — must be rejected by the replay guard, not re-verified.
+    client.create_job(&payer, &42u64, &commitment, &proof, &nullifier, &inputs, &Bytes::new(&env));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // InvalidProof
+fn create_job_rejects_non_satisfying_proof() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+    // Real on-curve alpha/beta (unrelated test-vector points, so e(alpha,beta) != 1) with an
+    // identity proof/ic makes every other pairing term collapse to 1 — the whole product is
+    // exactly e(alpha,beta), which is not the target-group identity, so the check must fail.
+    // This exercises the native `bn254_multi_pairing_check` call end-to-end (real curve
+    // arithmetic, not just arity/type plumbing) without needing a real circuit witness.
+    let mut vkey = zero_vkey(&env, 6);
+    vkey.alpha = Bn254G1Affine::from_array(&env, &REAL_G1);
+    vkey.beta = Bn254G2Affine::from_array(&env, &REAL_G2);
+    client.register_skill(&1u64, &vkey, &60u32, &1_000_000u128, &owner);
+
+    let payer = Address::generate(&env);
+    let null = BytesN::<32>::from_array(&env, &[9u8; 32]);
+    // public_inputs[0]=skillId(1), [1]=minReputation(60), [2]=nullifier — must match the
+    // contract-known values to get past the binding checks and reach the pairing check itself.
+    let inputs: SVec<Bn254Fr> = SVec::from_array(
+        &env,
+        [
+            crypto::fr_from_u64(&env, 1u64),
+            crypto::fr_from_u32(&env, 60u32),
+            Bn254Fr::from_bytes(null.clone()),
+            zero_fr(&env),
+            zero_fr(&env),
+        ],
+    );
+    client.create_job(
+        &payer,
+        &1u64,
+        &BytesN::<32>::from_array(&env, &[2u8; 32]),
+        &zero_proof(&env),
+        &null,
+        &inputs,
+        &Bytes::new(&env),
+    );
+}
