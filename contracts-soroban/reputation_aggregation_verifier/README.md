@@ -25,10 +25,10 @@ contracts-soroban/reputation_aggregation_verifier/
 ## Build + test
 
 ```bash
-# Host-side test suite — constructor, admin gate, schema invariants, a real native
+# 19 tests — constructor, admin gate, schema invariants, a real native
 # bn254_multi_pairing_check call against a well-formed-but-non-satisfying proof, the
-# cross-chain-reputation consumer, and (once circuits/build/reputation_aggregation/ exists —
-# see circuits/README.md `make repagg`) a real circuit-generated happy path + replay guard.
+# cross-chain-reputation consumer, and a real circuit-generated happy path (a genuine
+# ReputationAggregationProof from `make repagg`, packed via pack-bn254.mjs) + its replay guard.
 cargo test --features testutils
 
 # Deployable WASM
