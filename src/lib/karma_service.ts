@@ -73,10 +73,28 @@ export interface KarmaService {
   ): Promise<{ jobId: bigint | null; outcome: WriteOutcome }>;
   deliverResult(account: Account, p: { jobId: bigint; resultHash: Hash }): Promise<WriteOutcome>;
   confirmCompletion(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
-  /** Requester rejects a delivered result within the review window and reclaims escrow (v2). */
-  disputeResult(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Requester disputes a delivered result within the review window — bond-backed. */
+  disputeResult(account: Account, p: { jobId: bigint; value: bigint }): Promise<WriteOutcome>;
   /** Provider claims payment after the review window if the requester ghosted (v2). */
   claimAfterReview(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Provider matches the dispute bond to contest. */
+  respondToDispute(account: Account, p: { jobId: bigint; value: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Provider concedes the dispute. */
+  concedeDispute(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Anyone triggers default concede after RESPONSE_WINDOW. */
+  resolveDefaultConcede(account: Account, p: { jobId: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Arbiter adjudicates a contested dispute. verdict: 0=ProviderAtFault, 1=RequesterAtFault. */
+  arbitrate(account: Account, p: { jobId: bigint; verdict: number }): Promise<WriteOutcome>;
+  /** P1-A: Owner sets the dispute bond basis points. */
+  setDisputeBondBps(account: Account, p: { bps: bigint }): Promise<WriteOutcome>;
+  /** P1-A: Owner sets the arbiter address. */
+  setArbiter(account: Account, p: { newArbiter: Address }): Promise<WriteOutcome>;
+  /** P1-A: Read dispute info for a job. */
+  getDisputeInfo(jobId: bigint): Promise<{ disputeBond: bigint; providerBond: bigint; disputedAt: bigint }>;
+  /** P1-A: Read the current dispute bond bps. */
+  getDisputeBondBps(): Promise<bigint>;
+  /** P1-A: Read the arbiter address. */
+  getArbiter(): Promise<Address>;
   /** Evaluator approves or rejects a delivered result (P0-A). */
   evaluateResult(account: Account, p: { jobId: bigint; approved: boolean }): Promise<WriteOutcome>;
   /** Read the evaluator address and fee for a job (P0-A). */
@@ -223,10 +241,36 @@ export const realKarmaService: KarmaService = {
     writeContractBounded(account, { functionName: "confirmCompletion", args: [p.jobId] }),
 
   disputeResult: (account, p) =>
-    writeContractBounded(account, { functionName: "disputeResult", args: [p.jobId] }),
+    writeContractBounded(account, { functionName: "disputeResult", args: [p.jobId], value: p.value }),
 
   claimAfterReview: (account, p) =>
     writeContractBounded(account, { functionName: "claimAfterReview", args: [p.jobId] }),
+
+  respondToDispute: (account, p) =>
+    writeContractBounded(account, { functionName: "respondToDispute", args: [p.jobId], value: p.value }),
+
+  concedeDispute: (account, p) =>
+    writeContractBounded(account, { functionName: "concedeDispute", args: [p.jobId] }),
+
+  resolveDefaultConcede: (account, p) =>
+    writeContractBounded(account, { functionName: "resolveDefaultConcede", args: [p.jobId] }),
+
+  arbitrate: (account, p) =>
+    writeContractBounded(account, { functionName: "arbitrate", args: [p.jobId, p.verdict] }),
+
+  setDisputeBondBps: (account, p) =>
+    writeContractBounded(account, { functionName: "setDisputeBondBps", args: [p.bps] }),
+
+  setArbiter: (account, p) =>
+    writeContractBounded(account, { functionName: "setArbiter", args: [p.newArbiter] }),
+
+  async getDisputeInfo(jobId) {
+    const t = await read<readonly [bigint, bigint, bigint]>("disputes", [jobId]);
+    return { disputeBond: t[0], providerBond: t[1], disputedAt: t[2] };
+  },
+
+  getDisputeBondBps: () => read("disputeBondBps", []),
+  getArbiter: () => read("arbiter", []),
 
   evaluateResult: (account, p) =>
     writeContractBounded(account, { functionName: "evaluateResult", args: [p.jobId, p.approved] }),

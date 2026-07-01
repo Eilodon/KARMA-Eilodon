@@ -47,6 +47,14 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
         uint256 evaluatorFee; // P0-A: fee held for the evaluator; refunded to requester if unused
     }
 
+    /// @dev P1-A: dispute bond data stored separately from Job to avoid stack-too-deep on the
+    ///      auto-generated `jobs()` getter. Keyed by jobId. All zeros = no bonded dispute.
+    struct DisputeInfo {
+        uint256 disputeBond; // requester's dispute bond (0 = uncontested/evaluator rejection)
+        uint256 providerBond; // provider's matching bond (0 = not yet responded)
+        uint256 disputedAt; // timestamp when bonded dispute opened (0 = not disputed)
+    }
+
     enum JobStatus {
         Open,
         Delivered,
@@ -54,6 +62,8 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
         Refunded,
         Disputed
     }
+
+    enum Verdict { ProviderAtFault, RequesterAtFault }
 
     uint256 public constant BASE_REPUTATION = 50;
     uint256 public constant MAX_REPUTATION = 100;
@@ -77,6 +87,11 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     uint8 public constant IDENTITY_POLICY_NONE = 0;
     uint8 public constant IDENTITY_POLICY_T3N = 1;
     uint8 public constant IDENTITY_POLICY_T3N_FRESH = 2;
+    // P1-A: Symmetric dispute bond — makes disputes costly for frivolous disputers.
+    uint256 public constant REP_SLASH_STEP = 10;
+    uint256 public constant REP_FLOOR = 1;
+    uint256 public constant MIN_DISPUTE_BOND = 0.001 ether;
+    uint256 public constant RESPONSE_WINDOW = 3 days;
 
     // ── State ──────────────────────────────────────────────────
     uint256 private _skillIdCounter;
@@ -89,7 +104,7 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     mapping(address => uint256[]) public agentSkills;
     mapping(address => uint256) public pendingWithdrawals; // pull-payment ledger
     mapping(bytes32 => uint256) public jobByTaskHash; // PD-003: O(1) dedup (taskHash binds requester)
-    mapping(address => uint256) private _agentRep; // PD-005: 0 = unset ⇒ BASE_REPUTATION (rep only rises)
+    mapping(address => uint256) private _agentRep; // 0 = unset ⇒ BASE_REPUTATION; rises on completion, drops on fault (P1-A)
     // Tier-2 Sybil-resistance bond (PD-007): optional, per-agent, capital-at-risk SEED for off-chain
     // flow reputation. Locked while active; withdrawable only by the same agent after a cooldown, so
     // running N Sybil identities costs N bonds locked at once. NOT a paywall (zero-bond agents still
@@ -98,6 +113,10 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     mapping(address => uint256) public bondUnlockAt; // 0 = active (seeds); >0 = cooling down (no seed)
     // P0-B / P0.1: cross-chain reputation bridge. Admin-gated (owner = KarmaTimelock in production).
     mapping(address => uint256) public crossChainRep;
+    // P1-A: Symmetric dispute bond config + per-job dispute data.
+    uint256 public disputeBondBps = 10_000; // basis points of escrow; 10_000 = 1× (owner-settable)
+    address public arbiter;
+    mapping(uint256 => DisputeInfo) public disputes;
 
     // ── Events ─────────────────────────────────────────────────
     event SkillRegistered(uint256 indexed skillId, address indexed owner, string name, uint256 pricePerCall);
@@ -118,6 +137,13 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     event BondUpdated(address indexed agent, uint256 bondedAmount, uint256 seedEligible);
     /// @notice P0-B / P0.1: cross-chain reputation attestation bridged from another chain (e.g. Soroban ZK proofs).
     event CrossChainRepUpdated(address indexed agent, uint256 score, string sourceChain);
+    // P1-A: Symmetric dispute bond events.
+    event DisputeBondPosted(uint256 indexed jobId, address indexed requester, uint256 bond);
+    event DisputeResponsePosted(uint256 indexed jobId, address indexed provider, uint256 bond);
+    event DisputeConceded(uint256 indexed jobId, address indexed provider);
+    event DisputeArbitrated(uint256 indexed jobId, Verdict verdict, address indexed arbiter);
+    event ArbiterUpdated(address indexed oldArbiter, address indexed newArbiter);
+    event DisputeBondBpsUpdated(uint256 oldBps, uint256 newBps);
 
     // ── Constructor ────────────────────────────────────────────
     /// @param reviewWindowSecs post-delivery review window (seconds). Deploy-time config, then
@@ -131,6 +157,7 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
             "bad review window"
         );
         REVIEW_WINDOW = reviewWindowSecs;
+        arbiter = initialOwner;
     }
 
     // ── Skill lifecycle ────────────────────────────────────────
@@ -189,8 +216,8 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     }
 
     // ── Agent reputation (PD-005) ──────────────────────────────
-    /// @notice Earned reputation, lazy-initialized to BASE_REPUTATION. Invariant: rep only ever rises,
-    ///         so 0 is a safe "unset" sentinel — do NOT add a decay feature without changing this.
+    /// @notice Earned reputation, lazy-initialized to BASE_REPUTATION. 0 is the "unset" sentinel.
+    ///         Rep rises on completion and drops on adjudicated fault (P1-A symmetric dispute bond).
     function agentReputation(address agent) public view returns (uint256) {
         uint256 r = _agentRep[agent];
         return r == 0 ? BASE_REPUTATION : r;
@@ -199,6 +226,17 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
     function _bumpAgentRep(address agent) private {
         uint256 next = agentReputation(agent) + REPUTATION_STEP;
         _agentRep[agent] = next > MAX_REPUTATION ? MAX_REPUTATION : next;
+    }
+
+    function _slashAgentRep(address agent) private {
+        uint256 rep = agentReputation(agent);
+        uint256 slashed = rep > REP_SLASH_STEP ? rep - REP_SLASH_STEP : REP_FLOOR;
+        _agentRep[agent] = slashed;
+    }
+
+    function _slashSkillRep(uint256 skillId) private {
+        Skill storage s = skills[skillId];
+        s.reputationScore = s.reputationScore > REP_SLASH_STEP ? s.reputationScore - REP_SLASH_STEP : REP_FLOOR;
     }
 
     // ── Job lifecycle ──────────────────────────────────────────
@@ -309,16 +347,106 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
         _settleCompletion(j, jobId);
     }
 
-    /// @notice Requester rejects a delivered result within the review window and reclaims escrow.
-    ///         Evaluator fee (if any) is also returned to the requester (evaluator didn't act).
-    function disputeResult(uint256 jobId) external nonReentrant {
+    /// @notice Requester disputes a delivered result within the review window.
+    ///         P1-A: bond-backed — requester must lock a dispute bond proportional to escrow.
+    ///         Escrow is held until resolution; evaluator fee (if any) returned immediately.
+    function disputeResult(uint256 jobId) external payable nonReentrant {
         Job storage j = jobs[jobId];
         require(j.requester == msg.sender, "not requester");
         require(j.status == JobStatus.Delivered, "job not delivered");
         require(block.timestamp <= j.deadline, "review window closed");
+
+        uint256 requiredBond = (disputeBondBps * j.escrowAmount) / 10_000;
+        if (requiredBond < MIN_DISPUTE_BOND) requiredBond = MIN_DISPUTE_BOND;
+        require(msg.value == requiredBond, "wrong dispute bond");
+
         j.status = JobStatus.Disputed;
-        pendingWithdrawals[msg.sender] += j.escrowAmount + j.evaluatorFee;
+        disputes[jobId] = DisputeInfo({disputeBond: msg.value, providerBond: 0, disputedAt: block.timestamp});
+        if (j.evaluatorFee > 0) {
+            pendingWithdrawals[msg.sender] += j.evaluatorFee;
+        }
+        emit DisputeBondPosted(jobId, msg.sender, msg.value);
         emit ResultDisputed(jobId, msg.sender, j.escrowAmount);
+    }
+
+    /// @notice Provider matches the dispute bond to contest (enter arbitration).
+    function respondToDispute(uint256 jobId) external payable nonReentrant {
+        Job storage j = jobs[jobId];
+        require(j.provider == msg.sender, "not provider");
+        require(j.status == JobStatus.Disputed, "not disputed");
+        DisputeInfo storage d = disputes[jobId];
+        require(d.disputeBond > 0, "not a bonded dispute");
+        require(d.providerBond == 0, "already responded");
+        require(block.timestamp <= d.disputedAt + RESPONSE_WINDOW, "response window closed");
+        require(msg.value == d.disputeBond, "bond must match dispute bond");
+
+        d.providerBond = msg.value;
+        emit DisputeResponsePosted(jobId, msg.sender, msg.value);
+    }
+
+    /// @notice Provider concedes the dispute. Escrow + requester bond returned; provider rep slashed.
+    function concedeDispute(uint256 jobId) external nonReentrant {
+        Job storage j = jobs[jobId];
+        require(j.provider == msg.sender, "not provider");
+        require(j.status == JobStatus.Disputed, "not disputed");
+        DisputeInfo storage d = disputes[jobId];
+        require(d.disputeBond > 0, "not a bonded dispute");
+        require(d.providerBond == 0, "already responded");
+
+        j.status = JobStatus.Refunded;
+        pendingWithdrawals[j.requester] += j.escrowAmount + d.disputeBond;
+        _slashAgentRep(j.provider);
+        _slashSkillRep(j.skillId);
+        emit DisputeConceded(jobId, msg.sender);
+        emit JobRefunded(jobId, j.requester, j.escrowAmount);
+    }
+
+    /// @notice Anyone can trigger default concede if provider doesn't respond within RESPONSE_WINDOW.
+    function resolveDefaultConcede(uint256 jobId) external nonReentrant {
+        Job storage j = jobs[jobId];
+        require(j.status == JobStatus.Disputed, "not disputed");
+        DisputeInfo storage d = disputes[jobId];
+        require(d.disputeBond > 0, "not a bonded dispute");
+        require(d.providerBond == 0, "provider already responded");
+        require(block.timestamp > d.disputedAt + RESPONSE_WINDOW, "response window open");
+
+        j.status = JobStatus.Refunded;
+        pendingWithdrawals[j.requester] += j.escrowAmount + d.disputeBond;
+        _slashAgentRep(j.provider);
+        _slashSkillRep(j.skillId);
+        emit DisputeConceded(jobId, j.provider);
+        emit JobRefunded(jobId, j.requester, j.escrowAmount);
+    }
+
+    /// @notice Arbiter adjudicates a contested dispute (both sides bonded). Loser-pays.
+    function arbitrate(uint256 jobId, Verdict verdict) external nonReentrant {
+        require(msg.sender == arbiter, "not arbiter");
+        Job storage j = jobs[jobId];
+        require(j.status == JobStatus.Disputed, "not disputed");
+        DisputeInfo storage d = disputes[jobId];
+        require(d.disputeBond > 0, "not a bonded dispute");
+        require(d.providerBond > 0, "provider has not responded");
+
+        if (verdict == Verdict.ProviderAtFault) {
+            j.status = JobStatus.Refunded;
+            pendingWithdrawals[j.requester] += j.escrowAmount + d.disputeBond + d.providerBond;
+            _slashAgentRep(j.provider);
+            _slashSkillRep(j.skillId);
+            emit JobRefunded(jobId, j.requester, j.escrowAmount);
+        } else {
+            j.status = JobStatus.Completed;
+            j.completedAt = block.timestamp;
+            pendingWithdrawals[j.provider] += j.escrowAmount + d.providerBond + d.disputeBond;
+            Skill storage s = skills[j.skillId];
+            if (j.requester != j.provider) {
+                s.totalInvocations += 1;
+                uint256 rep = s.reputationScore + REPUTATION_STEP;
+                s.reputationScore = rep > MAX_REPUTATION ? MAX_REPUTATION : rep;
+                _bumpAgentRep(j.provider);
+            }
+            emit JobCompleted(jobId, j.provider, j.escrowAmount, s.reputationScore);
+        }
+        emit DisputeArbitrated(jobId, verdict, msg.sender);
     }
 
     /// @notice Neutral evaluator approves or rejects a delivered result (P0-A).
@@ -451,6 +579,21 @@ contract AgentSkillRegistry is ReentrancyGuard, Ownable2Step {
         require(score <= MAX_REPUTATION, "bad threshold");
         crossChainRep[agent] = score;
         emit CrossChainRepUpdated(agent, score, sourceChain);
+    }
+
+    /// @notice Owner sets the dispute bond percentage (P1-A). 10_000 = 1× escrow (default).
+    function setDisputeBondBps(uint256 bps) external onlyOwner {
+        uint256 old = disputeBondBps;
+        disputeBondBps = bps;
+        emit DisputeBondBpsUpdated(old, bps);
+    }
+
+    /// @notice Owner sets the arbiter address for dispute resolution (P1-A).
+    function setArbiter(address newArbiter) external onlyOwner {
+        require(newArbiter != address(0), "zero arbiter");
+        address old = arbiter;
+        arbiter = newArbiter;
+        emit ArbiterUpdated(old, newArbiter);
     }
 
     // ── Views for evaluator (P0-A) ──────────────────────────────

@@ -173,7 +173,13 @@ export type IndexedEvent =
   | { type: "JobEvaluated"; blockNumber: bigint; jobId: bigint; evaluator: Address; approved: boolean; evaluatorPayout: bigint }
   | { type: "BondUpdated"; blockNumber: bigint; agent: Address; bondedAmount: bigint; seedEligible: bigint }
   | { type: "MinReputationSet"; blockNumber: bigint; skillId: bigint; minReputation: bigint }
-  | { type: "CrossChainRepUpdated"; blockNumber: bigint; agent: Address; score: bigint; sourceChain: string };
+  | { type: "CrossChainRepUpdated"; blockNumber: bigint; agent: Address; score: bigint; sourceChain: string }
+  | { type: "DisputeBondPosted"; blockNumber: bigint; jobId: bigint; requester: Address; bond: bigint }
+  | { type: "DisputeResponsePosted"; blockNumber: bigint; jobId: bigint; provider: Address; bond: bigint }
+  | { type: "DisputeConceded"; blockNumber: bigint; jobId: bigint; provider: Address }
+  | { type: "DisputeArbitrated"; blockNumber: bigint; jobId: bigint; verdict: number; arbiter: Address }
+  | { type: "ArbiterUpdated"; blockNumber: bigint; oldArbiter: Address; newArbiter: Address }
+  | { type: "DisputeBondBpsUpdated"; blockNumber: bigint; oldBps: bigint; newBps: bigint };
 
 export interface IndexerWatchHandlers {
   onLogs: (events: IndexedEvent[]) => void;
@@ -389,6 +395,39 @@ export function mapLog(raw: unknown): IndexedEvent | null {
         type: "CrossChainRepUpdated", blockNumber: bn,
         agent: a.agent as Address, score: a.score as bigint,
         sourceChain: a.sourceChain as string,
+      };
+    case "DisputeBondPosted":
+      return {
+        type: "DisputeBondPosted", blockNumber: bn,
+        jobId: a.jobId as bigint, requester: a.requester as Address,
+        bond: a.bond as bigint,
+      };
+    case "DisputeResponsePosted":
+      return {
+        type: "DisputeResponsePosted", blockNumber: bn,
+        jobId: a.jobId as bigint, provider: a.provider as Address,
+        bond: a.bond as bigint,
+      };
+    case "DisputeConceded":
+      return {
+        type: "DisputeConceded", blockNumber: bn,
+        jobId: a.jobId as bigint, provider: a.provider as Address,
+      };
+    case "DisputeArbitrated":
+      return {
+        type: "DisputeArbitrated", blockNumber: bn,
+        jobId: a.jobId as bigint, verdict: Number(a.verdict),
+        arbiter: a.arbiter as Address,
+      };
+    case "ArbiterUpdated":
+      return {
+        type: "ArbiterUpdated", blockNumber: bn,
+        oldArbiter: a.oldArbiter as Address, newArbiter: a.newArbiter as Address,
+      };
+    case "DisputeBondBpsUpdated":
+      return {
+        type: "DisputeBondBpsUpdated", blockNumber: bn,
+        oldBps: a.oldBps as bigint, newBps: a.newBps as bigint,
       };
     default:
       return null;

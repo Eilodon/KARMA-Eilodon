@@ -70,6 +70,27 @@ fn open_job(
         .create_job(skill_id, task_hash(label), DEADLINE_MS)
 }
 
+fn dispute_bond_for(price: u64) -> U512 {
+    let bond = U512::from(10_000u32) * U512::from(price) / U512::from(10_000u32);
+    let min = U512::from(MIN_DISPUTE_BOND_MOTES);
+    if bond < min { min } else { bond }
+}
+
+fn deliver_and_dispute(
+    env: &HostEnv,
+    reg: &mut AgentSkillRegistryHostRef,
+    alpha: Address,
+    beta: Address,
+    job_id: u64,
+) -> U512 {
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+    bond
+}
+
 // ── Happy path ─────────────────────────────────────────────
 #[test]
 fn happy_path_escrow_flow_and_reputation() {
@@ -173,16 +194,12 @@ fn delivered_junk_result_requester_disputes_within_window() {
     let (env, mut reg, alpha, beta) = setup();
     let skill_id = register_skill(&env, &mut reg, alpha);
     let job_id = open_job(&env, &mut reg, beta, skill_id, "t");
-    env.set_caller(alpha);
-    reg.deliver_result(job_id, task_hash("r"));
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
 
-    env.set_caller(beta);
-    reg.dispute_result(job_id);
-
-    let bal_before = env.balance_of(&beta);
-    env.set_caller(beta);
-    reg.withdraw();
-    assert_eq!(env.balance_of(&beta), bal_before + U512::from(PRICE), "requester refunded on dispute");
+    // P1-A: dispute now holds escrow + bond; not auto-refunded until resolution
+    let d = reg.get_dispute_info(job_id).expect("dispute info present");
+    assert_eq!(d.dispute_bond, bond, "dispute bond recorded");
+    assert!(d.provider_bond.is_zero(), "provider hasn't responded yet");
     assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION, "dispute grants no provider rep");
 }
 
@@ -195,8 +212,12 @@ fn dispute_after_window_reverts() {
     reg.deliver_result(job_id, task_hash("r"));
 
     env.advance_block_time(DEFAULT_REVIEW_WINDOW + 1);
+    let bond = dispute_bond_for(PRICE);
     env.set_caller(beta);
-    assert_eq!(reg.try_dispute_result(job_id), Err(Error::ReviewWindowClosed.into()));
+    assert_eq!(
+        reg.with_tokens(bond).try_dispute_result(job_id),
+        Err(Error::ReviewWindowClosed.into())
+    );
 }
 
 #[test]
@@ -989,17 +1010,25 @@ fn composition_dispute_refunds_full_escrow_and_freezes_reputation() {
     env.set_caller(omega);
     reg.deliver_result(job_id, task_hash("garbage"));
     env.set_caller(requester);
-    reg.dispute_result(job_id);
+    let bond = dispute_bond_for(COMPOSITE_PRICE);
+    reg.with_tokens(bond).dispute_result(job_id);
 
-    // Full escrow back to requester; every producer slice is zero.
-    assert_eq!(reg.pending_withdrawals_of(requester), U512::from(COMPOSITE_PRICE), "full refund");
+    // P1-A: bond-backed dispute holds escrow; concede or arbitrate to release
+    // Force default concede to release funds
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    reg.resolve_default_concede(job_id);
+
+    // Full escrow + bond back to requester; every producer slice is zero.
+    assert_eq!(reg.pending_withdrawals_of(requester), U512::from(COMPOSITE_PRICE) + bond, "full refund + bond");
     assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero(), "leaf A unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(beta), U512::zero(), "leaf B unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(gamma), U512::zero(), "leaf C unpaid on dispute");
     assert_eq!(reg.pending_withdrawals_of(omega), U512::zero(), "wrapper unpaid on dispute");
 
-    // Dispute never moves trust signals.
-    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION, "composite rep frozen");
+    // P1-A: default concede slashes provider (omega) and composite skill rep.
+    // Leaf skills are unaffected (only the job's skill_id is slashed).
+    assert_eq!(reg.get_skill(composite).reputation_score, BASE_REPUTATION - REP_SLASH_STEP, "composite rep slashed");
+    assert_eq!(reg.agent_reputation(omega), BASE_REPUTATION - REP_SLASH_STEP, "provider (omega) agent rep slashed");
     assert_eq!(reg.get_skill(leaf_a).reputation_score, BASE_REPUTATION, "leaf A rep frozen");
     assert_eq!(reg.get_skill(leaf_b).reputation_score, BASE_REPUTATION, "leaf B rep frozen");
     assert_eq!(reg.get_skill(leaf_c).reputation_score, BASE_REPUTATION, "leaf C rep frozen");
@@ -1378,12 +1407,17 @@ fn evaluator_dispute_result_refunds_escrow_and_fee_to_requester() {
     env.set_caller(alpha);
     reg.deliver_result(job_id, task_hash("r"));
 
+    let bond = dispute_bond_for(PRICE);
     env.set_caller(beta);
-    reg.dispute_result(job_id);
+    reg.with_tokens(bond).dispute_result(job_id);
 
-    // Requester gets escrow + evaluator fee
-    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE + EVAL_FEE));
-    // Provider and evaluator get nothing
+    // P1-A: evaluator fee immediately refunded; escrow held until resolution
+    // Evaluator fee returned immediately on dispute
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE), "eval fee refunded immediately");
+    // Force default concede to release escrow + bond
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    reg.resolve_default_concede(job_id);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE) + U512::from(PRICE) + bond);
     assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
     assert_eq!(reg.pending_withdrawals_of(evaluator), U512::zero());
 }
@@ -1867,4 +1901,482 @@ fn evaluator_withdraw_flow_after_approve() {
     env.set_caller(evaluator);
     reg.withdraw();
     assert_eq!(env.balance_of(&evaluator), bal_before_eval + U512::from(EVAL_FEE));
+}
+
+// ─── P1-A: Symmetric Dispute Bond ──────────────────────────────────────────────
+
+#[test]
+fn p1a_provider_at_fault_full_flow() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-paf");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    // Provider responds
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    // Arbiter rules ProviderAtFault
+    let deployer = env.get_account(0); // = arbiter
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::ProviderAtFault);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Refunded);
+    // Requester gets escrow + both bonds
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond + bond,
+    );
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::zero());
+    // Provider rep slashed
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_requester_at_fault_full_flow() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-raf");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::RequesterAtFault);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Completed);
+    // Provider gets escrow + both bonds
+    assert_eq!(
+        reg.pending_withdrawals_of(alpha),
+        U512::from(PRICE) + bond + bond,
+    );
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+    // Provider rep bumped (arm's-length)
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION + REPUTATION_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION + REPUTATION_STEP);
+}
+
+#[test]
+fn p1a_provider_concedes() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.concede_dispute(job_id);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Refunded);
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond,
+    );
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+    assert_eq!(reg.get_skill(skill_id).reputation_score, BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_default_concede_after_response_window() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-dflt");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    // Anyone can trigger
+    let outsider = env.get_account(5);
+    env.set_caller(outsider);
+    reg.resolve_default_concede(job_id);
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
+    assert_eq!(
+        reg.pending_withdrawals_of(beta),
+        U512::from(PRICE) + bond,
+    );
+    assert_eq!(reg.agent_reputation(alpha), BASE_REPUTATION - REP_SLASH_STEP);
+}
+
+#[test]
+fn p1a_wrong_bond_amount_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-wrong");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(bond + U512::from(1u64)).try_dispute_result(job_id),
+        Err(Error::WrongDisputeBond.into()),
+    );
+}
+
+#[test]
+fn p1a_zero_escrow_uses_min_dispute_bond() {
+    // When escrow is zero, the dispute bond defaults to MIN_DISPUTE_BOND_MOTES
+    let (env, mut reg, _, _) = setup();
+    let alpha = env.get_account(1);
+    env.set_caller(alpha);
+    let skill_id = reg.register_skill(
+        "free".to_string(), "free skill".to_string(), "mcp://free".to_string(),
+        U512::zero(), 0, IDENTITY_POLICY_NONE,
+    );
+
+    let beta = env.get_account(2);
+    env.set_caller(beta);
+    let job_id = reg.with_tokens(U512::zero()).create_job(skill_id, task_hash("free-job"), DEADLINE_MS);
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+    env.set_caller(beta);
+    reg.with_tokens(min_bond).dispute_result(job_id);
+
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, min_bond, "MIN_DISPUTE_BOND_MOTES used for zero-escrow");
+}
+
+#[test]
+fn p1a_response_after_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-late-resp");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.advance_block_time(RESPONSE_WINDOW + 1);
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond).try_respond_to_dispute(job_id),
+        Err(Error::ResponseWindowClosed.into()),
+    );
+}
+
+#[test]
+fn p1a_double_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-dbl");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond).try_respond_to_dispute(job_id),
+        Err(Error::AlreadyResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_concede_after_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc-resp");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.try_concede_dispute(job_id),
+        Err(Error::AlreadyResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_arbitrate_before_response_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-arb-early");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    assert_eq!(
+        reg.try_arbitrate(job_id, Verdict::ProviderAtFault),
+        Err(Error::ProviderNotResponded.into()),
+    );
+}
+
+#[test]
+fn p1a_not_arbiter_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-na");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(alpha); // alpha is not arbiter
+    assert_eq!(
+        reg.try_arbitrate(job_id, Verdict::ProviderAtFault),
+        Err(Error::NotArbiter.into()),
+    );
+}
+
+#[test]
+fn p1a_default_concede_before_window_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-early-dflt");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(beta);
+    assert_eq!(
+        reg.try_resolve_default_concede(job_id),
+        Err(Error::ResponseWindowOpen.into()),
+    );
+}
+
+#[test]
+fn p1a_rep_slash_floors_at_rep_floor() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+
+    // Slash multiple times to drive rep to floor
+    for i in 0..10u64 {
+        let job_id = open_job(&env, &mut reg, beta, skill_id, &format!("slash-{i}"));
+        let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+        env.set_caller(alpha);
+        reg.concede_dispute(job_id);
+    }
+
+    assert_eq!(reg.agent_reputation(alpha), REP_FLOOR, "agent rep floored at REP_FLOOR, not 0");
+    assert_eq!(reg.get_skill(skill_id).reputation_score, REP_FLOOR, "skill rep floored at REP_FLOOR");
+}
+
+#[test]
+fn p1a_set_dispute_bond_bps() {
+    let (env, mut reg, _, _) = setup();
+    let deployer = env.get_account(0); // governance signer
+    env.set_caller(deployer);
+    reg.set_dispute_bond_bps(5_000);
+    assert_eq!(reg.get_dispute_bond_bps(), 5_000);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeBondBpsUpdated { old_bps: 10_000, new_bps: 5_000 },
+    ));
+}
+
+#[test]
+fn p1a_set_arbiter() {
+    let (env, mut reg, alpha, _) = setup();
+    let deployer = env.get_account(0);
+    let old_arbiter = reg.get_arbiter();
+    assert_eq!(old_arbiter, deployer);
+
+    env.set_caller(deployer);
+    reg.set_arbiter(alpha);
+    assert_eq!(reg.get_arbiter(), alpha);
+
+    assert!(env.emitted_event(
+        &reg,
+        ArbiterUpdated { old_arbiter: deployer, new_arbiter: alpha },
+    ));
+}
+
+#[test]
+fn p1a_set_dispute_bond_bps_non_signer_reverts() {
+    let (env, mut reg, alpha, _) = setup();
+    env.set_caller(alpha); // not governance signer
+    assert_eq!(
+        reg.try_set_dispute_bond_bps(5_000),
+        Err(Error::NotGovernanceSigner.into()),
+    );
+}
+
+#[test]
+fn p1a_set_arbiter_non_signer_reverts() {
+    let (env, mut reg, alpha, _) = setup();
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.try_set_arbiter(alpha),
+        Err(Error::NotGovernanceSigner.into()),
+    );
+}
+
+#[test]
+fn p1a_evaluator_rejection_still_terminal() {
+    // Evaluator rejection (evaluate_result(false)) is still terminal —
+    // no bonded dispute, no need for resolution
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "eval-rej");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    env.set_caller(evaluator);
+    reg.evaluate_result(job_id, false);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+    // No dispute info → evaluator rejection, not bonded dispute
+    assert!(reg.get_dispute_info(job_id).is_none(), "no DisputeInfo for evaluator rejection");
+    // Requester gets escrow refund immediately
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE));
+    // Evaluator gets fee
+    assert_eq!(reg.pending_withdrawals_of(evaluator), U512::from(EVAL_FEE));
+}
+
+#[test]
+fn p1a_requester_can_still_dispute_with_bond_after_evaluator_set() {
+    let (env, mut reg, alpha, beta) = setup();
+    let evaluator = env.get_account(3);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job_with_evaluator(&env, &mut reg, beta, skill_id, evaluator, "req-disp-eval");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Requester can dispute (with bond) even when there's an evaluator set
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+
+    let j = reg.get_job(job_id);
+    assert_eq!(j.status, JobStatus::Disputed);
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, bond);
+    // Evaluator fee returned to requester immediately
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(EVAL_FEE));
+}
+
+#[test]
+fn p1a_provider_wrong_bond_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-wrong-prov");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    assert_eq!(
+        reg.with_tokens(bond + U512::from(1u64)).try_respond_to_dispute(job_id),
+        Err(Error::WrongDisputeBond.into()),
+    );
+}
+
+#[test]
+fn p1a_full_withdrawal_after_arbitration() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-withdraw");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::ProviderAtFault);
+
+    // Requester withdraws everything
+    let expected = U512::from(PRICE) + bond + bond;
+    assert_eq!(reg.pending_withdrawals_of(beta), expected);
+    let bal_before = env.balance_of(&beta);
+    env.set_caller(beta);
+    reg.withdraw();
+    assert_eq!(env.balance_of(&beta), bal_before + expected);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::zero());
+}
+
+#[test]
+fn p1a_events_emitted_on_dispute_and_response() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-events");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeBondPosted { job_id, requester: beta, bond },
+    ));
+    assert!(env.emitted_event(
+        &reg,
+        ResultDisputed { job_id, requester: beta, amount: U512::from(PRICE) },
+    ));
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    assert!(env.emitted_event(
+        &reg,
+        DisputeResponsePosted { job_id, provider: alpha, bond },
+    ));
+}
+
+#[test]
+fn p1a_concede_event_emitted() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-conc-ev");
+    deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.concede_dispute(job_id);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeConceded { job_id, provider: alpha },
+    ));
+}
+
+#[test]
+fn p1a_arbitrate_event_emitted() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-arb-ev");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::RequesterAtFault);
+
+    assert!(env.emitted_event(
+        &reg,
+        DisputeArbitrated {
+            job_id,
+            verdict: Verdict::RequesterAtFault,
+            arbiter: deployer,
+        },
+    ));
+}
+
+#[test]
+fn p1a_lower_bps_changes_required_bond() {
+    let (env, mut reg, _, _) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.set_dispute_bond_bps(5_000); // 0.5× escrow
+
+    let alpha = env.get_account(1);
+    let beta = env.get_account(2);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "p1a-lowbps");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    // Bond should be 0.5 × PRICE
+    let expected_bond = U512::from(5_000u32) * U512::from(PRICE) / U512::from(10_000u32);
+    let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+    let bond = if expected_bond < min_bond { min_bond } else { expected_bond };
+
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result(job_id);
+
+    let d = reg.get_dispute_info(job_id).unwrap();
+    assert_eq!(d.dispute_bond, bond);
 }

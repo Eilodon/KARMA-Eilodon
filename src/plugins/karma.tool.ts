@@ -631,8 +631,9 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
   const disputeResult: ToolDefinition = {
     name: "dispute_result",
     description:
-      "Requester rejects a delivered result within the review window and reclaims the escrow " +
-      "(moves the job to Disputed). Reverts on-chain if the review window has already closed.",
+      "Requester rejects a delivered result within the review window. P1-A: bond-backed — " +
+      "the requester must lock a dispute bond proportional to escrow. Reverts on-chain if the " +
+      "review window has already closed or the bond amount is wrong.",
     inputSchema: { agentId: z.string().describe("Keystore agent id of the requester."), jobId: WEI },
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -642,16 +643,20 @@ export function createKarmaTools(svc: KarmaService): ToolDefinition[] {
       assertInProcess();
       const a = z.object({ agentId: z.string(), jobId: WEI }).parse(args);
       const { tenantId } = getRequestContext();
-      const account = svc.account(a.agentId, tenantId); // STRIDE-S auth gate first
+      const account = svc.account(a.agentId, tenantId);
       const jobId = BigInt(a.jobId);
-      // Status precheck only — the review-window timing stays on-chain authoritative (may still
-      // revert "review window closed", which is the intended boundary, not an idempotency failure).
       const pre = await precheckLifecycle(svc, jobId, "dispute_result", JOB_STATUS.Delivered, JOB_STATUS.Disputed);
       if (pre) return pre;
-      const outcome = await svc.disputeResult(account, { jobId });
-      return reply(`[KARMA] dispute_result job #${a.jobId} ${outcome.status} tx=${outcome.hash}`, {
+      const job = await svc.readJob(jobId);
+      const bps = await svc.getDisputeBondBps();
+      let bond = (bps * job.escrowAmount) / 10_000n;
+      const MIN_DISPUTE_BOND = 1_000_000_000_000_000n; // 0.001 ether
+      if (bond < MIN_DISPUTE_BOND) bond = MIN_DISPUTE_BOND;
+      const outcome = await svc.disputeResult(account, { jobId, value: bond });
+      return reply(`[KARMA] dispute_result job #${a.jobId} bond=${bond} ${outcome.status} tx=${outcome.hash}`, {
         status: outcome.status,
         jobId: a.jobId,
+        bond: bond.toString(),
         txHash: outcome.hash,
       });
     },

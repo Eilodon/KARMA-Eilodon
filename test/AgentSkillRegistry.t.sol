@@ -135,14 +135,20 @@ contract AgentSkillRegistryTest is Test {
         vm.prank(alpha);
         reg.deliverResult(jobId, RESULT_HASH);
 
+        // P1-A: bonded dispute — requester posts 1× escrow bond
+        uint256 bond = PRICE;
         vm.prank(beta);
-        reg.disputeResult(jobId);
+        reg.disputeResult{value: bond}(jobId);
+
+        // Provider concedes → escrow + bond refunded, provider rep slashed
+        vm.prank(alpha);
+        reg.concedeDispute(jobId);
 
         uint256 balBefore = beta.balance;
         vm.prank(beta);
         reg.withdraw();
-        assertEq(beta.balance, balBefore + PRICE, "requester refunded on dispute");
-        assertEq(reg.agentReputation(alpha), 50, "dispute grants no provider rep");
+        assertEq(beta.balance, balBefore + PRICE + bond, "requester refunded escrow + bond on concede");
+        assertEq(reg.agentReputation(alpha), 40, "provider rep slashed on concede");
     }
 
     function test_Dispute_AfterWindow_Reverts() public {
@@ -154,7 +160,7 @@ contract AgentSkillRegistryTest is Test {
         vm.warp(block.timestamp + reg.REVIEW_WINDOW() + 1);
         vm.prank(beta);
         vm.expectRevert(bytes("review window closed"));
-        reg.disputeResult(jobId);
+        reg.disputeResult{value: PRICE}(jobId);
     }
 
     function test_Claim_AtExactWindow_Reverts() public {
@@ -379,7 +385,7 @@ contract AgentSkillRegistryTest is Test {
         vm.warp(block.timestamp + 1 hours + 1);
         vm.prank(beta);
         vm.expectRevert(bytes("review window closed"));
-        r.disputeResult(jobId);
+        r.disputeResult{value: PRICE}(jobId);
     }
 
     // ── Reentrancy (P2.5 HIGH) ─────────────────────────────────
@@ -713,19 +719,26 @@ contract AgentSkillRegistryTest is Test {
         assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (didn't act)");
     }
 
-    // ── Fee routing: disputeResult returns escrow + eval fee ──────
-    function test_Evaluator_DisputeResult_RefundsEscrowAndEvalFee() public {
+    // ── Fee routing: disputeResult with evaluator refunds eval fee immediately ──
+    function test_Evaluator_DisputeResult_RefundsEvalFeeImmediately() public {
         uint256 skillId = _registerSkill();
         vm.deal(evaluator, 1 ether);
         uint256 jobId = _openJobWithEvaluator(skillId);
         vm.prank(alpha);
         reg.deliverResult(jobId, RESULT_HASH);
 
+        uint256 bond = PRICE;
         vm.prank(beta);
-        reg.disputeResult(jobId);
+        reg.disputeResult{value: bond}(jobId);
 
-        assertEq(reg.pendingWithdrawals(beta), PRICE + EVAL_FEE, "requester gets escrow + eval fee");
+        // Eval fee refunded immediately on dispute; escrow + bond held for resolution
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE, "eval fee refunded to requester on dispute");
         assertEq(reg.pendingWithdrawals(evaluator), 0, "evaluator gets nothing (didn't act)");
+
+        // After concede: escrow + bond also released
+        vm.prank(alpha);
+        reg.concedeDispute(jobId);
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE + PRICE + bond, "full refund after concede");
     }
 
     // ── Fee routing: claimRefund returns escrow + eval fee ─────────
@@ -834,10 +847,16 @@ contract AgentSkillRegistryTest is Test {
         vm.prank(alpha);
         reg.deliverResult(jobId, RESULT_HASH);
 
+        uint256 bond = PRICE;
         vm.prank(beta);
-        reg.disputeResult(jobId);
+        reg.disputeResult{value: bond}(jobId);
 
-        assertEq(reg.pendingWithdrawals(beta), PRICE + EVAL_FEE, "requester gets full refund on dispute");
+        // Eval fee refunded immediately; escrow + bond held until resolution
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE, "eval fee refunded on bonded dispute");
+
+        vm.prank(alpha);
+        reg.concedeDispute(jobId);
+        assertEq(reg.pendingWithdrawals(beta), EVAL_FEE + PRICE + bond, "full refund after concede");
     }
 
     // ── Full withdrawal flow with evaluator ───────────────────────
@@ -1003,6 +1022,358 @@ contract AgentSkillRegistryTest is Test {
         KarmaTimelock timelock = new KarmaTimelock(proposers, executors);
 
         assertEq(timelock.getMinDelay(), 48 hours, "KARMA_MIN_DELAY is 48 hours");
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // ── P1-A: Symmetric Dispute Bond ──────────────────────────────
+    // ══════════════════════════════════════════════════════════════
+
+    address internal arbAddr = address(0xAB); // dedicated arbiter
+
+    event DisputeBondPosted(uint256 indexed jobId, address indexed requester, uint256 bond);
+    event DisputeResponsePosted(uint256 indexed jobId, address indexed provider, uint256 bond);
+    event DisputeConceded(uint256 indexed jobId, address indexed provider);
+    event DisputeArbitrated(uint256 indexed jobId, uint8 verdict, address indexed arbiter);
+    event ArbiterUpdated(address indexed oldArbiter, address indexed newArbiter);
+    event DisputeBondBpsUpdated(uint256 oldBps, uint256 newBps);
+
+    function _deliverAndDispute(uint256 jobId) internal returns (uint256 bond) {
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+        bond = PRICE; // default 10_000 bps = 1× escrow
+        vm.prank(beta);
+        reg.disputeResult{value: bond}(jobId);
+    }
+
+    // ── Full flow: ProviderAtFault ────────────────────────────────
+    function test_BondedDispute_ProviderAtFault_FullFlow() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        uint256 bond = _deliverAndDispute(jobId);
+
+        // Provider responds (matches bond)
+        vm.prank(alpha);
+        reg.respondToDispute{value: bond}(jobId);
+
+        // Arbiter rules ProviderAtFault
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.ProviderAtFault);
+
+        // Requester gets: escrow + own bond + provider's forfeited bond
+        assertEq(reg.pendingWithdrawals(beta), PRICE + bond + bond, "requester gets escrow + both bonds");
+        assertEq(reg.pendingWithdrawals(alpha), 0, "provider gets nothing");
+
+        // Rep slashed
+        assertEq(reg.agentReputation(alpha), 40, "provider agent rep slashed");
+        (, , , , , uint256 skillRep, , , , , ) = reg.skills(skillId);
+        assertEq(skillRep, 40, "skill rep slashed");
+    }
+
+    // ── Full flow: RequesterAtFault (frivolous dispute) ───────────
+    function test_BondedDispute_RequesterAtFault_FullFlow() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        uint256 bond = _deliverAndDispute(jobId);
+
+        vm.prank(alpha);
+        reg.respondToDispute{value: bond}(jobId);
+
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.RequesterAtFault);
+
+        // Provider gets: escrow + own bond + requester's forfeited bond
+        assertEq(reg.pendingWithdrawals(alpha), PRICE + bond + bond, "provider gets escrow + both bonds");
+        assertEq(reg.pendingWithdrawals(beta), 0, "requester gets nothing");
+
+        // Provider rep bumped (good delivery), requester not rewarded
+        assertEq(reg.agentReputation(alpha), 55, "provider rep bumped on frivolous dispute");
+        (, , , , , uint256 skillRep, uint256 inv, , , , ) = reg.skills(skillId);
+        assertEq(skillRep, 55, "skill rep bumped");
+        assertEq(inv, 1, "invocation counted");
+    }
+
+    // ── Provider concedes ────────────────────────────────────────
+    function test_BondedDispute_ProviderConcedes() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        uint256 bond = _deliverAndDispute(jobId);
+
+        vm.prank(alpha);
+        reg.concedeDispute(jobId);
+
+        assertEq(reg.pendingWithdrawals(beta), PRICE + bond, "requester gets escrow + bond");
+        assertEq(reg.agentReputation(alpha), 40, "provider rep slashed on concede");
+        (, , , , , uint256 skillRep, , , , , ) = reg.skills(skillId);
+        assertEq(skillRep, 40, "skill rep slashed on concede");
+    }
+
+    // ── Default concede (unresponsive provider) ──────────────────
+    function test_BondedDispute_DefaultConcede() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        uint256 bond = _deliverAndDispute(jobId);
+
+        vm.warp(block.timestamp + reg.RESPONSE_WINDOW() + 1);
+        reg.resolveDefaultConcede(jobId); // anyone can call
+
+        assertEq(reg.pendingWithdrawals(beta), PRICE + bond, "requester gets escrow + bond");
+        assertEq(reg.agentReputation(alpha), 40, "provider rep slashed on default concede");
+    }
+
+    // ── Wrong bond amount reverts ────────────────────────────────
+    function test_BondedDispute_WrongBondAmount_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.prank(beta);
+        vm.expectRevert(bytes("wrong dispute bond"));
+        reg.disputeResult{value: PRICE - 1}(jobId);
+
+        vm.prank(beta);
+        vm.expectRevert(bytes("wrong dispute bond"));
+        reg.disputeResult{value: PRICE + 1}(jobId);
+    }
+
+    // ── Zero-escrow skill uses MIN_DISPUTE_BOND ──────────────────
+    function test_BondedDispute_ZeroEscrow_MinBondApplies() public {
+        vm.prank(alpha);
+        uint256 skillId = reg.registerSkill("free", "free", "mcp://a", 0, 0, 0);
+        vm.prank(beta);
+        uint256 jobId = reg.createJob{value: 0}(skillId, TASK_HASH, DEADLINE_SECS);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        uint256 minBond = reg.MIN_DISPUTE_BOND();
+        vm.prank(beta);
+        reg.disputeResult{value: minBond}(jobId);
+
+        (uint256 dBond, , ) = reg.disputes(jobId);
+        assertEq(dBond, minBond, "min bond applied for zero-escrow skill");
+    }
+
+    // ── Response after window reverts ────────────────────────────
+    function test_BondedDispute_ResponseAfterWindow_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.warp(block.timestamp + reg.RESPONSE_WINDOW() + 1);
+        vm.prank(alpha);
+        vm.expectRevert(bytes("response window closed"));
+        reg.respondToDispute{value: PRICE}(jobId);
+    }
+
+    // ── Double response reverts ──────────────────────────────────
+    function test_BondedDispute_DoubleResponse_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.prank(alpha);
+        reg.respondToDispute{value: PRICE}(jobId);
+
+        vm.prank(alpha);
+        vm.expectRevert(bytes("already responded"));
+        reg.respondToDispute{value: PRICE}(jobId);
+    }
+
+    // ── Concede after response reverts ───────────────────────────
+    function test_BondedDispute_ConcedeAfterResponse_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.prank(alpha);
+        reg.respondToDispute{value: PRICE}(jobId);
+
+        vm.prank(alpha);
+        vm.expectRevert(bytes("already responded"));
+        reg.concedeDispute(jobId);
+    }
+
+    // ── Arbitrate before response reverts ─────────────────────────
+    function test_BondedDispute_ArbitrateBeforeResponse_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.expectRevert(bytes("provider has not responded"));
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.ProviderAtFault);
+    }
+
+    // ── Not arbiter reverts ──────────────────────────────────────
+    function test_BondedDispute_NotArbiter_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+        vm.prank(alpha);
+        reg.respondToDispute{value: PRICE}(jobId);
+
+        vm.prank(beta);
+        vm.expectRevert(bytes("not arbiter"));
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.ProviderAtFault);
+    }
+
+    // ── Default concede before window reverts ────────────────────
+    function test_BondedDispute_DefaultConcedeBeforeWindow_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.expectRevert(bytes("response window open"));
+        reg.resolveDefaultConcede(jobId);
+    }
+
+    // ── Rep slash floors at REP_FLOOR ────────────────────────────
+    function test_BondedDispute_RepSlashFloors() public {
+        uint256 skillId = _registerSkill();
+
+        // Slash alpha's rep 5 times: 50→40→30→20→10→1 (floor)
+        for (uint256 i = 0; i < 5; i++) {
+            bytes32 th = keccak256(abi.encode("slash", i));
+            vm.prank(beta);
+            uint256 jid = reg.createJob{value: PRICE}(skillId, th, DEADLINE_SECS);
+            vm.prank(alpha);
+            reg.deliverResult(jid, RESULT_HASH);
+            vm.prank(beta);
+            reg.disputeResult{value: PRICE}(jid);
+            vm.prank(alpha);
+            reg.concedeDispute(jid);
+        }
+
+        assertEq(reg.agentReputation(alpha), reg.REP_FLOOR(), "rep at floor after 5 slashes");
+    }
+
+    // ── setDisputeBondBps: owner-only ────────────────────────────
+    function test_BondedDispute_SetDisputeBondBps() public {
+        assertEq(reg.disputeBondBps(), 10_000, "default 100%");
+        reg.setDisputeBondBps(5_000); // 50%
+        assertEq(reg.disputeBondBps(), 5_000, "updated to 50%");
+
+        vm.prank(beta);
+        vm.expectRevert();
+        reg.setDisputeBondBps(1_000);
+    }
+
+    // ── setArbiter: owner-only ───────────────────────────────────
+    function test_BondedDispute_SetArbiter() public {
+        assertEq(reg.arbiter(), address(this), "initial arbiter = owner");
+        reg.setArbiter(arbAddr);
+        assertEq(reg.arbiter(), arbAddr, "arbiter updated");
+
+        vm.prank(beta);
+        vm.expectRevert();
+        reg.setArbiter(beta);
+    }
+
+    // ── setArbiter rejects zero address ──────────────────────────
+    function test_BondedDispute_SetArbiterZero_Reverts() public {
+        vm.expectRevert(bytes("zero arbiter"));
+        reg.setArbiter(address(0));
+    }
+
+    // ── Lower disputeBondBps changes required bond ───────────────
+    function test_BondedDispute_LowerBps_ReducesBond() public {
+        reg.setDisputeBondBps(5_000); // 50%
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        uint256 halfBond = PRICE / 2;
+        vm.prank(beta);
+        reg.disputeResult{value: halfBond}(jobId);
+        (uint256 dBond, , ) = reg.disputes(jobId);
+        assertEq(dBond, halfBond, "bond is 50% of escrow");
+    }
+
+    // ── Evaluator rejection is still terminal (not bonded) ───────
+    function test_BondedDispute_EvaluatorRejection_StillTerminal() public {
+        uint256 skillId = _registerSkill();
+        vm.deal(evaluator, 1 ether);
+        uint256 jobId = _openJobWithEvaluator(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        // Evaluator rejects — terminal, no bond needed
+        vm.prank(evaluator);
+        reg.evaluateResult(jobId, false);
+
+        // Requester gets escrow, evaluator gets fee
+        assertEq(reg.pendingWithdrawals(beta), PRICE, "requester gets escrow on evaluator reject");
+        assertEq(reg.pendingWithdrawals(evaluator), EVAL_FEE, "evaluator gets fee");
+
+        // Dispute data is empty (no bonded dispute)
+        (uint256 dBond, , ) = reg.disputes(jobId);
+        assertEq(dBond, 0, "no dispute bond on evaluator rejection");
+
+        // Cannot call bonded dispute functions
+        vm.prank(alpha);
+        vm.expectRevert(bytes("not a bonded dispute"));
+        reg.concedeDispute(jobId);
+    }
+
+    // ── Full withdrawal flow after arbitration ───────────────────
+    function test_BondedDispute_FullWithdrawal_ProviderAtFault() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        uint256 bond = _deliverAndDispute(jobId);
+        vm.prank(alpha);
+        reg.respondToDispute{value: bond}(jobId);
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.ProviderAtFault);
+
+        // Registry holds: escrow (1) + requester bond (1) + provider bond (1) = 3 ether
+        // Requester withdraws all 3
+        uint256 balBefore = beta.balance;
+        vm.prank(beta);
+        reg.withdraw();
+        assertEq(beta.balance, balBefore + PRICE + bond + bond, "requester withdrew all");
+        assertEq(address(reg).balance, 0, "registry fully settled");
+    }
+
+    // ── Events: DisputeBondPosted + DisputeArbitrated ─────────────
+    function test_BondedDispute_EmitsEvents() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        vm.prank(alpha);
+        reg.deliverResult(jobId, RESULT_HASH);
+
+        vm.expectEmit(true, true, false, true);
+        emit DisputeBondPosted(jobId, beta, PRICE);
+        vm.prank(beta);
+        reg.disputeResult{value: PRICE}(jobId);
+
+        vm.expectEmit(true, true, false, true);
+        emit DisputeResponsePosted(jobId, alpha, PRICE);
+        vm.prank(alpha);
+        reg.respondToDispute{value: PRICE}(jobId);
+
+        vm.expectEmit(true, false, true, true);
+        emit DisputeArbitrated(jobId, 0, address(this)); // 0 = ProviderAtFault
+        reg.arbitrate(jobId, AgentSkillRegistry.Verdict.ProviderAtFault);
+    }
+
+    // ── Concede event ────────────────────────────────────────────
+    function test_BondedDispute_ConcedeEmitsEvent() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.expectEmit(true, true, false, true);
+        emit DisputeConceded(jobId, alpha);
+        vm.prank(alpha);
+        reg.concedeDispute(jobId);
+    }
+
+    // ── Provider bond must match exactly ─────────────────────────
+    function test_BondedDispute_WrongProviderBond_Reverts() public {
+        uint256 skillId = _registerSkill();
+        uint256 jobId = _openJob(skillId);
+        _deliverAndDispute(jobId);
+
+        vm.prank(alpha);
+        vm.expectRevert(bytes("bond must match dispute bond"));
+        reg.respondToDispute{value: PRICE - 1}(jobId);
     }
 }
 

@@ -38,6 +38,12 @@ pub const MAX_GOVERNANCE_SIGNERS: u32 = 11;
 pub const WEIGHT_DENOMINATOR: u32 = 10_000;
 pub const MAX_COMPOSITION_LEAVES: u32 = 8;
 
+// P1-A: Symmetric dispute bond constants.
+pub const REP_SLASH_STEP: u32 = 10;
+pub const REP_FLOOR: u32 = 1;
+pub const MIN_DISPUTE_BOND_MOTES: u64 = 1_000_000_000; // 1 CSPR in motes (mirrors 0.001 ether)
+pub const RESPONSE_WINDOW: u64 = 3 * 24 * 60 * 60 * 1_000; // 3 days in ms
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 #[odra::odra_error]
 pub enum Error {
@@ -89,6 +95,16 @@ pub enum Error {
     TimelockNotElapsed = 42,
     ProposalAlreadyExecuted = 43,
     ProposalCancelled = 44,
+    // ── P1-A: Symmetric Dispute Bond ──
+    InsufficientDisputeBond = 45,
+    WrongDisputeBond = 46,
+    NotBondedDispute = 47,
+    AlreadyResponded = 48,
+    ResponseWindowClosed = 49,
+    ResponseWindowOpen = 50,
+    NotArbiter = 51,
+    ProviderNotResponded = 52,
+    NotDisputed = 53,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -102,6 +118,19 @@ pub enum JobStatus {
     Completed,
     Refunded,
     Disputed,
+}
+
+#[odra::odra_type]
+pub enum Verdict {
+    ProviderAtFault,
+    RequesterAtFault,
+}
+
+#[odra::odra_type]
+pub struct DisputeInfo {
+    pub dispute_bond: U512,
+    pub provider_bond: U512,
+    pub disputed_at: u64,
 }
 
 #[odra::odra_type]
@@ -283,6 +312,46 @@ pub struct GovernanceConfigured {
     pub timelock_delay_ms: u64,
 }
 
+// ── P1-A: Symmetric dispute bond events ────────────────────────────────────────
+#[odra::event]
+pub struct DisputeBondPosted {
+    pub job_id: u64,
+    pub requester: Address,
+    pub bond: U512,
+}
+
+#[odra::event]
+pub struct DisputeResponsePosted {
+    pub job_id: u64,
+    pub provider: Address,
+    pub bond: U512,
+}
+
+#[odra::event]
+pub struct DisputeConceded {
+    pub job_id: u64,
+    pub provider: Address,
+}
+
+#[odra::event]
+pub struct DisputeArbitrated {
+    pub job_id: u64,
+    pub verdict: Verdict,
+    pub arbiter: Address,
+}
+
+#[odra::event]
+pub struct ArbiterUpdated {
+    pub old_arbiter: Address,
+    pub new_arbiter: Address,
+}
+
+#[odra::event]
+pub struct DisputeBondBpsUpdated {
+    pub old_bps: u32,
+    pub new_bps: u32,
+}
+
 // ── Composition events (T2.1) ────────────────────────────────────────────────
 #[odra::event]
 pub struct CompositionRegistered {
@@ -317,6 +386,8 @@ pub struct Composition {
     JobRefunded, ResultDisputed, JobEvaluated, MinReputationSet, IdentityPolicySet,
     Withdrawn, BondUpdated, CompositionRegistered, CompositionLeafPayout, CrossChainRepUpdated,
     ProposalCreated, ProposalApproved, ProposalExecuted, ProposalCancelled, GovernanceConfigured,
+    DisputeBondPosted, DisputeResponsePosted, DisputeConceded, DisputeArbitrated,
+    ArbiterUpdated, DisputeBondBpsUpdated,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -337,6 +408,10 @@ pub struct AgentSkillRegistry {
     compositions: Mapping<u64, Composition>,
     /// Cross-chain reputation (P0.1). Admin-gated bridge from Soroban verifier attestations.
     cross_chain_rep: Mapping<Address, u32>,
+    // ── P1-A: Symmetric dispute bond ──────────────────────────────────────────
+    dispute_bond_bps: Var<u32>,
+    arbiter: Var<Address>,
+    disputes: Mapping<u64, DisputeInfo>,
     // ── P0-B: Governance (multisig + timelock) ─────────────────────────────────
     governance_signers: Var<Vec<Address>>,
     governance_threshold: Var<u32>,
@@ -374,6 +449,8 @@ impl AgentSkillRegistry {
             }
         }
         self.review_window.set(review_window_ms);
+        self.dispute_bond_bps.set(10_000); // 1× escrow (default)
+        self.arbiter.set(governance_signers[0]); // first signer = initial arbiter
         self.governance_signers.set(governance_signers);
         self.governance_threshold.set(governance_threshold);
         self.timelock_delay.set(timelock_delay_ms);
@@ -641,9 +718,14 @@ impl AgentSkillRegistry {
         self.jobs.set(&job_id, j);
     }
 
+    /// P1-A: Requester disputes a delivered result within the review window.
+    /// Bond-backed — requester must lock a dispute bond proportional to escrow.
+    /// Escrow is held until resolution; evaluator fee (if any) returned immediately.
+    #[odra(payable)]
     pub fn dispute_result(&mut self, job_id: u64) {
         let mut j = self.require_job(job_id);
-        if j.requester != self.env().caller() {
+        let caller = self.env().caller();
+        if j.requester != caller {
             self.env().revert(Error::NotRequester);
         }
         if j.status != JobStatus::Delivered {
@@ -652,15 +734,207 @@ impl AgentSkillRegistry {
         if self.env().get_block_time() > j.deadline {
             self.env().revert(Error::ReviewWindowClosed);
         }
+
+        let bps = self.dispute_bond_bps.get_or_default();
+        let mut required_bond = (U512::from(bps) * j.escrow_amount) / U512::from(10_000u32);
+        let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+        if required_bond < min_bond {
+            required_bond = min_bond;
+        }
+        let attached = self.env().attached_value();
+        if attached != required_bond {
+            self.env().revert(Error::WrongDisputeBond);
+        }
+
         j.status = JobStatus::Disputed;
-        // Escrow + evaluator fee both return to requester (evaluator didn't act).
-        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
-            + j.escrow_amount + j.evaluator_fee;
-        self.pending_withdrawals.set(&j.requester, credit);
+        let dispute_info = DisputeInfo {
+            dispute_bond: attached,
+            provider_bond: U512::zero(),
+            disputed_at: self.env().get_block_time(),
+        };
+        self.disputes.set(&job_id, dispute_info);
+
+        if !j.evaluator_fee.is_zero() {
+            let credit = self.pending_withdrawals.get(&caller).unwrap_or_default() + j.evaluator_fee;
+            self.pending_withdrawals.set(&caller, credit);
+        }
+
         let amount = j.escrow_amount;
-        let requester = j.requester;
         self.jobs.set(&job_id, j);
-        self.env().emit_event(ResultDisputed { job_id, requester, amount });
+        self.env().emit_event(DisputeBondPosted { job_id, requester: caller, bond: attached });
+        self.env().emit_event(ResultDisputed { job_id, requester: caller, amount });
+    }
+
+    /// P1-A: Provider matches the dispute bond to contest (enter arbitration).
+    #[odra(payable)]
+    pub fn respond_to_dispute(&mut self, job_id: u64) {
+        let j = self.require_job(job_id);
+        let caller = self.env().caller();
+        if j.provider != caller {
+            self.env().revert(Error::NotProvider);
+        }
+        if j.status != JobStatus::Disputed {
+            self.env().revert(Error::NotDisputed);
+        }
+        let mut d = self.disputes.get(&job_id)
+            .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+        if d.dispute_bond.is_zero() {
+            self.env().revert(Error::NotBondedDispute);
+        }
+        if !d.provider_bond.is_zero() {
+            self.env().revert(Error::AlreadyResponded);
+        }
+        if self.env().get_block_time() > d.disputed_at + RESPONSE_WINDOW {
+            self.env().revert(Error::ResponseWindowClosed);
+        }
+        let attached = self.env().attached_value();
+        if attached != d.dispute_bond {
+            self.env().revert(Error::WrongDisputeBond);
+        }
+
+        d.provider_bond = attached;
+        self.disputes.set(&job_id, d);
+        self.env().emit_event(DisputeResponsePosted { job_id, provider: caller, bond: attached });
+    }
+
+    /// P1-A: Provider concedes the dispute. Escrow + requester bond returned; provider rep slashed.
+    pub fn concede_dispute(&mut self, job_id: u64) {
+        let mut j = self.require_job(job_id);
+        let caller = self.env().caller();
+        if j.provider != caller {
+            self.env().revert(Error::NotProvider);
+        }
+        if j.status != JobStatus::Disputed {
+            self.env().revert(Error::NotDisputed);
+        }
+        let d = self.disputes.get(&job_id)
+            .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+        if d.dispute_bond.is_zero() {
+            self.env().revert(Error::NotBondedDispute);
+        }
+        if !d.provider_bond.is_zero() {
+            self.env().revert(Error::AlreadyResponded);
+        }
+
+        j.status = JobStatus::Refunded;
+        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
+            + j.escrow_amount + d.dispute_bond;
+        self.pending_withdrawals.set(&j.requester, credit);
+        self.slash_agent_rep(j.provider);
+        self.slash_skill_rep(j.skill_id);
+        let requester = j.requester;
+        let escrow = j.escrow_amount;
+        self.jobs.set(&job_id, j);
+        self.env().emit_event(DisputeConceded { job_id, provider: caller });
+        self.env().emit_event(JobRefunded { job_id, requester, amount: escrow });
+    }
+
+    /// P1-A: Anyone can trigger default concede if provider doesn't respond within RESPONSE_WINDOW.
+    pub fn resolve_default_concede(&mut self, job_id: u64) {
+        let mut j = self.require_job(job_id);
+        if j.status != JobStatus::Disputed {
+            self.env().revert(Error::NotDisputed);
+        }
+        let d = self.disputes.get(&job_id)
+            .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+        if d.dispute_bond.is_zero() {
+            self.env().revert(Error::NotBondedDispute);
+        }
+        if !d.provider_bond.is_zero() {
+            self.env().revert(Error::AlreadyResponded);
+        }
+        if self.env().get_block_time() <= d.disputed_at + RESPONSE_WINDOW {
+            self.env().revert(Error::ResponseWindowOpen);
+        }
+
+        j.status = JobStatus::Refunded;
+        let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
+            + j.escrow_amount + d.dispute_bond;
+        self.pending_withdrawals.set(&j.requester, credit);
+        self.slash_agent_rep(j.provider);
+        self.slash_skill_rep(j.skill_id);
+        let provider = j.provider;
+        let requester = j.requester;
+        let escrow = j.escrow_amount;
+        self.jobs.set(&job_id, j);
+        self.env().emit_event(DisputeConceded { job_id, provider });
+        self.env().emit_event(JobRefunded { job_id, requester, amount: escrow });
+    }
+
+    /// P1-A: Arbiter adjudicates a contested dispute (both sides bonded). Loser-pays.
+    pub fn arbitrate(&mut self, job_id: u64, verdict: Verdict) {
+        let caller = self.env().caller();
+        if caller != self.arbiter.get().unwrap() {
+            self.env().revert(Error::NotArbiter);
+        }
+        let mut j = self.require_job(job_id);
+        if j.status != JobStatus::Disputed {
+            self.env().revert(Error::NotDisputed);
+        }
+        let d = self.disputes.get(&job_id)
+            .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+        if d.dispute_bond.is_zero() {
+            self.env().revert(Error::NotBondedDispute);
+        }
+        if d.provider_bond.is_zero() {
+            self.env().revert(Error::ProviderNotResponded);
+        }
+
+        match verdict {
+            Verdict::ProviderAtFault => {
+                j.status = JobStatus::Refunded;
+                let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
+                    + j.escrow_amount + d.dispute_bond + d.provider_bond;
+                self.pending_withdrawals.set(&j.requester, credit);
+                self.slash_agent_rep(j.provider);
+                self.slash_skill_rep(j.skill_id);
+                let requester = j.requester;
+                let escrow = j.escrow_amount;
+                self.jobs.set(&job_id, j);
+                self.env().emit_event(JobRefunded { job_id, requester, amount: escrow });
+            }
+            Verdict::RequesterAtFault => {
+                j.status = JobStatus::Completed;
+                j.completed_at = self.env().get_block_time();
+                let provider_total = j.escrow_amount + d.provider_bond + d.dispute_bond;
+                let credit = self.pending_withdrawals.get(&j.provider).unwrap_or_default() + provider_total;
+                self.pending_withdrawals.set(&j.provider, credit);
+                let mut s = self.require_skill(j.skill_id);
+                if j.requester != j.provider {
+                    s.total_invocations += 1;
+                    let rep = s.reputation_score.saturating_add(REPUTATION_STEP);
+                    s.reputation_score = if rep > MAX_REPUTATION { MAX_REPUTATION } else { rep };
+                    self.skills.set(&j.skill_id, s.clone());
+                    self.bump_agent_rep(j.provider);
+                }
+                let provider = j.provider;
+                let escrow = j.escrow_amount;
+                self.jobs.set(&job_id, j);
+                self.env().emit_event(JobCompleted {
+                    job_id,
+                    provider,
+                    payout: escrow,
+                    new_reputation: s.reputation_score,
+                });
+            }
+        }
+        self.env().emit_event(DisputeArbitrated { job_id, verdict, arbiter: caller });
+    }
+
+    /// P1-A: Governance sets the dispute bond percentage. 10_000 = 1× escrow (default).
+    pub fn set_dispute_bond_bps(&mut self, bps: u32) {
+        self.require_governance_signer();
+        let old = self.dispute_bond_bps.get_or_default();
+        self.dispute_bond_bps.set(bps);
+        self.env().emit_event(DisputeBondBpsUpdated { old_bps: old, new_bps: bps });
+    }
+
+    /// P1-A: Governance sets the arbiter address for dispute resolution.
+    pub fn set_arbiter(&mut self, new_arbiter: Address) {
+        self.require_governance_signer();
+        let old = self.arbiter.get().unwrap();
+        self.arbiter.set(new_arbiter);
+        self.env().emit_event(ArbiterUpdated { old_arbiter: old, new_arbiter });
     }
 
     /// Evaluator approves or rejects a delivered result (P0-A). Only callable by the job's
@@ -1035,6 +1309,19 @@ impl AgentSkillRegistry {
     pub fn proposal_approval_count(&self, proposal_id: u64) -> u32 {
         self.proposal_approvals.get(&proposal_id).unwrap_or_default().len() as u32
     }
+
+    // ── P1-A: Dispute views ──────────────────────────────────────────────
+    pub fn get_dispute_info(&self, job_id: u64) -> Option<DisputeInfo> {
+        self.disputes.get(&job_id)
+    }
+
+    pub fn get_dispute_bond_bps(&self) -> u32 {
+        self.dispute_bond_bps.get_or_default()
+    }
+
+    pub fn get_arbiter(&self) -> Address {
+        self.arbiter.get().unwrap()
+    }
 }
 
 // Private helpers — `#[odra::module]` impl block above only carries the public surface.
@@ -1135,6 +1422,22 @@ impl AgentSkillRegistry {
         let next = self.agent_reputation(agent).saturating_add(REPUTATION_STEP);
         let capped = if next > MAX_REPUTATION { MAX_REPUTATION } else { next };
         self.agent_rep.set(&agent, capped);
+    }
+
+    fn slash_agent_rep(&mut self, agent: Address) {
+        let rep = self.agent_reputation(agent);
+        let slashed = if rep > REP_SLASH_STEP { rep - REP_SLASH_STEP } else { REP_FLOOR };
+        self.agent_rep.set(&agent, slashed);
+    }
+
+    fn slash_skill_rep(&mut self, skill_id: u64) {
+        let mut s = self.require_skill(skill_id);
+        s.reputation_score = if s.reputation_score > REP_SLASH_STEP {
+            s.reputation_score - REP_SLASH_STEP
+        } else {
+            REP_FLOOR
+        };
+        self.skills.set(&skill_id, s);
     }
 
     /// Shared completion effects for [`confirm_completion`] + [`claim_after_review`]. CEI: only

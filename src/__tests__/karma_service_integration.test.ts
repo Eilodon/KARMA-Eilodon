@@ -153,7 +153,7 @@ async function waitForRpc(timeoutMs = 10_000): Promise<void> {
     expect(await svc.getPendingWithdrawal(alpha)).toBe(0n);
   });
 
-  it("v2 dispute path: deliver → disputeResult refunds the requester", async () => {
+  it("P1-A dispute path: deliver → disputeResult (bonded) → concede → requester refunded", async () => {
     const alphaAcct = keystore.getAccount("alpha");
     const betaAcct = keystore.getAccount("beta");
     const skillId = 1n;
@@ -162,10 +162,23 @@ async function waitForRpc(timeoutMs = 10_000): Promise<void> {
     if (jobId == null) throw new Error("createJob did not confirm on anvil");
 
     await svc.deliverResult(alphaAcct, { jobId, resultHash: `0x${"cd".repeat(32)}` });
-    await svc.disputeResult(betaAcct, { jobId });
+
+    // P1-A: dispute requires a bond (disputeBondBps=10_000 → 1× escrow = 1000 wei, but MIN_DISPUTE_BOND = 0.001 ether)
+    const disputeBondBps = await svc.getDisputeBondBps();
+    let bond = (disputeBondBps * 1000n) / 10_000n;
+    const minBond = 1_000_000_000_000_000n; // 0.001 ether = MIN_DISPUTE_BOND
+    if (bond < minBond) bond = minBond;
+    await svc.disputeResult(betaAcct, { jobId, value: bond });
 
     expect((await svc.readJob(jobId)).status).toBe(4); // Disputed
-    expect(await svc.getPendingWithdrawal(beta)).toBe(1000n); // requester refunded
+    const di = await svc.getDisputeInfo(jobId);
+    expect(di.disputeBond).toBe(bond);
+    expect(di.providerBond).toBe(0n);
+
+    // Provider concedes
+    await svc.concedeDispute(alphaAcct, { jobId });
+    expect((await svc.readJob(jobId)).status).toBe(3); // Refunded
+    expect(await svc.getPendingWithdrawal(beta)).toBe(1000n + bond); // escrow + bond returned
   });
 
   // Tier-2 activation rehearsal on a real EVM: the bond + the BondUpdated → seed bridge end-to-end.
