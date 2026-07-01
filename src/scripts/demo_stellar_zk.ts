@@ -126,13 +126,18 @@ async function main(): Promise<void> {
   // ── Step 4: show what a provider/Soroban contract verifies, end-to-end:
   console.log("\n┌── Provider/Soroban-side verification (the trust mechanism) ──");
   console.log("│ 1. Decode X-Payment-Receipt — facilitator confirms USDC settle on Stellar Testnet");
-  console.log("│ 2. Decode X-Reputation-Proof — Soroban verifier runs Groth16 over Bn254 (T5)");
+  console.log("│ 2. Decode X-Reputation-Proof — Soroban verifier runs Groth16 over BN254 via native");
+  console.log("│    host functions: env.crypto().bn254().pairing_check(...) (CAP-0074, Protocol 25)");
   console.log("│ 3. Check X-Nullifier not in NullifierStore on Soroban — replay rejected");
   console.log("│ 4. Verify public signals order: [skillId, minRep, nullifier, cred, root]");
   console.log("│ 5. If all pass → execute skill, return result.  No KARMA server in the loop.");
   console.log("└──────────────────────────────────────────────────────────────");
 
   console.log("\n[demo] offline orchestration PASS");
+  console.log("[demo] this exact proof + public-signal set is verified against the real");
+  console.log("[demo] bn254_multi_pairing_check host function (not a mock) by:");
+  console.log("[demo]   contracts-soroban/agent_credential_verifier — cargo test --features testutils");
+  console.log("[demo]   -> test::create_job_verifies_real_circuit_proof");
   console.log("[demo] next step: see DEMO_STELLAR.md for the live deploy + run instructions.");
   console.log("[demo] derived Stellar address (would receive testnet USDC at this address):");
   console.log("       " + Keypair.fromPublicKey(stellarKp.publicKey()).publicKey());

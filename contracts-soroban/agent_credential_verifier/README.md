@@ -99,6 +99,20 @@ stellar contract deploy \
 ```
 
 Then call `register_skill` once with a `VerifyingKey` built from
-`circuits/build/agent_credential/verification_key.json` (T8 wires the
-snarkjs → native-BN254 packing utility — decimal-string coordinates to
-fixed-width big-endian bytes, no custom EC-point serialization needed).
+`circuits/build/agent_credential/verification_key.json` via
+`circuits/scripts/pack-bn254.mjs` (T8 — decimal-string coordinates packed to
+fixed-width big-endian bytes, no custom EC-point serialization needed):
+
+```bash
+node circuits/scripts/pack-bn254.mjs \
+  circuits/build/agent_credential/verification_key.json \
+  circuits/build/agent_credential/happy.proof.json \
+  circuits/build/agent_credential/happy.public.json \
+  /tmp/agent_credential_packed.json
+stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testnet \
+  -- register_skill --skill_id 42 \
+  --vkey "$(jq -c .vkey /tmp/agent_credential_packed.json)" \
+  --min_reputation 60 --price_per_call 100000 --owner $PROVIDER_ADDRESS
+```
+
+See `DEMO_STELLAR.md` for the full live-deploy walkthrough including `create_job`.

@@ -100,11 +100,16 @@ stellar contract deploy \
 ```bash
 # Pack circuits/build/agent_credential/verification_key.json (snarkjs decimal-string
 # coordinates) into the contract's native VerifyingKey shape — alpha/beta/gamma/delta as
-# Bn254G1Affine/Bn254G2Affine (64/128-byte big-endian), ic as a Vec of Bn254G1Affine. This is
-# a plain fixed-width byte-packing step (no EC-point re-serialization library needed, unlike
-# the Arkworks-canonical format the verifier used before the CAP-0074 native-host-function
-# migration — see contracts-soroban/agent_credential_verifier/README.md). A packing helper is
-# a planned follow-on (T8).
+# Bn254G1Affine/Bn254G2Affine (64/128-byte big-endian hex), ic as an array of hex strings.
+# Fixed-width byte packing only, no EC-point re-serialization library needed (unlike the
+# Arkworks-canonical format the verifier used before the CAP-0074 native-host-function
+# migration — see contracts-soroban/agent_credential_verifier/README.md).
+node circuits/scripts/pack-bn254.mjs \
+  circuits/build/agent_credential/verification_key.json \
+  circuits/build/agent_credential/happy.proof.json \
+  circuits/build/agent_credential/happy.public.json \
+  /tmp/agent_credential_packed.json
+# -> { "vkey": {alpha, beta, gamma, delta, ic: [...]}, "proof": {a,b,c}, "public_inputs": [...] }
 
 stellar contract invoke \
   --id $STELLAR_VERIFIER_CONTRACT \
@@ -112,7 +117,7 @@ stellar contract invoke \
   --network testnet \
   -- register_skill \
   --skill_id 42 \
-  --vkey '{"alpha": "<64B hex>", "beta": "<128B hex>", "gamma": "<128B hex>", "delta": "<128B hex>", "ic": ["<64B hex>", "..."]}' \
+  --vkey "$(jq -c .vkey /tmp/agent_credential_packed.json)" \
   --min_reputation 60 \
   --price_per_call 100000 \
   --owner $PROVIDER_ADDRESS
@@ -124,12 +129,30 @@ stellar contract invoke \
 # Fund agent-alpha's derived Stellar address (printed by step 0 of the offline demo)
 # from the Stellar Lab faucet + establish a USDC trustline.
 
-# Then a live runner (T8 follow-on) will:
-# 1. POST against your provider stub with the three x402 + ZK headers
-# 2. The provider stub forwards the x402 receipt to the facilitator + decodes the proof
-# 3. The provider stub calls agent_credential_verifier.create_job() on Soroban
-# 4. The print-out shows the Stellar Testnet tx hash + the contract's job_id
+# Minimal direct call (skips the x402/provider-stub HTTP hop — proves the ZK leg alone):
+# nullifier = public_inputs[2] from the same packed JSON; task_commitment is any 32-byte
+# tag the caller picks to identify this job off-chain.
+stellar contract invoke \
+  --id $STELLAR_VERIFIER_CONTRACT \
+  --source $PAYER_KEY \
+  --network testnet \
+  -- create_job \
+  --payer $PAYER_ADDRESS \
+  --skill_id 42 \
+  --task_commitment 0000000000000000000000000000000000000000000000000000000000000000 \
+  --proof "$(jq -c .proof /tmp/agent_credential_packed.json)" \
+  --nullifier "$(jq -r '.public_inputs[2]' /tmp/agent_credential_packed.json)" \
+  --public_inputs "$(jq -c .public_inputs /tmp/agent_credential_packed.json)" \
+  --x402_receipt ""
+# -> tx hash + emitted `job_created` event; re-running the same command reverts with
+#    Error(Contract, #5) (NullifierReused) — the replay guard.
 
+# Full flow (proof + x402 payment in one HTTP request, no direct contract call from the
+# client) additionally needs a provider stub that:
+# 1. Accepts a POST with the three x402 + ZK headers (X-Payment-Receipt, X-Reputation-Proof,
+#    X-Nullifier — see demo_stellar_zk.ts for the exact envelope)
+# 2. Forwards the x402 receipt to the facilitator for settlement
+# 3. Packs the decoded proof via pack-bn254.mjs and calls create_job() as above
 # Recommended stub provider endpoint (Express + @x402/express middleware):
 # see https://developers.stellar.org/docs/build/agentic-payments/x402/quickstart-guide
 ```
