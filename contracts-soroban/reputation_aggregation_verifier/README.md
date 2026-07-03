@@ -74,13 +74,20 @@ read back out via `crypto::fr_to_u32` into the stored `CredentialRecord`.
 
 ## Deploy
 
+**Live on Stellar Testnet** as of 2026-07-03: contract
+`CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO`, with a real
+`ReputationAggregationProof` submitted and its replay guard confirmed — see
+the tx table in [`DEMO_STELLAR.md`](../../DEMO_STELLAR.md#reputation_aggregation_verifier--also-live--2026-07-03).
+
 Owner-driven (Stellar CLI / RPC) — pack `circuits/build/reputation_aggregation/verification_key.json`
 with `circuits/scripts/pack-bn254.mjs` the same way as `agent_credential_verifier`:
 
 ```bash
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/reputation_aggregation_verifier.wasm \
-  --network testnet --source $DEPLOYER_KEY
+  --network testnet --source-account $DEPLOYER_KEY \
+  -- --admin $DEPLOYER_ADDRESS
+# --admin is required by the constructor.
 
 node circuits/scripts/pack-bn254.mjs \
   circuits/build/reputation_aggregation/verification_key.json \
@@ -89,4 +96,19 @@ node circuits/scripts/pack-bn254.mjs \
   /tmp/repagg_packed.json
 stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testnet \
   -- set_vkey --vkey "$(jq -c .vkey /tmp/repagg_packed.json)"
+
+# Publish the epoch root the proof's Merkle path was built against — submit_proof
+# reverts EpochRootNotSet / EpochRootMismatch without this. epoch_id is any u64 the
+# off-chain prover service chooses as its epoch label (the fixture uses a YYYYMM one).
+stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testnet \
+  -- set_epoch_root --epoch_id 202606 \
+  --root "$(jq -r '.public_inputs[4]' /tmp/repagg_packed.json)"
+
+# public_inputs must be decimal strings, not the hex pack-bn254.mjs emits — convert via
+# BigInt(...) first (same gotcha as agent_credential_verifier's create_job).
+stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testnet \
+  -- submit_proof --agent $AGENT_ADDRESS --epoch_id 202606 \
+  --proof "$(jq -c .proof /tmp/repagg_packed.json)" \
+  --nullifier "$(jq -r '.public_inputs[3]' /tmp/repagg_packed.json)" \
+  --public_inputs "$(node -e 'console.log(JSON.stringify(require("/tmp/repagg_packed.json").public_inputs.map(h=>BigInt("0x"+h).toString())))')"
 ```

@@ -10,8 +10,11 @@
  *   4. Show what a provider would verify: proof shape, nullifier, payment receipt.
  *
  * This script is OFFLINE — it does NOT hit Stellar Testnet, the x402 facilitator, or any
- * real provider endpoint. Live deploy + execute is documented in DEMO_STELLAR.md and
- * gated behind real Stellar testnet credentials (out of scope for an ephemeral sandbox).
+ * real provider endpoint; the x402 leg (StellarX402Plugin.pay/verify) is a local structural
+ * simulation regardless of network reachability (see src/plugins/x402_stellar.ts). What it
+ * DOES reuse is real: the proof fixture is the same one verified by a live create_job call,
+ * and the payee below is the real registered owner of skill_id=42 on the deployed verifier
+ * (see LIVE_CONTRACT_ID / DEMO_STELLAR.md for the actual on-chain transactions).
  *
  *   pnpm exec tsx src/scripts/demo_stellar_zk.ts
  */
@@ -27,6 +30,8 @@ import { deriveStellarKeypair } from "../lib/stellar/keypair.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "../..");
 const CIRCUITS = join(REPO, "circuits");
+/** agent_credential_verifier, live on Stellar Testnet — see DEMO_STELLAR.md for the tx table. */
+const LIVE_CONTRACT_ID = "CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP";
 
 function ensureCircuitsBuilt(): void {
   const credentialBuild = join(CIRCUITS, "build/agent_credential");
@@ -75,7 +80,10 @@ async function main(): Promise<void> {
   // fixture secp256k1 seed (same shape KeystoreManager produces at runtime via T6).
   const fakeSecp = new Uint8Array(32).fill(0x42);
   const stellarKp = deriveStellarKeypair(fakeSecp);
-  const skillProviderPayee = "GDFAKEDEMODESTINATIONXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"; // placeholder
+  // Real, live registered address — the owner of skill_id=42 on the deployed
+  // agent_credential_verifier contract (see LIVE_CONTRACT_ID below / DEMO_STELLAR.md),
+  // not a fabricated placeholder.
+  const skillProviderPayee = "GDJZCSWUIR5YQAOGKV4EIYCXN2OA5FS6THMV3PTZNZHGC2N3UZUODOMK";
   const plugin = new StellarX402Plugin("https://www.x402.org/facilitator", () => stellarKp);
   const receipt = await plugin.pay(
     {
@@ -138,7 +146,10 @@ async function main(): Promise<void> {
   console.log("[demo] bn254_multi_pairing_check host function (not a mock) by:");
   console.log("[demo]   contracts-soroban/agent_credential_verifier — cargo test --features testutils");
   console.log("[demo]   -> test::create_job_verifies_real_circuit_proof");
-  console.log("[demo] next step: see DEMO_STELLAR.md for the live deploy + run instructions.");
+  console.log(`[demo] AND by a real create_job call already confirmed live on Stellar Testnet:`);
+  console.log(`[demo]   contract ${LIVE_CONTRACT_ID}`);
+  console.log(`[demo]   https://stellar.expert/explorer/testnet/contract/${LIVE_CONTRACT_ID}`);
+  console.log("[demo]   -> see DEMO_STELLAR.md for the full tx table (deploy/register/verify/replay).");
   console.log("[demo] derived Stellar address (would receive testnet USDC at this address):");
   console.log("       " + Keypair.fromPublicKey(stellarKp.publicKey()).publicKey());
 }

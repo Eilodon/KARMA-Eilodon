@@ -43,10 +43,11 @@ Closes two open architectural problems in KARMA's production trust model
 | Layer | Path | Status |
 |---|---|---|
 | Circuit + Groth16 setup | [`circuits/`](circuits/) (T4) | `make credential` passes |
-| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 12/12 — native BN254 host functions, no Arkworks, job-history-root pinning |
+| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 12/12 — native BN254 host functions, no Arkworks, job-history-root pinning — **live on Testnet** |
+| Portfolio credential verifier | [`contracts-soroban/reputation_aggregation_verifier/`](contracts-soroban/reputation_aggregation_verifier/) (T1.1) | `cargo test --features testutils` 19/19 — same native-BN254 path, epoch-root pinning — **live on Testnet** |
 | Stellar ed25519 keypair derivation | [`src/lib/stellar/keypair.ts`](src/lib/stellar/keypair.ts) (T6) | 10/10 |
 | x402Plugin/Stellar | [`src/plugins/x402_stellar.ts`](src/plugins/x402_stellar.ts) (T7) | 15/15 |
-| Offline orchestration demo | [`src/scripts/demo_stellar_zk.ts`](src/scripts/demo_stellar_zk.ts) (T8) | runs end-to-end |
+| Offline orchestration demo | [`src/scripts/demo_stellar_zk.ts`](src/scripts/demo_stellar_zk.ts) (T8) | runs end-to-end, payee is the real live-registered skill owner |
 
 ## Quick start — offline orchestration (no Stellar credentials needed)
 
@@ -99,8 +100,29 @@ superseded; don't cite it as current evidence.
 
 Deployer/admin: `GDJZCSWUIR5YQAOGKV4EIYCXN2OA5FS6THMV3PTZNZHGC2N3UZUODOMK`.
 
-Steps below are the reproduction recipe if you want to redeploy or extend this
-(e.g. deploying `reputation_aggregation_verifier` too, which is not yet live).
+### `reputation_aggregation_verifier` — also live ✅ (2026-07-03)
+
+The sibling portfolio-credential contract is deployed too, with a real
+`ReputationAggregationProof` submitted and verified:
+
+| Step | Tx hash | stellar.expert |
+|---|---|---|
+| Upload WASM | `a039dabcf0990a5e66643799429e6756ef965f2a804daf36ebe8bb7d966ce686` | [tx](https://stellar.expert/explorer/testnet/tx/a039dabcf0990a5e66643799429e6756ef965f2a804daf36ebe8bb7d966ce686) |
+| Create contract | `d04bc7d5a7262980474eab11ba6160d22e48b8ab1af0d714bd7e085338eaa591` | [contract](https://stellar.expert/explorer/testnet/contract/CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO) |
+| `set_vkey(...)` | `bd64e9cc9bdac00d0c8d3ed224319f4516bfbebb8a78687940df84801f33abbe` | [tx](https://stellar.expert/explorer/testnet/tx/bd64e9cc9bdac00d0c8d3ed224319f4516bfbebb8a78687940df84801f33abbe) |
+| `set_epoch_root(epoch_id=202606, root=…)` | `f47e2caea33c180861bc2976c8a7aab691e012c9629826f7c7de3cb2d5be7848` | [tx](https://stellar.expert/explorer/testnet/tx/f47e2caea33c180861bc2976c8a7aab691e012c9629826f7c7de3cb2d5be7848) |
+| `submit_proof` — minAvgScore=80, minDistinctCategories=5, minJobs=10 | `c7b98766b9cf0d26bd0ae4180d317153974f7c8cb225344a4090ed6402613cd6` — `rep_agg_credential`, credential `#1` | [tx](https://stellar.expert/explorer/testnet/tx/c7b98766b9cf0d26bd0ae4180d317153974f7c8cb225344a4090ed6402613cd6) |
+| Replay same nullifier | reverts `Error(Contract, #5)` (`NullifierReused`) | *(no tx hash — same simulate-then-reject CLI behavior as above)* |
+
+Contract: `CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO`. Same
+deployer/admin as above. Verify independently:
+`stellar contract fetch --id CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO --network testnet`.
+See `contracts-soroban/reputation_aggregation_verifier/README.md` for the
+full deploy recipe (`set_vkey` + `set_epoch_root` + `submit_proof`, same
+`pack-bn254.mjs` packing pattern as `agent_credential_verifier`).
+
+Steps below are the reproduction recipe for `agent_credential_verifier` if
+you want to redeploy or extend it.
 
 > ⚠️ Needs funded Stellar testnet credentials + a wallet with a USDC
 > trustline to reproduce from scratch.
@@ -225,15 +247,22 @@ in the path) — see the tx table above:
    `25dd392b7a8a9adfc804dfeb576309e2d1876103fd6645949310e7ea6db597a1`).
 2. ✅ Replaying the same nullifier is rejected (`Error(Contract, #5)`,
    CLI-observed — no second tx, see note above).
-3. ⏳ **Not yet confirmed on-chain**: an x402 USDC payment settling in the
+3. ✅ The sibling `reputation_aggregation_verifier` accepts a real
+   `ReputationAggregationProof` (portfolio credential: avg score ≥ 80 across
+   ≥ 5 categories over ≥ 10 jobs) against a published epoch root, and its
+   nullifier replay guard is confirmed the same way (`submit_proof`, tx
+   `c7b98766b9cf0d26bd0ae4180d317153974f7c8cb225344a4090ed6402613cd6`).
+4. ⏳ **Not yet confirmed on-chain**: an x402 USDC payment settling in the
    same HTTP round-trip as the proof verification. The proof-verification leg
    above was invoked directly via `stellar contract invoke`, not via the
    `X-Payment-Receipt` + provider-stub HTTP path described in the
    architecture diagram — that full one-HTTP-request flow still needs the
-   provider stub (see Step 3 note) implemented and run. Until then, the
-   accurate claim is: **the ZK leg is live on-chain; the payment leg is
-   demonstrated offline** (`demo_stellar_zk.ts`) and not yet wired to the
-   live proof verification in a single request.
+   provider stub (see Step 3 note) implemented and run. `demo_stellar_zk.ts`
+   demonstrates that leg offline, but with a real registered payee (the live
+   skill-42 owner) rather than a fabricated address — it is not yet wired to
+   the live proof verification in a single request. Accurate claim: **the ZK
+   leg is live on-chain (both verifiers); the payment leg is demonstrated
+   offline with real, on-chain-registered parties.**
 
 That's the closing argument of synthesis §5 + plan §1A, scoped to what's
 actually been shown rather than the full architecture goal.
