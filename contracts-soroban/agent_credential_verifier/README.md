@@ -16,8 +16,9 @@ contracts-soroban/agent_credential_verifier/
 ## Build + test
 
 ```bash
-# Host-side test suite (8 cases — constructor, admin gate, schema invariants, and a
-# real native bn254_multi_pairing_check call against a well-formed-but-non-satisfying proof)
+# Host-side test suite (12 cases — constructor, admin gate, schema invariants, job-history-root
+# pinning, and real native bn254_multi_pairing_check calls against both a satisfying real-circuit
+# proof and a well-formed-but-non-satisfying proof)
 cargo test --features testutils
 
 # Deployable WASM
@@ -35,9 +36,11 @@ caught + flagged by `soroban-sdk/build.rs`).
 |------------------------------------------------------------------------|-----------|------------------------------------------------------------|
 | `__constructor(admin: Address)`                                        | admin     | initialize once                                            |
 | `register_skill(skill_id, vkey, min_reputation, price_per_call, owner)`| admin     | declare a skill + bind its Groth16 verifying key           |
+| `set_skill_root(skill_id, root)`                                       | admin     | publish/rotate the skill's job-history Merkle root         |
 | `create_job(payer, skill_id, task_commitment, proof, nullifier, public_inputs, x402_receipt) -> u64` | payer | verify proof, claim nullifier, record job |
 | `is_nullifier_used(nullifier) -> bool`                                 | any       | replay-guard read                                          |
 | `get_skill(skill_id) -> Option<SkillConfig>`                           | any       | read-only                                                  |
+| `skill_root(skill_id) -> Option<BytesN<32>>`                           | any       | read-only                                                  |
 | `get_job(job_id) -> Option<JobRecord>`                                 | any       | read-only                                                  |
 | `job_count() -> u64`                                                   | any       | read-only                                                  |
 | `admin() -> Option<Address>`                                           | any       | read-only                                                  |
@@ -54,11 +57,18 @@ caught + flagged by `soroban-sdk/build.rs`).
 
 A test in `circuits/test/agent_credential.test.mjs` asserts the circuit
 emits public signals in this exact order; the contract's `create_job` checks
-`pi_skill == skill_id`, `pi_min_rep == skill.min_reputation`, and
-`pi_nullifier == nullifier` before invoking the Groth16 verifier. `skillId`
-and `minReputation` are packed as big-endian integers in the low-order bytes
-of their `Bn254Fr` (see `crypto::fr_from_u64`/`fr_from_u32`); `nullifier` is
-compared via `Bn254Fr::from_bytes(nullifier)`.
+`pi_skill == skill_id`, `pi_min_rep == skill.min_reputation`,
+`pi_nullifier == nullifier`, and `pi_root == skill_root(skill_id)` (published
+via `set_skill_root`, panics `SkillRootNotSet`/`JobHistoryRootMismatch`
+otherwise) before invoking the Groth16 verifier. `skillId` and
+`minReputation` are packed as big-endian integers in the low-order bytes of
+their `Bn254Fr` (see `crypto::fr_from_u64`/`fr_from_u32`); `nullifier` and
+`jobHistoryRoot` are compared via `Bn254Fr::from_bytes(...)`.
+`credentialCommitment` (`public_inputs[3]`) is not separately pinned on-chain
+— it doesn't need to be, since the circuit's Merkle proof already binds it to
+a leaf under the pinned `jobHistoryRoot`, and the leaf itself binds the
+committed `reputationScore` (`Poseidon(credentialSecret, reputationScore)`),
+so a prover cannot attach an arbitrary self-declared score.
 
 ## Groth16 verification: native BN254 host functions
 
@@ -113,6 +123,12 @@ stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testn
   -- register_skill --skill_id 42 \
   --vkey "$(jq -c .vkey /tmp/agent_credential_packed.json)" \
   --min_reputation 60 --price_per_call 100000 --owner $PROVIDER_ADDRESS
+
+# Then publish the job-history root — create_job reverts SkillRootNotSet without this.
+stellar contract invoke --id $VERIFIER_ID --source $DEPLOYER_KEY --network testnet \
+  -- set_skill_root --skill_id 42 \
+  --root "$(jq -r '.public_inputs[4]' /tmp/agent_credential_packed.json)"
 ```
 
-See `DEMO_STELLAR.md` for the full live-deploy walkthrough including `create_job`.
+See `DEMO_STELLAR.md` for the full live-deploy walkthrough (including
+`create_job`) and the currently-live contract ID.

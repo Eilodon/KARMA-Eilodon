@@ -43,7 +43,7 @@ Closes two open architectural problems in KARMA's production trust model
 | Layer | Path | Status |
 |---|---|---|
 | Circuit + Groth16 setup | [`circuits/`](circuits/) (T4) | `make credential` passes |
-| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 8/8 — native BN254 host functions, no Arkworks |
+| Soroban verifier contract | [`contracts-soroban/agent_credential_verifier/`](contracts-soroban/agent_credential_verifier/) (T5) | `cargo test --features testutils` 12/12 — native BN254 host functions, no Arkworks, job-history-root pinning |
 | Stellar ed25519 keypair derivation | [`src/lib/stellar/keypair.ts`](src/lib/stellar/keypair.ts) (T6) | 10/10 |
 | x402Plugin/Stellar | [`src/plugins/x402_stellar.ts`](src/plugins/x402_stellar.ts) (T7) | 15/15 |
 | Offline orchestration demo | [`src/scripts/demo_stellar_zk.ts`](src/scripts/demo_stellar_zk.ts) (T8) | runs end-to-end |
@@ -74,11 +74,44 @@ Expected output: public signals + an x402 PaymentReceipt + the HTTP request
 envelope a provider would receive. The script's last line shows the agent's
 derived Stellar G-address (deterministic from a fixture secp256k1 seed).
 
-## Live run — Stellar Testnet (owner-driven, requires funded keystore)
+## Live run — Stellar Testnet ✅ confirmed live (2026-07-03, soundness-patched build)
 
-> ⚠️ This step is owner-driven because it needs funded Stellar testnet
-> credentials + a wallet with a USDC trustline. Steps below are the
-> reproduction plan.
+`agent_credential_verifier` is deployed and has processed a real proof on
+Stellar Testnet — not a simulation, not a local test. Verify independently:
+`stellar contract fetch --id CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP --network testnet`
+succeeds and returns the deployed WASM.
+
+This is the **patched** build: the credential commitment binds the
+reputation score (`Poseidon(credentialSecret, reputationScore)`) and
+`create_job` pins `jobHistoryRoot` against an admin-published `set_skill_root`
+call — see "Soundness fixes" below for what changed and why. An earlier,
+unpatched deploy (`CBXH5QUD…MMIHUYOM`, 2026-07-02) exists on Testnet but is
+superseded; don't cite it as current evidence.
+
+| Step | Tx hash | stellar.expert |
+|---|---|---|
+| Upload WASM | `a38d27d9b7cbcc3ff14637f6d4bf76cf24264c0e9656312055fe3655e8aba0e7` | [tx](https://stellar.expert/explorer/testnet/tx/a38d27d9b7cbcc3ff14637f6d4bf76cf24264c0e9656312055fe3655e8aba0e7) |
+| Create contract | `06c031eb6f7ba4552fdc45bd2b53191eaacefb35bf38b8d9d6860bed2964429e` | [contract](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP) |
+| `register_skill(skill_id=42, min_reputation=60)` | `3ca0c83b424eb99604e9d63a960ef89461cdf321d6536d167b7435f2004e66e0` | [tx](https://stellar.expert/explorer/testnet/tx/3ca0c83b424eb99604e9d63a960ef89461cdf321d6536d167b7435f2004e66e0) |
+| `set_skill_root(skill_id=42, root=…)` — publishes the issuer's job-history root | `286d222d712e325ed9a22c2b75f97a4ae7f85517edce808e2669037037f0bad7` | [tx](https://stellar.expert/explorer/testnet/tx/286d222d712e325ed9a22c2b75f97a4ae7f85517edce808e2669037037f0bad7) |
+| `create_job` — verifies a real Groth16 proof via `env.crypto().bn254().pairing_check`, checks the proof's `jobHistoryRoot` against the published root | `25dd392b7a8a9adfc804dfeb576309e2d1876103fd6645949310e7ea6db597a1` — `job_created`, `job_id=1` | [tx](https://stellar.expert/explorer/testnet/tx/25dd392b7a8a9adfc804dfeb576309e2d1876103fd6645949310e7ea6db597a1) |
+| Replay same nullifier | reverts `Error(Contract, #5)` (`NullifierReused`) | *(no tx hash — the CLI simulates first and never submits a fee-bearing tx when simulation reverts; the revert is CLI-observable, not a mined transaction. Screenshot/terminal capture is the evidence here.)* |
+
+Deployer/admin: `GDJZCSWUIR5YQAOGKV4EIYCXN2OA5FS6THMV3PTZNZHGC2N3UZUODOMK`.
+
+Steps below are the reproduction recipe if you want to redeploy or extend this
+(e.g. deploying `reputation_aggregation_verifier` too, which is not yet live).
+
+> ⚠️ Needs funded Stellar testnet credentials + a wallet with a USDC
+> trustline to reproduce from scratch.
+
+A few gotchas hit during the real run that the recipe below has been updated
+to reflect: the contract's constructor requires `--admin` (used the deployer
+identity as admin); `set_skill_root` must be called before `create_job` for a
+skill or it reverts `SkillRootNotSet`; `--x402_receipt` rejects an empty
+string from the CLI (pass `00`, since this branch only stores the field and
+doesn't validate its contents); `--public_inputs` must be decimal strings
+(not the hex `pack-bn254.mjs` emits — convert via `BigInt(...)` first).
 
 ### Step 1 — Deploy the Soroban verifier
 
@@ -90,7 +123,9 @@ cargo build --target wasm32v1-none --release
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/agent_credential_verifier.wasm \
   --network testnet \
-  --source-account $DEPLOYER_KEY
+  --source-account $DEPLOYER_KEY \
+  -- --admin $DEPLOYER_ADDRESS
+# --admin is required by the constructor (not optional, despite older docs).
 
 # Record the printed contract address as STELLAR_VERIFIER_CONTRACT in .env
 ```
@@ -121,6 +156,16 @@ stellar contract invoke \
   --min_reputation 60 \
   --price_per_call 100000 \
   --owner $PROVIDER_ADDRESS
+
+# Publish the job-history root the proof's Merkle path was built against — create_job
+# reverts SkillRootNotSet / JobHistoryRootMismatch without this.
+stellar contract invoke \
+  --id $STELLAR_VERIFIER_CONTRACT \
+  --source $DEPLOYER_KEY \
+  --network testnet \
+  -- set_skill_root \
+  --skill_id 42 \
+  --root "$(jq -r '.public_inputs[4]' /tmp/agent_credential_packed.json)"
 ```
 
 ### Step 3 — Run the live demo (proof → x402 settle → Soroban verify)
@@ -142,10 +187,17 @@ stellar contract invoke \
   --task_commitment 0000000000000000000000000000000000000000000000000000000000000000 \
   --proof "$(jq -c .proof /tmp/agent_credential_packed.json)" \
   --nullifier "$(jq -r '.public_inputs[2]' /tmp/agent_credential_packed.json)" \
-  --public_inputs "$(jq -c .public_inputs /tmp/agent_credential_packed.json)" \
-  --x402_receipt ""
-# -> tx hash + emitted `job_created` event; re-running the same command reverts with
-#    Error(Contract, #5) (NullifierReused) — the replay guard.
+  --public_inputs "$(jq -c '.public_inputs | map(. | if startswith("0x") then (. as $h | ($h[2:] | ascii_upcase)) else . end)' /tmp/agent_credential_packed.json)" \
+  --x402_receipt "00"
+# public_inputs must be decimal strings — pack-bn254.mjs emits hex, so convert
+# each element with BigInt(x).toString() before passing (jq alone can't do
+# arbitrary-precision hex->decimal; a one-line node/jq helper is simplest).
+# --x402_receipt rejects an empty string from the CLI; "00" is accepted since
+# this branch only stores the field and doesn't validate its contents.
+# -> tx hash + emitted `job_created` event; re-running the same command reverts
+#    with Error(Contract, #5) (NullifierReused) — the CLI simulates first and
+#    will NOT submit a tx for a reverting call, so the replay guard shows up
+#    as a CLI error, not a second tx hash.
 
 # Full flow (proof + x402 payment in one HTTP request, no direct contract call from the
 # client) additionally needs a provider stub that:
@@ -157,33 +209,55 @@ stellar contract invoke \
 # see https://developers.stellar.org/docs/build/agentic-payments/x402/quickstart-guide
 ```
 
-### Expected live transactions
-
-| Step | Tool | What you'll see |
-|---|---|---|
-| Soroban contract deploy | `stellar contract deploy` | contract address `C…` on testnet |
-| register_skill | `stellar contract invoke` | tx hash `0x…` confirming the skill+vkey |
-| x402 USDC payment | x402 facilitator settle | `~5s` settle response with operation hash |
-| create_job (verify proof) | Soroban contract call | tx hash + emitted `job_created` event |
-| Replay attempt (same nullifier) | Soroban contract call | contract reverts with `Error(Contract, #5)` (NullifierReused) |
-
 `pnpm exec tsx src/scripts/demo_stellar_zk.ts` already prints what each of these
 HTTP+chain interactions looks like in raw form — the live mode just lets the
-chain confirm them and produce the on-chain tx hashes.
+chain confirm them and produce the on-chain tx hashes (see the confirmed
+table above).
 
 ## What's verified by the on-chain side
 
-A judge running the live mode should observe, on **Stellar Testnet** alone
-(no Pharos / no T3N / no KARMA server):
+Confirmed on **Stellar Testnet** alone (no Pharos / no T3N / no KARMA server
+in the path) — see the tx table above:
 
-1. The Soroban verifier accepts a valid AgentCredentialProof and creates a job.
-2. The same nullifier on a second invocation is rejected on-chain.
-3. The x402 facilitator settles USDC in the same HTTP round-trip.
+1. ✅ The Soroban verifier accepts a valid AgentCredentialProof — with its
+   committed reputation score and its Merkle membership under an
+   admin-published root both checked — and creates a job (`create_job`, tx
+   `25dd392b7a8a9adfc804dfeb576309e2d1876103fd6645949310e7ea6db597a1`).
+2. ✅ Replaying the same nullifier is rejected (`Error(Contract, #5)`,
+   CLI-observed — no second tx, see note above).
+3. ⏳ **Not yet confirmed on-chain**: an x402 USDC payment settling in the
+   same HTTP round-trip as the proof verification. The proof-verification leg
+   above was invoked directly via `stellar contract invoke`, not via the
+   `X-Payment-Receipt` + provider-stub HTTP path described in the
+   architecture diagram — that full one-HTTP-request flow still needs the
+   provider stub (see Step 3 note) implemented and run. Until then, the
+   accurate claim is: **the ZK leg is live on-chain; the payment leg is
+   demonstrated offline** (`demo_stellar_zk.ts`) and not yet wired to the
+   live proof verification in a single request.
 
-These three together are the "trust mechanism" — math + payment, no trusted
-server. That's the closing argument of synthesis §5 + plan §1A.
+That's the closing argument of synthesis §5 + plan §1A, scoped to what's
+actually been shown rather than the full architecture goal.
 
 ## Submission notes
+
+- **Soundness fixes shipped before the final deploy.** An earlier internal
+  audit of this circuit/contract pair found two gaps, both closed in the
+  live build above (contract `CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP`):
+  1. The credential's Merkle leaf now binds the reputation score —
+     `credentialCommitment = Poseidon(credentialSecret, reputationScore)`
+     (`circuits/src/agent_credential.circom`) — instead of the score being an
+     unconstrained private witness a holder could self-declare.
+  2. `create_job` now requires the proof's `jobHistoryRoot` public signal to
+     match an admin-published root (`set_skill_root`, mirroring the sibling
+     contract `reputation_aggregation_verifier`'s `set_epoch_root`), instead
+     of accepting any self-consistent tree the caller supplies.
+  Both fixes are covered by dedicated tests
+  (`create_job_rejects_when_skill_root_not_set`,
+  `create_job_rejects_wrong_job_history_root` in
+  `contracts-soroban/agent_credential_verifier/src/test.rs`) — 12/12 passing.
+  An earlier, unpatched contract (`CBXH5QUD…MMIHUYOM`) was briefly live on
+  Testnet on 2026-07-02 before this fix; it is superseded and should not be
+  cited as current evidence.
 
 - **Public-signal order is contract-asserted.** The circuit emits
   `[skillId, minReputation, nullifier, credentialCommitment, jobHistoryRoot]`

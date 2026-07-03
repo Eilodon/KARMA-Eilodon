@@ -43,7 +43,7 @@
                         "symbol": "alpha"
                       },
                       "val": {
-                        "bytes": "291cb7a7e6d5255751feebf1afcde85f36071b7f8520c75bb2b14965d42173a60dbf1d5befc5b6106684e40c06ec239a65d511a3ed22bbbbbb66162900850f09"
+                        "bytes": "21206eadc22b1bb24d22dfc0f84d89a2e6a8ddbdfb0ee00eea8e7713a52361f525a953948a8797d7241f96492f56f4a8dd3e61c9916337edc4bcde009a9c42ef"
                       }
                     },
                     {
@@ -51,7 +51,7 @@
                         "symbol": "beta"
                       },
                       "val": {
-                        "bytes": "0500e1d774a3b136dd8c0a18f21340368ad9a8f8e17de520725a01fca65cd03a1a4f08802c87bafad0f691805e956742e173a46330a688052ff7295f75b55a38193b5fbb6cf7f14e88a38e85518a1bad3e9af1b36f890bc96526464cab58471305a73dffdd8d8f9da43e4982f2a00be3f00a1661dab1544254b0b9abd13cd32d"
+                        "bytes": "292f66d1bbc259e1d078cb9cf404fa3a8586b1647989b63a1c73c128f166bc7b12bf005e550f36aa09928f0b88c3faee6fa39ea6d805baf02780f0a87db4e3b01b5441a9fb04c2aa0be1f400c0eb1da2450396530f6ab1c6d7f14a1a25cae08e17b254b8bcdd6f228ec03c8f91924c8eb3faac345a34f529d8b1bb64f549e113"
                       }
                     },
                     {
@@ -77,22 +77,22 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "11ed2f9802c0f2ffc5355d1843fd03ae933f0c43b28ee64d3dfedfaad81c21f22b531e32e9342449b306aa9c2e31aef48635da89b64cec49aa0b8b89784da99c"
+                            "bytes": "1a7fca71ce53998bf5dd4e553273076549ba51d57648c691e1ad06a804d5b2ba1191b3ad2b808f3a7b0bbcb68a148928c1f7d1ee79e991159f2dec1b8ae06e27"
                           },
                           {
-                            "bytes": "117fa8adb581b134a14b382653d55dc01a9ef43f6aaaf6c311a6b4f06f206d0d121b356072422e1686a5763c86644dbf2ea27c7743d0dfa2346134df325834d0"
+                            "bytes": "13a4f9bc4a862e281ff27af558063e8a42196e1064764f680e12e3e50006126a091978977f62ee893f7dfc06eea6c0755e4655b3e0b3db6a343d293bc3c58570"
                           },
                           {
-                            "bytes": "05b683fb33b175fde8363b01c96fc77c3907ef893fc24513c253f0668e78dcad1a7c28a7e570d759cb9b85865efa7310f3308a355fd4c121a1f83227db55ad33"
+                            "bytes": "0ccfa2d0b30f5dffb89bdfbf9d68db073eed9d380a84d01ca9290dfaabe5f0950ae2d5a2c19d4e3a6f822c6a5424f2bd4ea3b3bc1e4da596554cce7681a7cf77"
                           },
                           {
-                            "bytes": "136c3b1815237725fdfcdab4842ee0789eadc1f893aad92ab3fcd2f25083195d2e0e43223922bb9f5f0193bf90e5625abaf48b56ef45402c4f437014db91ba07"
+                            "bytes": "228e7d91e0146382c77daf5d234944e479fa2ed4accd03bd58bac4ebf1080d2e2e74849f7a7abdcb875ef5f2b2390066b9ae537bb65d84ea647dfd7e6be41bcc"
                           },
                           {
-                            "bytes": "16180998677da9e955056f5d7a1d3af954e65486d7efe78e5975abde84d150431bffdcfaa57b2070fc3693d80dff3d40134b612897c745380b69b99a0576aea3"
+                            "bytes": "01e1afbfa4db26983176f75a23538b294a6a1cc5df45a2dff98c35f45c4ed0eb26ec69df0ba4abb96b01d8d046dbda5282a134b388987b9ff0bb0a49a0ef04f5"
                           },
                           {
-                            "bytes": "01852a286b037f8381f06ca2937da371703b17e7f0edca5727cbdad0c4841d6f187595ac3d2934e1f8823439a45173ddd23f892258452e3b7810ea79f5ed6b94"
+                            "bytes": "0255a66c042ba4e0c4d4c45554684318e4009c48738a44b40ca367e64366433f0c25487558d1d43cd5343ace904cd8b348bd8773c59d8c109e68406a50f7c863"
                           }
                         ]
                       }
@@ -107,6 +107,28 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "function_name": "set_skill_root",
+              "args": [
+                {
+                  "u64": "42"
+                },
+                {
+                  "bytes": "1665a6d455fb59641944762ee77b419d992929e17ac981f334f388bce45b2c87"
                 }
               ]
             }
@@ -140,7 +162,7 @@
                         "symbol": "a"
                       },
                       "val": {
-                        "bytes": "07ab4a63fa2a629480e4546fdbfbfc3b1ee95bb1cfa2874fd08fced479be643e2a19e891904a76692b2f2d600326c27b22c7bd94b1320b8acea84883cb37103a"
+                        "bytes": "12e3c553a33fd6039410436239561b1ba26268ba73517391c433ae767dd8c9622a1779aaa6d5709e0342356f0d19915ccbf942d35a1729e7f986fb832f435611"
                       }
                     },
                     {
@@ -148,7 +170,7 @@
                         "symbol": "b"
                       },
                       "val": {
-                        "bytes": "0f9402e35e3269755109b6e53c21fafa59cfe673ade3643eb75fcebb650f1ac90ac9a2079a967b562259f4f6b523313479980bfe75440bfc68154c44b07b2d4c13a9d71b8ac2192217d0675fbd7855418dabcb67388d7182b722157902ab0abe0d947ce91f9cea4a6849785b70d7a4b7e19f7fbab3170d3a8daf45f1995657af"
+                        "bytes": "1cd23cb74707ea14f66e1e7913deeb83f81832884f3820caabb15d72b7a6c78d225a81400f79062c48e7cf38ff63e29f8c9ad4f3a654bc1ceda20b1191124cf7238baa1354073ed5dabf6a1fa1a5952cc74d30da785ea9a15232e3a0d879965d1b57ec1434264754719cefbe803dd45ca183f02872432ca1a2ad2e8bb183df9c"
                       }
                     },
                     {
@@ -156,7 +178,7 @@
                         "symbol": "c"
                       },
                       "val": {
-                        "bytes": "1007785e662f4e40c0eaadbab491c78e68ac866e7f2686902a38a917fa747f741bcf0b7de3c0a7ff8e661453800855ff3e854ba85642625c7681ef94c7441d8a"
+                        "bytes": "027684c74b98b6b7ae71dadb0050fc0c0c723981650af3ea3843c1898bf347312a77292ffd1ece65fe4c0a71488d8f8ee92197ced6968efaec43c5e2943092b5"
                       }
                     }
                   ]
@@ -176,10 +198,10 @@
                       "u256": "18139306493803301706147743626536961473147662702434365989341153053536201265603"
                     },
                     {
-                      "u256": "17610922722311195426938483481431943255028223790571250909270476711880232282197"
+                      "u256": "2254566719182324137589626236950466263702791040901692655050467718371592794641"
                     },
                     {
-                      "u256": "10418652021662452875188833311876296948140549230724408084488372370006662099224"
+                      "u256": "10130485636831681879640329887897441528922874156207437780798979133179336273031"
                     }
                   ]
                 },
@@ -215,6 +237,26 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "801925984706572462"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "1033654523790656264"
                 }
               },
               "durability": "temporary",
@@ -403,7 +445,7 @@
                             "symbol": "alpha"
                           },
                           "val": {
-                            "bytes": "291cb7a7e6d5255751feebf1afcde85f36071b7f8520c75bb2b14965d42173a60dbf1d5befc5b6106684e40c06ec239a65d511a3ed22bbbbbb66162900850f09"
+                            "bytes": "21206eadc22b1bb24d22dfc0f84d89a2e6a8ddbdfb0ee00eea8e7713a52361f525a953948a8797d7241f96492f56f4a8dd3e61c9916337edc4bcde009a9c42ef"
                           }
                         },
                         {
@@ -411,7 +453,7 @@
                             "symbol": "beta"
                           },
                           "val": {
-                            "bytes": "0500e1d774a3b136dd8c0a18f21340368ad9a8f8e17de520725a01fca65cd03a1a4f08802c87bafad0f691805e956742e173a46330a688052ff7295f75b55a38193b5fbb6cf7f14e88a38e85518a1bad3e9af1b36f890bc96526464cab58471305a73dffdd8d8f9da43e4982f2a00be3f00a1661dab1544254b0b9abd13cd32d"
+                            "bytes": "292f66d1bbc259e1d078cb9cf404fa3a8586b1647989b63a1c73c128f166bc7b12bf005e550f36aa09928f0b88c3faee6fa39ea6d805baf02780f0a87db4e3b01b5441a9fb04c2aa0be1f400c0eb1da2450396530f6ab1c6d7f14a1a25cae08e17b254b8bcdd6f228ec03c8f91924c8eb3faac345a34f529d8b1bb64f549e113"
                           }
                         },
                         {
@@ -437,22 +479,22 @@
                           "val": {
                             "vec": [
                               {
-                                "bytes": "11ed2f9802c0f2ffc5355d1843fd03ae933f0c43b28ee64d3dfedfaad81c21f22b531e32e9342449b306aa9c2e31aef48635da89b64cec49aa0b8b89784da99c"
+                                "bytes": "1a7fca71ce53998bf5dd4e553273076549ba51d57648c691e1ad06a804d5b2ba1191b3ad2b808f3a7b0bbcb68a148928c1f7d1ee79e991159f2dec1b8ae06e27"
                               },
                               {
-                                "bytes": "117fa8adb581b134a14b382653d55dc01a9ef43f6aaaf6c311a6b4f06f206d0d121b356072422e1686a5763c86644dbf2ea27c7743d0dfa2346134df325834d0"
+                                "bytes": "13a4f9bc4a862e281ff27af558063e8a42196e1064764f680e12e3e50006126a091978977f62ee893f7dfc06eea6c0755e4655b3e0b3db6a343d293bc3c58570"
                               },
                               {
-                                "bytes": "05b683fb33b175fde8363b01c96fc77c3907ef893fc24513c253f0668e78dcad1a7c28a7e570d759cb9b85865efa7310f3308a355fd4c121a1f83227db55ad33"
+                                "bytes": "0ccfa2d0b30f5dffb89bdfbf9d68db073eed9d380a84d01ca9290dfaabe5f0950ae2d5a2c19d4e3a6f822c6a5424f2bd4ea3b3bc1e4da596554cce7681a7cf77"
                               },
                               {
-                                "bytes": "136c3b1815237725fdfcdab4842ee0789eadc1f893aad92ab3fcd2f25083195d2e0e43223922bb9f5f0193bf90e5625abaf48b56ef45402c4f437014db91ba07"
+                                "bytes": "228e7d91e0146382c77daf5d234944e479fa2ed4accd03bd58bac4ebf1080d2e2e74849f7a7abdcb875ef5f2b2390066b9ae537bb65d84ea647dfd7e6be41bcc"
                               },
                               {
-                                "bytes": "16180998677da9e955056f5d7a1d3af954e65486d7efe78e5975abde84d150431bffdcfaa57b2070fc3693d80dff3d40134b612897c745380b69b99a0576aea3"
+                                "bytes": "01e1afbfa4db26983176f75a23538b294a6a1cc5df45a2dff98c35f45c4ed0eb26ec69df0ba4abb96b01d8d046dbda5282a134b388987b9ff0bb0a49a0ef04f5"
                               },
                               {
-                                "bytes": "01852a286b037f8381f06ca2937da371703b17e7f0edca5727cbdad0c4841d6f187595ac3d2934e1f8823439a45173ddd23f892258452e3b7810ea79f5ed6b94"
+                                "bytes": "0255a66c042ba4e0c4d4c45554684318e4009c48738a44b40ca367e64366433f0c25487558d1d43cd5343ace904cd8b348bd8773c59d8c109e68406a50f7c863"
                               }
                             ]
                           }
@@ -461,6 +503,33 @@
                     }
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "SkillRoot"
+                  },
+                  {
+                    "u64": "42"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "1665a6d455fb59641944762ee77b419d992929e17ac981f334f388bce45b2c87"
               }
             }
           },
@@ -525,7 +594,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "1033654523790656264"
+                  "nonce": "4837995959683129791"
                 }
               },
               "durability": "temporary",

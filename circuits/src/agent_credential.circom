@@ -15,7 +15,9 @@ include "../node_modules/circomlib/circuits/bitify.circom";
 //   skillId               the skill being invoked
 //   minReputation         the skill's on-chain reputation threshold
 //   nullifier             Poseidon(credentialSecret, skillId) — per-skill replay guard
-//   credentialCommitment  Poseidon(credentialSecret)
+//   credentialCommitment  Poseidon(credentialSecret, reputationScore) — binds the committed
+//                         score into the leaf so a prover can't attach an arbitrary
+//                         self-declared score to a tree membership proof
 //   jobHistoryRoot        the issuer-published merkle root the leaf must live under
 //
 // Private (NEVER revealed):
@@ -78,9 +80,13 @@ template AgentCredentialProof(depth) {
     signal input pathElements[depth];
     signal input pathIndices[depth];
 
-    // (1) credentialCommitment == Poseidon(credentialSecret)
-    component commitHash = Poseidon(1);
+    // (1) credentialCommitment == Poseidon(credentialSecret, reputationScore). Mixing the
+    //     score into the leaf itself means a holder of `credentialSecret` cannot attach any
+    //     score other than the one actually committed by the issuer at leaf-creation time —
+    //     closing the gap where score was previously an unconstrained private witness.
+    component commitHash = Poseidon(2);
     commitHash.inputs[0] <== credentialSecret;
+    commitHash.inputs[1] <== reputationScore;
     commitHash.out === credentialCommitment;
 
     // (2) reputationScore in [0, 100], and >= minReputation. Range-check both via Num2Bits(7)

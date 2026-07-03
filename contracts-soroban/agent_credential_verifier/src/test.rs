@@ -180,6 +180,8 @@ fn create_job_verifies_real_circuit_proof() {
     };
     // skillId=42, minReputation=60 — circuits/build/agent_credential/happy.input.json.
     client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+    // public_inputs[4] is jobHistoryRoot (circuit order) — must be published before create_job.
+    client.set_skill_root(&42u64, &BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[4]));
 
     let proof = Groth16Proof {
         a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
@@ -231,6 +233,7 @@ fn create_job_rejects_replayed_real_proof() {
         ic,
     };
     client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+    client.set_skill_root(&42u64, &BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[4]));
 
     let proof = Groth16Proof {
         a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
@@ -251,6 +254,98 @@ fn create_job_rejects_replayed_real_proof() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #9)")] // SkillRootNotSet
+fn create_job_rejects_when_skill_root_not_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+
+    let mut ic = SVec::new(&env);
+    for entry in real_fixture::IC.iter() {
+        ic.push_back(Bn254G1Affine::from_array(&env, entry));
+    }
+    let vkey = VerifyingKey {
+        alpha: Bn254G1Affine::from_array(&env, &real_fixture::ALPHA),
+        beta: Bn254G2Affine::from_array(&env, &real_fixture::BETA),
+        gamma: Bn254G2Affine::from_array(&env, &real_fixture::GAMMA),
+        delta: Bn254G2Affine::from_array(&env, &real_fixture::DELTA),
+        ic,
+    };
+    // register_skill only — deliberately skip set_skill_root.
+    client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+
+    let proof = Groth16Proof {
+        a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
+        b: Bn254G2Affine::from_array(&env, &real_fixture::PROOF_B),
+        c: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_C),
+    };
+    let mut inputs: SVec<Bn254Fr> = SVec::new(&env);
+    for sig in real_fixture::PUBLIC_INPUTS.iter() {
+        inputs.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, sig)));
+    }
+    let nullifier = BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[2]);
+    let payer = Address::generate(&env);
+
+    client.create_job(
+        &payer,
+        &42u64,
+        &BytesN::<32>::from_array(&env, &[0u8; 32]),
+        &proof,
+        &nullifier,
+        &inputs,
+        &Bytes::new(&env),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // JobHistoryRootMismatch
+fn create_job_rejects_wrong_job_history_root() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = boot(&env);
+    let owner = Address::generate(&env);
+
+    let mut ic = SVec::new(&env);
+    for entry in real_fixture::IC.iter() {
+        ic.push_back(Bn254G1Affine::from_array(&env, entry));
+    }
+    let vkey = VerifyingKey {
+        alpha: Bn254G1Affine::from_array(&env, &real_fixture::ALPHA),
+        beta: Bn254G2Affine::from_array(&env, &real_fixture::BETA),
+        gamma: Bn254G2Affine::from_array(&env, &real_fixture::GAMMA),
+        delta: Bn254G2Affine::from_array(&env, &real_fixture::DELTA),
+        ic,
+    };
+    client.register_skill(&42u64, &vkey, &60u32, &1_000_000u128, &owner);
+    // Publish a root that does NOT match the fixture proof's jobHistoryRoot — simulates a
+    // prover supplying a proof against a tree the issuer never actually published.
+    client.set_skill_root(&42u64, &BytesN::<32>::from_array(&env, &[0xAB; 32]));
+
+    let proof = Groth16Proof {
+        a: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_A),
+        b: Bn254G2Affine::from_array(&env, &real_fixture::PROOF_B),
+        c: Bn254G1Affine::from_array(&env, &real_fixture::PROOF_C),
+    };
+    let mut inputs: SVec<Bn254Fr> = SVec::new(&env);
+    for sig in real_fixture::PUBLIC_INPUTS.iter() {
+        inputs.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, sig)));
+    }
+    let nullifier = BytesN::<32>::from_array(&env, &real_fixture::PUBLIC_INPUTS[2]);
+    let payer = Address::generate(&env);
+
+    client.create_job(
+        &payer,
+        &42u64,
+        &BytesN::<32>::from_array(&env, &[0u8; 32]),
+        &proof,
+        &nullifier,
+        &inputs,
+        &Bytes::new(&env),
+    );
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #6)")] // InvalidProof
 fn create_job_rejects_non_satisfying_proof() {
     let env = Env::default();
@@ -266,6 +361,9 @@ fn create_job_rejects_non_satisfying_proof() {
     vkey.alpha = Bn254G1Affine::from_array(&env, &REAL_G1);
     vkey.beta = Bn254G2Affine::from_array(&env, &REAL_G2);
     client.register_skill(&1u64, &vkey, &60u32, &1_000_000u128, &owner);
+    // inputs[4] below is zero_fr, so the published root must be zero too to clear the
+    // root-pinning check and reach the pairing check this test actually exercises.
+    client.set_skill_root(&1u64, &BytesN::<32>::from_array(&env, &[0u8; 32]));
 
     let payer = Address::generate(&env);
     let null = BytesN::<32>::from_array(&env, &[9u8; 32]);

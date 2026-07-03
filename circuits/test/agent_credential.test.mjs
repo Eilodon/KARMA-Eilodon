@@ -122,14 +122,16 @@ async function main() {
   const F = poseidon.F;
 
   const credentialSecret = 12345678901234567890n; // fits in bn128 scalar field
-  const credentialCommitment = F.toObject(poseidon([credentialSecret])).toString();
   const skillId = 42n;
   const nullifier = F.toObject(poseidon([credentialSecret, skillId])).toString();
   const reputationScore = 80n;
   const minReputation = 60n;
+  // Leaf/commitment binds BOTH secret and score — a holder cannot self-declare a different
+  // score than the one actually committed by the issuer (see agent_credential.circom).
+  const credentialCommitment = F.toObject(poseidon([credentialSecret, reputationScore])).toString();
 
   const { root, pathElements, pathIndices } = buildMerkleProof(
-    poseidon, F, DEPTH, F.toObject(poseidon([credentialSecret])), /* leafIndex */ 0,
+    poseidon, F, DEPTH, F.toObject(poseidon([credentialSecret, reputationScore])), /* leafIndex */ 0,
   );
 
   // 1) Happy path — every constraint satisfied; verifier accepts; public signals echo.
@@ -178,9 +180,23 @@ async function main() {
     console.log("[T4] negative bad-commitment: rejected ✓");
   }
 
-  // 3) Negative: insufficient reputation.
+  // 3) Negative: insufficient reputation — build a SEPARATE, self-consistent commitment for
+  //    score=40 (own leaf + tree) so this isolates the reputation-gate check from the
+  //    commitment-binding check already covered by test 2.
+  const lowScore = 40n;
+  const lowCommitment = F.toObject(poseidon([credentialSecret, lowScore])).toString();
+  const lowTree = buildMerkleProof(
+    poseidon, F, DEPTH, F.toObject(poseidon([credentialSecret, lowScore])), /* leafIndex */ 0,
+  );
   try {
-    await genWitness({ ...happyInput, reputationScore: "40" }, "low_rep");
+    await genWitness({
+      ...happyInput,
+      reputationScore: lowScore.toString(),
+      credentialCommitment: lowCommitment,
+      jobHistoryRoot: lowTree.root,
+      pathElements: lowTree.pathElements,
+      pathIndices: lowTree.pathIndices.map(String),
+    }, "low_rep");
     console.error("FAIL: insufficient reputation was accepted");
     process.exit(1);
   } catch {

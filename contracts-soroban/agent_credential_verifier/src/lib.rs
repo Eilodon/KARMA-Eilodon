@@ -38,6 +38,8 @@ pub enum Error {
     InvalidProof = 6,
     InvalidVerifyingKey = 7,
     InvalidPublicInputs = 8,
+    SkillRootNotSet = 9,
+    JobHistoryRootMismatch = 10,
 }
 
 // ── Groth16 / BN254 types ─────────────────────────────────────────────────
@@ -93,6 +95,7 @@ enum DataKey {
     Admin,
     JobCounter,
     Skill(u64),
+    SkillRoot(u64),
     Nullifier(BytesN<32>),
     Job(u64),
 }
@@ -110,6 +113,11 @@ fn event_skill_registered(env: &Env, skill_id: u64, owner: &Address) {
 fn event_job_created(env: &Env, job_id: u64, skill_id: u64, payer: &Address) {
     env.events()
         .publish((Symbol::new(env, "job_created"), job_id, skill_id), payer.clone());
+}
+#[allow(deprecated)]
+fn event_skill_root_set(env: &Env, skill_id: u64, root: &BytesN<32>) {
+    env.events()
+        .publish((Symbol::new(env, "skill_root_set"), skill_id), root.clone());
 }
 
 // ── Contract impl ───────────────────────────────────────────────────────────
@@ -157,6 +165,24 @@ impl AgentCredentialVerifier {
             &SkillConfig { vkey, min_reputation, price_per_call, owner: owner.clone() },
         );
         event_skill_registered(&env, skill_id, &owner);
+    }
+
+    /// Publish (or overwrite) the job-history Merkle root for a skill. The issuer's
+    /// off-chain credential service builds this root from its published credential
+    /// leaves; `create_job` requires a proof's `jobHistoryRoot` public signal to match
+    /// the currently-published root for that skill — otherwise a prover could supply a
+    /// proof against a self-constructed tree that was never published by the issuer.
+    /// Separate call (not part of `register_skill`) so the root can be rotated as the
+    /// issuer's credential tree grows, mirroring `reputation_aggregation_verifier::set_epoch_root`.
+    pub fn set_skill_root(env: Env, skill_id: u64, root: BytesN<32>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotAdmin));
+        admin.require_auth();
+        env.storage().persistent().set(&DataKey::SkillRoot(skill_id), &root);
+        event_skill_root_set(&env, skill_id, &root);
     }
 
     /// Create a job: verify the AgentCredentialProof, claim the nullifier, store the job record.
@@ -207,6 +233,17 @@ impl AgentCredentialVerifier {
         if pi_nullifier != Bn254Fr::from_bytes(nullifier.clone()) {
             panic_with_error!(&env, Error::InvalidPublicInputs);
         }
+        // Element 4: jobHistoryRoot — must match the currently-published root for this skill,
+        // otherwise a prover could supply a proof against a tree the issuer never published.
+        let pi_root = public_inputs.get(4).unwrap();
+        let known_root: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SkillRoot(skill_id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::SkillRootNotSet));
+        if pi_root != Bn254Fr::from_bytes(known_root) {
+            panic_with_error!(&env, Error::JobHistoryRootMismatch);
+        }
 
         // 4. Groth16 pairing check (native BN254 host functions) — the load-bearing crypto step.
         let ok = crypto::verify_groth16(&env, &skill.vkey, &proof, &public_inputs);
@@ -239,6 +276,10 @@ impl AgentCredentialVerifier {
 
     pub fn get_skill(env: Env, skill_id: u64) -> Option<SkillConfig> {
         env.storage().persistent().get(&DataKey::Skill(skill_id))
+    }
+
+    pub fn skill_root(env: Env, skill_id: u64) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::SkillRoot(skill_id))
     }
 
     pub fn get_job(env: Env, job_id: u64) -> Option<JobRecord> {
