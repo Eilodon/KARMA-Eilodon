@@ -10,6 +10,10 @@
 >
 > ☝️ **Not a recording of a script — every command above hit Stellar Testnet live** (regenerate
 > it yourself: `docs/media/record-stellar-evidence.sh`).
+>
+> 🎬 **[Watch the ~78s narrated video](docs/media/stellar-zk-demo.mp4)** — the idea, the 2
+> soundness bugs we found in our own circuit and how we fixed them, then the live
+> "proof + payment in one HTTP request" flow running for real, voiceover included.
 
 > A blockchain-backed skill economy for AI agents, built on **SUPER-MCP** (Layer 0, bundled here
 > under `src/core`, `src/mcp`, `src/middlewares`, `src/storage`) — a hardened TypeScript/ESM MCP

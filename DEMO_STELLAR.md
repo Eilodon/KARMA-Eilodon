@@ -15,9 +15,12 @@ verification, both from a single client-side HTTP POST.
 
 Every line above is a real command against Stellar Testnet, not scripted
 output — regenerate it yourself with `docs/media/record-stellar-evidence.sh`.
-Full ~45s video (idea + the 2 soundness fixes + live evidence):
+
+**Narrated ~78s video** — the idea, the 2 soundness fixes, then the live
+"one HTTP request" x402 + ZK flow running for real with a synced voiceover:
 [`docs/media/stellar-zk-demo.mp4`](docs/media/stellar-zk-demo.mp4)
-(regenerate: `docs/media/record-stellar-demo-video.sh`). BUIDL page draft:
+(regenerate: `docs/media/record-stellar-demo-video.sh` — narration via Edge
+TTS, no API key needed). BUIDL page draft:
 [`docs/DORAHACKS_BUIDL.md`](docs/DORAHACKS_BUIDL.md).
 
 ## What this submission does (architecture)
@@ -295,6 +298,11 @@ not a bug). To run it live again: generate a fresh proof for a new
 `skill_id` (same pattern as `circuits/test/agent_credential.test.mjs`),
 `register_skill` + `set_skill_root` for it, and point the script at the new
 fixture + skill id.
+
+Skills 44 and 45 (same fixture pattern, also committed under
+`src/scripts/fixtures/`) were spent recording the narrated demo video above —
+two takes, since the first accidentally printed its internal timing markers
+to the terminal. Both are real, on-chain, in the same style as skill 43's.
 
 ## Submission notes
 

@@ -16,16 +16,20 @@
  * IMPORTANT — one-shot fixture: the nullifier in the committed fixture can only be
  * accepted ONCE by the live contract (replay guard). Re-running this script a second
  * time will correctly fail at create_job with NullifierReused — that's the guard working,
- * not a bug. To run it live again, regenerate a fresh proof for a new skill_id (see
+ * not a bug. To run it live again, either point at a not-yet-spent fixture (SKILL_ID +
+ * PACKED_PATH env vars — this repo also ships a skill-44 fixture, spent by the narrated
+ * demo video recording) or regenerate a fresh proof for a new skill_id (see
  * `circuits/test/agent_credential.test.mjs` for the witness-generation pattern) and
  * `register_skill` + `set_skill_root` for that id first.
  *
  *   KEYSTORE_PASSWORD=<password> pnpm exec tsx src/scripts/demo_stellar_x402_live.ts
+ *   KEYSTORE_PASSWORD=<password> SKILL_ID=44 PACKED_PATH=fixtures/agent_credential_skill44_packed.json \
+ *     pnpm exec tsx src/scripts/demo_stellar_x402_live.ts
  */
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ExactStellarScheme as ClientScheme } from "@x402/stellar/exact/client";
 import { ExactStellarScheme as FacilitatorScheme } from "@x402/stellar/exact/facilitator";
@@ -35,8 +39,9 @@ import { keystoreManager } from "../lib/keystore.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONTRACT_ID = "CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP";
-const SKILL_ID = 43;
-const PACKED_PATH = join(HERE, "fixtures/agent_credential_skill43_packed.json");
+const SKILL_ID = Number(process.env.SKILL_ID ?? 43);
+const PACKED_PATH_RAW = process.env.PACKED_PATH ?? "fixtures/agent_credential_skill43_packed.json";
+const PACKED_PATH = isAbsolute(PACKED_PATH_RAW) ? PACKED_PATH_RAW : join(HERE, PACKED_PATH_RAW);
 const PORT = 4021;
 
 type Packed = { proof: { a: string; b: string; c: string }; public_inputs: string[] };

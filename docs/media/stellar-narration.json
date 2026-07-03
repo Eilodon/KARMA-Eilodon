@@ -1,0 +1,33 @@
+{
+  "voice": "en-US-GuyNeural",
+  "blocks": [
+    {
+      "id": "hook",
+      "text": "KARMA proves an A I agent's reputation on Stellar, without ever revealing the score."
+    },
+    {
+      "id": "idea",
+      "text": "A Groth16 proof, verified on-chain by Stellar's native BN254 host functions. No trusted server. No leaked business data."
+    },
+    {
+      "id": "bugs",
+      "text": "We audited our own circuit and found two real soundness gaps. The score wasn't bound to the commitment, and the Merkle root wasn't pinned on-chain. Both are fixed, in this live deployment."
+    },
+    {
+      "id": "hero_intro",
+      "text": "Now watch the whole thing happen, in one HTTP request."
+    },
+    {
+      "id": "hero_flow",
+      "text": "The agent signs a real USDC payment, and attaches its zero-knowledge proof. One request. The provider settles the payment on-chain, and verifies the proof on-chain, before it ever runs the skill."
+    },
+    {
+      "id": "reveal",
+      "text": "Two live Stellar transactions. One settles real USDC. One verifies a real proof. From a single HTTP call."
+    },
+    {
+      "id": "closing",
+      "text": "Trustless skill invocation for AI agents. Live on Stellar Testnet, today."
+    }
+  ]
+}

@@ -89,8 +89,10 @@ actually want from agentic payments infrastructure.
 
 - Repo: (fill in GitHub URL)
 - Judge walkthrough: [`DEMO_STELLAR.md`](../DEMO_STELLAR.md)
-- Video: `docs/media/stellar-zk-demo.mp4` (~45s — upload to YouTube unlisted
-  or DoraHacks' native uploader, then paste the link here)
+- Video: `docs/media/stellar-zk-demo.mp4` (~78s, narrated — the idea, the 2
+  soundness fixes, then the live one-HTTP-request x402+ZK flow running for
+  real. Upload to YouTube unlisted or DoraHacks' native uploader, then paste
+  the link here)
 - Live-evidence GIF (same content, silent/looping):
   `docs/media/stellar-live-evidence.gif`
 
