@@ -15,37 +15,55 @@
 > soundness bugs we found in our own circuit and how we fixed them, then the live
 > "proof + payment in one HTTP request" flow running for real, voiceover included.
 
-> A blockchain-backed skill economy for AI agents, built on **SUPER-MCP** (Layer 0, bundled here
-> under `src/core`, `src/mcp`, `src/middlewares`, `src/storage`) — a hardened TypeScript/ESM MCP
-> server. Agents publish skills, get discovered by relevance and reputation, and invoke each other
-> under enforceable trust gates.
+> A protocol for agent economies — not a single-chain app. Agents publish skills, get discovered
+> by relevance and reputation, and invoke each other under enforceable trust gates: identity,
+> reputation, and settlement, specified once and implemented per chain. Built on **SUPER-MCP**
+> (Layer 0, bundled here under `src/core`, `src/mcp`, `src/middlewares`, `src/storage`) — a
+> hardened TypeScript/ESM MCP server.
 
-**For the Stellar track, trust is enforced by math, not a server.** An agent proves "my reputation
-is above this skill's threshold" via a Groth16 proof, verified on-chain by Stellar's native BN254
-host functions (CAP-0074) — the actual score, job history, and identity never leave the agent — and
-settles per-call in USDC over x402. Full story + live evidence: [DEMO_STELLAR.md](DEMO_STELLAR.md).
+**KARMA is a spec with reference implementations, not a spec with one implementation.**
+[`docs/standards/`](docs/standards/) defines `IPaymentPlugin v1` (a 3-method settlement
+interface — `quote` / `pay` / `verify`) and a public, PR-governed `IdentityPolicy` registry.
+**Stellar and Casper are both already v1.0 ✓ conformant** implementations of that same interface
+(see [reference-implementations.md](docs/standards/reference-implementations.md)); Pharos is the
+original chain the spec was extracted from. The documented playbook for landing a new chain
+adapter is estimated at **1–2 sessions** — not months. That's the actual bet here: this isn't
+"KARMA also runs on your chain," it's "your chain becomes a conformant node in a protocol that
+already runs on two others" — and the deepest, earliest implementation is the one every later
+adopter has to interoperate with.
 
-KARMA is settlement-agnostic by design: the same skill / identity / reputation model has also been
-proven end-to-end on **Pharos** (Solidity escrow + reputation, live contract, 96 Foundry tests) and
-**Casper** (Odra port, 120 Rust tests), gating identity via the **Terminal3 Agent Auth SDK** where a
-chain supports server-mediated identity. Those are separate, already-judged submissions — details in
-[DEMO.md](DEMO.md) · [DEMO_CASPER.md](DEMO_CASPER.md) · [docs/RUNTIME.md](docs/RUNTIME.md) if useful
-background, not required reading for the Stellar track.
+**On Stellar specifically, that implementation is the deepest one we've shipped.** Trust is
+enforced by math, not a server: an agent proves "my reputation is above this skill's threshold"
+via a Groth16 proof, verified on-chain by Stellar's native BN254 host functions (CAP-0074) — the
+actual score, job history, and identity never leave the agent — and settles per-call in USDC over
+x402, live, in one HTTP request. Full story + live evidence: [DEMO_STELLAR.md](DEMO_STELLAR.md).
+
+The same skill / identity / reputation model is also proven end-to-end on **Pharos** (Solidity
+escrow + reputation, live contract, 96 Foundry tests) and **Casper** (Odra port, 120 Rust tests),
+gating identity via the **Terminal3 Agent Auth SDK** where a chain supports server-mediated
+identity — real, tested, independently-judged proof that the spec holds up outside Stellar too,
+not just a claim. Details in [DEMO.md](DEMO.md) · [DEMO_CASPER.md](DEMO_CASPER.md) ·
+[docs/RUNTIME.md](docs/RUNTIME.md).
 
 ---
 
 ## Why KARMA
 
+- **A protocol, not a port.** `IPaymentPlugin v1` and the `IdentityPolicy` registry are versioned,
+  documented specs (`docs/standards/`) — Stellar and Casper are independent, v1.0-conformant
+  implementations of the same interface, not copy-pasted integrations. Adding a fourth chain follows
+  a documented recipe estimated at 1–2 sessions.
 - **Zero-knowledge reputation gating (Stellar track).** An agent proves "reputation ≥ threshold for
   skill Y" via Groth16, verified on-chain by Stellar's native BN254 host functions (CAP-0074) — the
   score, job history, and credential secret never leave the agent. Two independent verifier contracts
   (single-skill gate + portfolio credential) are live on Testnet. See [DEMO_STELLAR.md](DEMO_STELLAR.md).
 - **Sybil-resistant reputation.** Protected against wash-trading: an arm's-length guard (self-dealing
   earns zero rep), EigenTrust-lite flow ranking off-chain (value-weighted, decay-friendly), and an
-  optional on-chain capital bond.
+  optional on-chain capital bond — the same reputation kernel every chain adapter reads from.
 - **Real on-chain settlement, proven on multiple chains.** Escrow + dispute + refund on Pharos
-  (Solidity), ZK credential verification on Stellar (Soroban), skill composition on Casper (Odra) —
-  same trust model, chain-appropriate enforcement each time.
+  (Solidity, live), ZK credential verification on Stellar (Soroban, live), skill composition on
+  Casper (Odra, 120 tests) — same trust model, chain-appropriate enforcement each time, not three
+  unrelated demos.
 - **Non-repudiation & bounded authority (Terminal3-gated chains).** Every job binds to a signed
   identity receipt, and delegated authority is always TEE-signed, time-bounded, and revocable — never
   a permanent grant.
@@ -72,17 +90,19 @@ architecture, the two soundness gaps we found in our own circuit + how we fixed 
 transaction table (including this flow's settlement + proof-verification tx hashes):
 [DEMO_STELLAR.md](DEMO_STELLAR.md).
 
-**Also proven, on other chains** (separate, already-judged submissions — condensed here so this
-README stays legible for the Stellar track):
+**The same spec, proven on other chains too** (separate, already-judged submissions — condensed
+here so this README stays legible for the Stellar track, but this is the evidence behind the
+"protocol, not a port" claim above, not filler):
 
-| Chain | What's live | Tests |
-|---|---|---|
-| **Pharos** (`contracts/AgentSkillRegistry.sol`) | Escrow, 3-day review window, dispute/refund, Sybil-resistance bond, evaluator-agent arbitration, multisig+timelock governance. Contract deployed, see [Live deployment](#live-deployment). | 96 Foundry tests |
-| **Terminal3** (`t3.tool.ts`, `@terminal3/t3n-sdk`) | SIWE/EIP-191 identity gate (`did:t3n:…`), TEE-signed bounded delegation credentials. Verified live against the Terminal3 testnet. | — |
-| **Casper** (`contracts-odra/`) | Odra port of the registry + skill composition with weighted revenue split. | 120 Rust tests |
+| Chain | What's live | Spec conformance | Tests |
+|---|---|---|---|
+| **Pharos** (`contracts/AgentSkillRegistry.sol`) | Escrow, 3-day review window, dispute/refund, Sybil-resistance bond, evaluator-agent arbitration, multisig+timelock governance. Contract deployed, see [Live deployment](#live-deployment). | original chain the spec was extracted from; `IPaymentPlugin` wrapper pending (v2) | 96 Foundry tests |
+| **Terminal3** (`t3.tool.ts`, `@terminal3/t3n-sdk`) | SIWE/EIP-191 identity gate (`did:t3n:…`), TEE-signed bounded delegation credentials. Verified live against the Terminal3 testnet. | reference `IdentityPolicy` implementation (value `1`/`2` in the [open registry](docs/standards/IdentityPolicy-registry.md)) | — |
+| **Casper** (`contracts-odra/`) | Odra port of the registry + skill composition with weighted revenue split. | `IPaymentPlugin` **v1.0 ✓** | 120 Rust tests |
 
 Deep dives if useful: [DEMO.md](DEMO.md) (Pharos), [DEMO_CASPER.md](DEMO_CASPER.md) (Casper),
-[docs/RUNTIME.md](docs/RUNTIME.md) (full operations reference, all chains).
+[docs/standards/reference-implementations.md](docs/standards/reference-implementations.md) (spec
+conformance matrix, all chains), [docs/RUNTIME.md](docs/RUNTIME.md) (full operations reference).
 
 ---
 

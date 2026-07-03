@@ -56,7 +56,7 @@ On-chain storage:
 | Vitest | TypeScript layer | [`src/__tests__/`](../../src/__tests__/) — 560 cases |
 | Foundry | Pharos Solidity | [`test/`](../../test/) |
 | Cargo (nightly) | Odra Casper | [`contracts-odra/src/agent_skill_registry/tests.rs`](../../contracts-odra/src/agent_skill_registry/tests.rs) — 32 cases |
-| Cargo | Soroban verifier | [`contracts-soroban/agent_credential_verifier/src/test.rs`](../../contracts-soroban/agent_credential_verifier/src/test.rs) — 6 cases |
+| Cargo | Soroban verifiers (2 contracts) | [`agent_credential_verifier/src/test.rs`](../../contracts-soroban/agent_credential_verifier/src/test.rs) — 12 cases, [`reputation_aggregation_verifier/src/test.rs`](../../contracts-soroban/reputation_aggregation_verifier/src/test.rs) — 19 cases, both live on Testnet |
 | snarkjs | Circom circuits | [`circuits/test/`](../../circuits/test/) |
 
 ## How to add a new chain
