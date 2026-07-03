@@ -61,8 +61,12 @@ Agent (client-side, off-chain)             Soroban verifier (on-chain, Stellar T
                                             4. If all pass: execute skill, return result
 ```
 
-Full architecture, the two soundness gaps we found in our own circuit + how we fixed them, and the
-live transaction table: [DEMO_STELLAR.md](DEMO_STELLAR.md).
+This diagram isn't aspirational — `src/scripts/demo_stellar_x402_live.ts` runs it for real: a
+signed x402 payment (Soroban auth entry) and the ZK proof travel in one client HTTP POST, and the
+provider stub settles the USDC on-chain and verifies the proof on-chain before responding. Full
+architecture, the two soundness gaps we found in our own circuit + how we fixed them, and the live
+transaction table (including this flow's settlement + proof-verification tx hashes):
+[DEMO_STELLAR.md](DEMO_STELLAR.md).
 
 **Also proven, on other chains** (separate, already-judged submissions — condensed here so this
 README stays legible for the Stellar track):

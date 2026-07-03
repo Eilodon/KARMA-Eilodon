@@ -5,18 +5,18 @@ this file just keeps a versioned draft in the repo.
 
 ## Tagline (one line)
 
-> Trustless skill invocation for AI agents: prove reputation ≥ threshold without revealing it (Groth16 on Stellar's native BN254 host functions) — no trusted server, no leaked business data.
+> Trustless skill invocation for AI agents: prove reputation ≥ threshold without revealing it, pay per call in USDC — proof + payment settle together in ONE HTTP request, live on Stellar Testnet, no trusted server.
 
 ## Short description (2-3 sentences, for the summary card)
 
 KARMA lets an AI agent prove "my reputation is high enough to call this paid
 skill" without ever revealing its actual score, its job history, or its
 identity — a Groth16 proof verified on-chain by Stellar's native BN254
-pairing check (CAP-0074), with a per-skill nullifier that makes replay
-mathematically impossible. Two independent verifier contracts are live on
-Testnet right now, not a simulation: a single-skill credential gate and a
-cross-category portfolio-credential gate, both real Groth16 proofs, both with
-a confirmed on-chain replay rejection.
+pairing check (CAP-0074, no Arkworks), with a per-skill nullifier that makes
+replay mathematically impossible. A single client HTTP request carries both
+the proof and a real x402 USDC payment; the provider stub settles the
+payment and verifies the proof on-chain, live on Testnet — not a mockup, not
+a simulation.
 
 ## Full description
 
@@ -56,6 +56,18 @@ Testnet with real transactions: contract deploy, `register_skill` /
 (`Error(Contract, #5)`). Full tx hashes + stellar.expert links in
 [DEMO_STELLAR.md](../DEMO_STELLAR.md).
 
+**The full "one HTTP request" flow is live, end to end.**
+`src/scripts/demo_stellar_x402_live.ts` runs a real provider-stub HTTP
+server and a real x402 client: agent-alpha signs a genuine x402 payment
+(a Soroban authorization entry) and POSTs it to `/invoke` in the same
+request as the ZK proof headers. The provider stub verifies + **settles the
+USDC payment on-chain**
+([tx](https://stellar.expert/explorer/testnet/tx/9880020bb5354a167572c335c808c7cb4e5af65309ff6185ced3a4fd25d6c0ae))
+and **verifies the Groth16 proof on-chain**
+([tx](https://stellar.expert/explorer/testnet/tx/28d4917ba2192d8bf8a5a6004d392593df7e9e4639f9e2b23c0cf3503c4e153c)),
+both from one client-side HTTP POST — no trusted server deciding anything
+the chain doesn't independently verify.
+
 ## Why this matters for Stellar (judge-facing pitch)
 
 This sits at the intersection of Stellar's two 2026 strategic pushes —
@@ -89,9 +101,14 @@ actually want from agentic payments infrastructure.
 
 ## Known limitations (disclose proactively, matches DEMO_STELLAR.md)
 
-- The full "proof + payment in one HTTP request" flow needs a provider-stub
-  HTTP server that hasn't been built yet — the ZK leg is live on-chain, the
-  x402 payment leg is demonstrated offline (with a real registered payee,
-  not a placeholder). See `demo_stellar_zk.ts`.
+- The live x402 + ZK flow uses a fixed demo skill/proof pair per run (the
+  nullifier is one-shot by design — that's the replay guard, not a bug);
+  reproducing it live again needs a freshly generated proof for a new
+  `skill_id`, documented in DEMO_STELLAR.md.
 - Trusted setup for both circuits is single-contributor (hackathon scope);
   mainnet would need a multi-party ceremony (e.g. Hermez).
+- The provider stub currently acts as its own x402 facilitator (KARMA's own
+  signer settles the payment it receives) rather than routing through an
+  independent third-party facilitator — a legitimate x402 topology, but
+  worth naming: the trust-minimization is "no server decides anything the
+  chain doesn't verify," not "a neutral third party settles."

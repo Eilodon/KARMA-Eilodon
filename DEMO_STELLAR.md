@@ -6,7 +6,10 @@
 This document is what a judge or reproducer should follow to see KARMA's
 "trustless fast-lane" working end-to-end on Stellar Testnet: a ZK credential
 proof + a USDC x402 payment, delivered in **one HTTP request**, with no
-KARMA server in the invocation path.
+KARMA server in the invocation path. **This is live, not aspirational** —
+see [Reproducing the live x402 + ZK flow](#reproducing-the-live-x402--zk-flow)
+for the real run: a real USDC settlement tx + a real on-chain proof
+verification, both from a single client-side HTTP POST.
 
 ![Live Stellar Testnet terminal: real WASM fetch, real on-chain reads, a real replay attack rejected by two independently deployed Groth16/BN254 verifiers](docs/media/stellar-live-evidence.gif)
 
@@ -57,6 +60,7 @@ Closes two open architectural problems in KARMA's production trust model
 | Stellar ed25519 keypair derivation | [`src/lib/stellar/keypair.ts`](src/lib/stellar/keypair.ts) (T6) | 10/10 |
 | x402Plugin/Stellar | [`src/plugins/x402_stellar.ts`](src/plugins/x402_stellar.ts) (T7) | 15/15 |
 | Offline orchestration demo | [`src/scripts/demo_stellar_zk.ts`](src/scripts/demo_stellar_zk.ts) (T8) | runs end-to-end, payee is the real live-registered skill owner |
+| **Live x402 + ZK demo (one HTTP request)** | [`src/scripts/demo_stellar_x402_live.ts`](src/scripts/demo_stellar_x402_live.ts) | **live** — real USDC settlement + real on-chain proof verification from one client POST |
 
 ## Quick start — offline orchestration (no Stellar credentials needed)
 
@@ -231,13 +235,8 @@ stellar contract invoke \
 #    as a CLI error, not a second tx hash.
 
 # Full flow (proof + x402 payment in one HTTP request, no direct contract call from the
-# client) additionally needs a provider stub that:
-# 1. Accepts a POST with the three x402 + ZK headers (X-Payment-Receipt, X-Reputation-Proof,
-#    X-Nullifier — see demo_stellar_zk.ts for the exact envelope)
-# 2. Forwards the x402 receipt to the facilitator for settlement
-# 3. Packs the decoded proof via pack-bn254.mjs and calls create_job() as above
-# Recommended stub provider endpoint (Express + @x402/express middleware):
-# see https://developers.stellar.org/docs/build/agentic-payments/x402/quickstart-guide
+# client) is implemented and live — see src/scripts/demo_stellar_x402_live.ts and
+# "Reproducing the live x402 + ZK flow" below instead of doing this step manually.
 ```
 
 `pnpm exec tsx src/scripts/demo_stellar_zk.ts` already prints what each of these
@@ -261,20 +260,41 @@ in the path) — see the tx table above:
    ≥ 5 categories over ≥ 10 jobs) against a published epoch root, and its
    nullifier replay guard is confirmed the same way (`submit_proof`, tx
    `c7b98766b9cf0d26bd0ae4180d317153974f7c8cb225344a4090ed6402613cd6`).
-4. ⏳ **Not yet confirmed on-chain**: an x402 USDC payment settling in the
-   same HTTP round-trip as the proof verification. The proof-verification leg
-   above was invoked directly via `stellar contract invoke`, not via the
-   `X-Payment-Receipt` + provider-stub HTTP path described in the
-   architecture diagram — that full one-HTTP-request flow still needs the
-   provider stub (see Step 3 note) implemented and run. `demo_stellar_zk.ts`
-   demonstrates that leg offline, but with a real registered payee (the live
-   skill-42 owner) rather than a fabricated address — it is not yet wired to
-   the live proof verification in a single request. Accurate claim: **the ZK
-   leg is live on-chain (both verifiers); the payment leg is demonstrated
-   offline with real, on-chain-registered parties.**
+4. ✅ **The full "one HTTP request" flow is live**: `src/scripts/demo_stellar_x402_live.ts`
+   runs a real provider-stub HTTP server + a real x402 client end-to-end.
+   agent-alpha (real funded Testnet account) signs a genuine x402 payment
+   (a Soroban authorization entry via `@x402/stellar`'s `exact` scheme), POSTs
+   it to `/invoke` in the SAME request as the ZK proof headers
+   (`X-Payment`, `X-Reputation-Proof`, `X-Nullifier`), and the provider stub:
+   verifies + **settles the USDC payment on-chain**
+   (tx [`9880020bb5354a167572c335c808c7cb4e5af65309ff6185ced3a4fd25d6c0ae`](https://stellar.expert/explorer/testnet/tx/9880020bb5354a167572c335c808c7cb4e5af65309ff6185ced3a4fd25d6c0ae) —
+   0.001 USDC, agent-alpha → agent-t3n, balances confirmed via Horizon:
+   alpha 5.000→4.999, t3n 95.000→95.001), then **verifies the Groth16 proof
+   on-chain via `create_job`**
+   (tx [`28d4917ba2192d8bf8a5a6004d392593df7e9e4639f9e2b23c0cf3503c4e153c`](https://stellar.expert/explorer/testnet/tx/28d4917ba2192d8bf8a5a6004d392593df7e9e4639f9e2b23c0cf3503c4e153c),
+   `job_created` job_id=2, skill_id=43), and returns 200 with both tx hashes
+   — all from one client-side HTTP POST. No KARMA server in the trust path;
+   the provider stub only routes bytes and shells out to `stellar contract
+   invoke`, it doesn't decide anything the chain doesn't independently verify.
 
-That's the closing argument of synthesis §5 + plan §1A, scoped to what's
-actually been shown rather than the full architecture goal.
+That's the closing argument of synthesis §5 + plan §1A — not just the design
+goal, the thing itself, run for real on Testnet.
+
+### Reproducing the live x402 + ZK flow
+
+```bash
+KEYSTORE_PASSWORD=<password> pnpm exec tsx src/scripts/demo_stellar_x402_live.ts
+```
+
+Uses the real `agent-alpha` / `agent-t3n` keys from `keystore.json` (needs
+`KEYSTORE_PASSWORD` — see `demo-video/secrets.env.example`). Skill 43's proof
+fixture (`src/scripts/fixtures/agent_credential_skill43_packed.json`) is a
+**one-shot nullifier** already spent by the run above — re-running reverts
+`NullifierReused` at the `create_job` step (the guard working as intended,
+not a bug). To run it live again: generate a fresh proof for a new
+`skill_id` (same pattern as `circuits/test/agent_credential.test.mjs`),
+`register_skill` + `set_skill_root` for it, and point the script at the new
+fixture + skill id.
 
 ## Submission notes
 
