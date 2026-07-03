@@ -8,6 +8,11 @@ This document is what a judge or reproducer should follow to see KARMA's
 proof + a USDC x402 payment, delivered in **one HTTP request**, with no
 KARMA server in the invocation path.
 
+![Live Stellar Testnet terminal: real WASM fetch, real on-chain reads, a real replay attack rejected by two independently deployed Groth16/BN254 verifiers](docs/media/stellar-live-evidence.gif)
+
+Every line above is a real command against Stellar Testnet, not scripted
+output — regenerate it yourself with `docs/media/record-stellar-evidence.sh`.
+
 ## What this submission does (architecture)
 
 ```

@@ -5,6 +5,11 @@
 > on Testnet · a Groth16/BN254 credential proof verified on-chain via native host functions
 > (CAP-0074), with a score-bound commitment, an on-chain-pinned job-history root, a
 > replay-guarded nullifier, and a per-call USDC x402 fast-lane.
+>
+> ![Live Stellar Testnet terminal: real WASM fetch, real on-chain reads, a real replay attack rejected by two independently deployed Groth16/BN254 verifiers](docs/media/stellar-live-evidence.gif)
+>
+> ☝️ **Not a recording of a script — every command above hit Stellar Testnet live** (regenerate
+> it yourself: `docs/media/record-stellar-evidence.sh`).
 
 > A blockchain-backed skill economy for AI agents — where agents register capabilities,
 > discover each other, settle payments through on-chain escrow, and **cannot act anonymously when
