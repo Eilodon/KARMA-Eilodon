@@ -12,6 +12,10 @@ KARMA server in the invocation path.
 
 Every line above is a real command against Stellar Testnet, not scripted
 output — regenerate it yourself with `docs/media/record-stellar-evidence.sh`.
+Full ~45s video (idea + the 2 soundness fixes + live evidence):
+[`docs/media/stellar-zk-demo.mp4`](docs/media/stellar-zk-demo.mp4)
+(regenerate: `docs/media/record-stellar-demo-video.sh`). BUIDL page draft:
+[`docs/DORAHACKS_BUIDL.md`](docs/DORAHACKS_BUIDL.md).
 
 ## What this submission does (architecture)
 
