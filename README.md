@@ -1,5 +1,11 @@
 # KARMA
 
+> 🏆 **Stellar Hacks: Real-World ZK — judges start here:** [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
+> live Soroban verifier [`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP)
+> on Testnet · a Groth16/BN254 credential proof verified on-chain via native host functions
+> (CAP-0074), with a score-bound commitment, an on-chain-pinned job-history root, a
+> replay-guarded nullifier, and a per-call USDC x402 fast-lane.
+
 > A blockchain-backed skill economy for AI agents — where agents register capabilities,
 > discover each other, settle payments through on-chain escrow, and **cannot act anonymously when
 > transacting through KARMA**: a skill can declare an on-chain identity policy, and KARMA refuses to
@@ -36,11 +42,23 @@ verifiers + x402 USDC) and **Casper** (Odra registry + skill composition + x402 
   verified on-chain, so the skill's `identityPolicy` is published on-chain as composable, credibly-
   committed *policy* and KARMA is the enforcer. (An actor calling the raw contract directly bypasses the
   identity gate but not the reputation gate; identity is a guarantee of the KARMA-mediated path.)
+- **Sybil-resistant 3-Tier Reputation.** Reputation is protected against wash-trading. Tier-0 enforces an
+  arm's-length guard on-chain (self-dealing earns zero rep). Tier-1 (Flow Reputation) ranks discovery off-chain
+  using EigenTrust-lite (value-weighted, decay-friendly, non-bootstrappable). Tier-2 (Native Bond) provides
+  an optional on-chain capital seed for the flow model.
 - **Authority is bounded and revocable.** `t3_authorize_payroll_agent` issues a TEE-signed,
   time-bounded, dollar-capped delegation credential scoped to specific functions;
   `t3_revoke_payroll_authorization` pulls or narrows it. An agent's authority is never permanent.
 - **Non-repudiation built in.** `t3_sign_job_commitment` binds each job to an EIP-191 identity receipt
   — accountability without ever exposing a raw private key.
+- **Neutral arbitration via Evaluator Agent (P0-A).** Jobs can optionally designate a neutral
+  third-party evaluator who approves or rejects a delivered result within the review window,
+  replacing the binary confirm/dispute split with an independent verdict.
+- **Bond-backed disputes (P1-A).** Frivolous disputes are deterred by a symmetric bond: the requester
+  must lock a dispute bond proportional to escrow, the provider can match it to contest, and an
+  on-chain arbiter adjudicates with loser-pays resolution. Reputation is slashed for the at-fault party.
+- **Multisig + timelock governance (P0-B).** Admin operations (cross-chain reputation updates) require
+  multisig approval + a 48-hour cooling-off delay via `KarmaTimelock` — no single EOA backdoor.
 - **Real on-chain settlement.** Escrow, a 3-day review window, dispute/refund, anti-deadlock claim,
   reputation, and a Sybil-resistance bond — all live on a deployed Solidity contract.
 
@@ -49,8 +67,8 @@ verifiers + x402 USDC) and **Casper** (Odra registry + skill composition + x402 
 | Layer | What | Status |
 |---|---|---|
 | **0 — SUPER-MCP runtime** | stdio/HTTP transports, native Tasks, durable storage, auth, governance, output firewall, plugin isolation | Shipped |
-| **1 — KARMA plugin** (`karma.tool.ts`) | 13 in-process tools: skill registration, BM25 discovery, escrow job lifecycle, reputation, social graph, withdrawals. `create_job` is the single gate enforcing both identity + reputation | Shipped |
-| **2 — `AgentSkillRegistry` contract** | Solidity escrow + reputation + on-chain Trust Gate + identity-policy flag. **v3 live** on Pharos Atlantic; **v4** (adds `identityPolicy`) is in-repo, redeploy pending | v3 Live / v4 pending |
+| **1 — KARMA plugin** (`karma.tool.ts`) | 14 in-process tools: skill registration, BM25 discovery, escrow job lifecycle, evaluator-agent jobs, bond-backed disputes, reputation, social graph, withdrawals. `create_job` is the single gate enforcing both identity + reputation | Shipped |
+| **2 — `AgentSkillRegistry` contract** | Solidity escrow + reputation + on-chain Trust Gate + Evaluator Agent (P0-A) + symmetric dispute bond (P1-A) + Ownable2Step governance (P0-B). **v3 live** on Pharos Atlantic; in-repo contract (v4/P-series) redeploy pending | v3 Live / in-repo advanced |
 | **3 — Terminal3 Agent Auth SDK** (`t3.tool.ts`) | 8 in-process tools: identity, delegated authority, org-grant provisioning, business-contract invocation, revocation (`t3_create_verified_job` deprecated — `create_job` now enforces identity) | Shipped, auth verified live |
 
 ---
@@ -66,16 +84,23 @@ SUPER-MCP runtime (Layer 0)
    │   JSON-Schema validation · output firewall · telemetry
    ├──► karma.tool.ts  (in-process, trusted) ── Layer 1
    │       KarmaService → keystore (keys never leave process)
-   │                    → BM25SkillIndex (reputation-boosted)
+   │                    → BM25SkillIndex (reputation-boosted via Tier-1 Flow Rep)
    │                    → viem clients + exactly-once writes + event indexer
    ├──► t3.tool.ts     (in-process, trusted) ── Layer 3
    │       @terminal3/t3n-sdk: WASM TEE component · T3nClient
    │       SIWE/EIP-191 auth · delegation credentials · org-data client
    ▼
-AgentSkillRegistry.sol v3  ── Layer 2 ── Pharos Atlantic (chainId 688689)
-   registerSkill · createJob (escrow + Trust Gate) · deliverResult
-   confirmCompletion · disputeResult · claimAfterReview · withdraw
-   agentReputation · jobByTaskHash · depositBond / withdrawBond
+AgentSkillRegistry.sol (Layer 2) ── Pharos Atlantic (chainId 688689)
+   registerSkill · createJob / createJobWithEvaluator (escrow + Trust Gate)
+   deliverResult · evaluateResult (P0-A) · confirmCompletion
+   disputeResult (bonded, P1-A) · respondToDispute · concedeDispute
+   resolveDefaultConcede · arbitrate · claimAfterReview · claimRefund
+   withdraw · agentReputation · jobByTaskHash
+   depositBond / requestBondUnlock / cancelBondUnlock / withdrawBond (Tier-2)
+   setCrossChainRep (onlyOwner → KarmaTimelock, P0-B)
+
+KarmaTimelock.sol (P0-B) ── OZ TimelockController, 48h delay
+   Wraps multisig approval + timelock for AgentSkillRegistry admin ops
 ```
 
 ### The trust flow
@@ -109,12 +134,13 @@ t3_authorize_payroll_agent
 | `karma_health` | read | Runtime canary; RPC/contract env presence + skill-indexer health. |
 | `register_skill` | write | Register a skill on-chain (name, price, endpoint, optional reputation Trust-Gate + `identityPolicy`) + BM25 upsert. |
 | `discover_skills` | read | BM25 search (prefix + fuzzy), reputation-boosted, `maxPriceWei` / `minReputation` filters. |
-| `create_job` | write | Idempotent escrow via `taskHash`; enforces the skill's identity + reputation gates (single path); `exists` on replay. |
+| `create_job` | write | Idempotent escrow via `taskHash`; enforces the skill's identity + reputation gates (single path); `exists` on replay. Supports optional `evaluator` + `evaluatorFeeWei` (P0-A). |
 | `deliver_result` | write | Provider submits `resultHash`; opens the 3-day review window. |
-| `complete_job` | write | Requester confirms; releases escrow + bumps reputation (arm's-length only). |
-| `dispute_result` | write | Requester rejects within the window → refund + `Disputed`. |
+| `complete_job` | write | Requester confirms; releases escrow + bumps reputation (arm's-length only, Tier-0). |
+| `dispute_result` | write | **P1-A (bond-backed):** Requester rejects within the window by locking a dispute bond (proportional to escrow). |
 | `claim_after_review` | write | Provider claims after the window if the requester ghosted (anti-deadlock). |
-| `read_job` | read | Read one job's on-chain state by id (reconcile after `pending`). |
+| `evaluate_result` | write | **P0-A:** Neutral evaluator approves (escrow → provider) or rejects (refund → requester). |
+| `read_job` | read | Read one job's on-chain state by id; exposes `evaluator` and `evaluatorFee` fields. |
 | `get_agent_reputation` | read | Agent's skills + scores + on-chain `agentReputation`. |
 | `query_social_graph` | read | Job edges for an agent (as provider / requester). |
 | `get_pending_balance` | read | Withdrawable balance in wei + formatted PHRS. |
@@ -177,12 +203,16 @@ pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop 
 
 | | |
 |---|---|
-| **Contract (v3)** | [`0x068091d8b982379373a4db377872ffb608a979b4`](https://atlantic.pharosscan.xyz/address/0x068091d8b982379373a4db377872ffb608a979b4) |
-| **Deploy block** | 24406554 (Pharos Atlantic, 2026-06-18) |
+| **Contract (v3)** | [`0xc6d5c146209e0833634bd33fafb9e65081b905ae`](https://atlantic.pharosscan.xyz/address/0xc6d5c146209e0833634bd33fafb9e65081b905ae) |
+| **Deploy block** | 24360873 (Pharos Atlantic) |
 | **Pharos chain ID** | `688689` (EIP-1559) |
 | **Pharos RPC** | `https://atlantic.dplabs-internal.com` |
 | **Pharos explorer** | `https://atlantic.pharosscan.xyz` · currency PHRS (18 dp) |
 | **Terminal3 node** | `https://cn-api.sg.testnet.t3n.terminal3.io` (testnet) |
+
+> **Note:** The in-repo contract (`contracts/AgentSkillRegistry.sol`) incorporates P0-A (Evaluator
+> Agent), P0-B (Ownable2Step + `KarmaTimelock` multisig/timelock governance), and P1-A (symmetric
+> dispute bond with `respondToDispute` / `concedeDispute` / `arbitrate`). Redeploy to Pharos Atlantic is pending.
 
 ---
 
@@ -225,7 +255,7 @@ MCP_SAFE_MODE=false
 MCP_PLUGIN_ALLOWLIST=system.tool.ts,karma.tool.ts,t3.tool.ts
 MCP_PLUGIN_ISOLATION_MODE=policy
 PHAROS_RPC_URL=https://atlantic.dplabs-internal.com
-PHAROS_CONTRACT_ADDRESS=0x068091d8b982379373a4db377872ffb608a979b4
+PHAROS_CONTRACT_ADDRESS=0xc6d5c146209e0833634bd33fafb9e65081b905ae
 KEYSTORE_PATH=./keystore.json
 KEYSTORE_PASSWORD=<password>
 # T3N_NODE_URL is optional — the code targets the Terminal3 testnet by default.
@@ -313,12 +343,18 @@ for multi-replica.
 ## Testing
 
 ```bash
-pnpm test            # full Vitest suite (636 passed, 1 skipped)
+pnpm test            # full Vitest suite (641 passed, 1 skipped)
 pnpm typecheck       # tsc --noEmit
-pnpm test:contract   # Foundry tests for AgentSkillRegistry.sol (requires forge)
+pnpm test:contract   # Foundry tests for AgentSkillRegistry.sol (96 tests, requires forge)
 pnpm test:enterprise # Layer-0 runtime hardening suites
 pnpm ci              # typecheck + lint + test
 ```
+
+Contract test coverage (Foundry): **96 Solidity tests** including P1-A symmetric dispute bond
+scenarios, P0-A evaluator agent scenarios, and P0-B governance/timelock scenarios.
+
+Odra/Casper: **120 Rust tests** (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the
+full parallel feature set including P0-A/P1-A mechanics ported for ms-based time and U512 arithmetic.
 
 The ABI drift guard (`src/__tests__/karma_contract.test.ts`) fails if the Solidity surface diverges
 from `src/lib/abi.ts`. Live T3N call sequences are covered by `src/scripts/t3_payroll_smoke.ts`.
@@ -334,7 +370,7 @@ src/
   middlewares/   auth, rate limit, quota, idempotency, output firewall
   storage/       fs / redis / memory drivers + encryption (v3 hkdf, v4 kms)
   plugins/
-    karma.tool.ts   Layer 1 — skill economy tools (in-process)
+    karma.tool.ts   Layer 1 — 14 skill economy tools (in-process)
     t3.tool.ts      Layer 3 — Terminal3 identity & delegation tools (in-process)
     x402_stellar.ts / x402_casper.ts   IPaymentPlugin settlement rails
   lib/           KarmaService, keystore, viem clients, BM25 index, ABI, flow_reputation
@@ -346,7 +382,7 @@ src/
                  stellar/casper), run_autonomous_loop, t3_payroll_smoke
   __tests__/     Vitest suites (runtime + app layer) — 71 files
 circuits/        Circom circuits: agent_credential, reputation_aggregation (+ snarkjs harness)
-contracts/       AgentSkillRegistry.sol (Foundry, Pharos)
+contracts/       AgentSkillRegistry.sol + KarmaTimelock.sol (Foundry, Pharos)
 contracts-soroban/   Stellar verifiers: agent_credential, reputation_aggregation (Rust)
 contracts-odra/      Casper AgentSkillRegistry + skill composition (Odra / Rust)
 docs/            RUNTIME.md, standards/, rfc/, ADRs, plans, session handoffs

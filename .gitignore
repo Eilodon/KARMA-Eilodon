@@ -20,3 +20,4 @@ keystore.*.bak
 
 # Autonomous-loop runtime dashboard output (T5.1 runner)
 dashboard/
+.codeindex/
