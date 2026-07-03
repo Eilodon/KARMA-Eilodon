@@ -11,13 +11,12 @@ keystore.*.bak
 /broadcast/
 /lib/
 .DS_Store
-.claude/*
-# Track the SessionStart hook + harness settings so Claude Code on the web can
-# bootstrap a fresh container with Foundry + forge-std + the compiled artifact
-# (otherwise 5 tests skip — see commit message for context).
-!.claude/hooks/
-!.claude/settings.json
+.claude/
 
 # Autonomous-loop runtime dashboard output (T5.1 runner)
 dashboard/
 .codeindex/
+
+# Agentic session artifacts (local-only)
+docs/superpowers/
+docs/superskills/
