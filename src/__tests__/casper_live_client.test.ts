@@ -1,13 +1,21 @@
 import { describe, it, expect, vi } from "vitest";
+import casperSdk from "casper-js-sdk";
 import { CasperLiveClient, type CasperTransactionSubmitter } from "../lib/casper/live_client.js";
-import { deriveCasperPrivateKey } from "../lib/casper/keypair.js";
+import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
+const { CLValue } = casperSdk;
 
 const SIGNER = deriveCasperPrivateKey(new Uint8Array(32).fill(0x33));
 const CONTRACT_HASH = "hash-1111111111111111111111111111111111111111111111111111111111111111";
 
-function fakeSubmitter(): CasperTransactionSubmitter & { putTransaction: ReturnType<typeof vi.fn> } {
+function fakeSubmitter(): CasperTransactionSubmitter & {
+  putTransaction: ReturnType<typeof vi.fn>;
+  getStateRootHashLatest: ReturnType<typeof vi.fn>;
+  getDictionaryItemByIdentifier: ReturnType<typeof vi.fn>;
+} {
   return {
     putTransaction: vi.fn().mockResolvedValue({ transactionHash: { toHex: () => "deadbeef" } }),
+    getStateRootHashLatest: vi.fn().mockResolvedValue({ stateRootHash: { toHex: () => "srh" } }),
+    getDictionaryItemByIdentifier: vi.fn().mockRejectedValue(new Error("not used in these tests")),
   };
 }
 
@@ -85,5 +93,62 @@ describe("CasperLiveClient (T13-live)", () => {
     const transaction = rpc.putTransaction.mock.calls[0][0];
     expect(transaction.chainName).toBe("casper-net-1");
     expect(transaction.pricingMode).toBeTruthy();
+  });
+});
+
+describe("CasperLiveClient reads (T13-live, real dictionary-item derivation)", () => {
+  const account = casperAccountHash(SIGNER);
+
+  it("pendingWithdrawalsOf queries the state dictionary at the derived key and parses a U512", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: CLValue.newCLUInt512("123456789") },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    const balance = await client.pendingWithdrawalsOf(account);
+
+    expect(balance).toBe("123456789");
+    expect(rpc.getStateRootHashLatest).toHaveBeenCalledOnce();
+    const [stateRootHash, identifier] = rpc.getDictionaryItemByIdentifier.mock.calls[0];
+    expect(stateRootHash).toBe("srh");
+    expect(identifier.contractNamedKey.key).toBe(CONTRACT_HASH.replace(/^hash-/, ""));
+    expect(identifier.contractNamedKey.dictionaryName).toBe("state");
+    expect(identifier.contractNamedKey.dictionaryItemKey).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("agentReputationOf parses a U32", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: CLValue.newCLUInt32(75) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.agentReputationOf(account)).toBe(75);
+  });
+
+  it("bondedOf parses a U512", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: CLValue.newCLUInt512("1000000000") },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.bondedOf(account)).toBe("1000000000");
+  });
+
+  it("returns the contract's documented defaults when the dictionary key has never been written", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    expect(await client.pendingWithdrawalsOf(account)).toBe("0");
+    expect(await client.agentReputationOf(account)).toBe(50); // BASE_REPUTATION
+    expect(await client.bondedOf(account)).toBe("0");
+  });
+
+  it("re-throws an unrelated RPC error instead of silently defaulting", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("ECONNREFUSED"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await expect(client.pendingWithdrawalsOf(account)).rejects.toThrow("ECONNREFUSED");
   });
 });

@@ -51,7 +51,8 @@ settle micropayments per HTTP request, no human in the loop.
 | RWA-oracle registration script | [`src/scripts/register_rwa_oracle_skill.ts`](src/scripts/register_rwa_oracle_skill.ts) (T13) | dry-run by default; `--live` builds + signs + submits a real `casper-js-sdk` transaction |
 | RWA-oracle e2e demo | [`src/scripts/demo_casper_e2e.ts`](src/scripts/demo_casper_e2e.ts) (T13) | runs end-to-end (offline state machine) |
 | Live x402 HTTP loop | [`src/scripts/demo_casper_x402_live.ts`](src/scripts/demo_casper_x402_live.ts) (T13-live) | real local HTTP 402 → sign → verify round trip; `--live` adds the on-chain `create_job` leg |
-| Real RPC client (register/deposit/create_job/deliver/confirm/withdraw) | [`src/lib/casper/live_client.ts`](src/lib/casper/live_client.ts) (T13-live) | 5/5 tests — builds, signs, and submits real `casper-js-sdk` transactions once a contract is deployed |
+| Real RPC client (register/deposit/create_job/deliver/confirm/withdraw + 3 live reads) | [`src/lib/casper/live_client.ts`](src/lib/casper/live_client.ts) (T13-live) | 14/14 tests — builds, signs, and submits real `casper-js-sdk` transactions; reads query the on-chain "state" dictionary directly |
+| **MCP tool surface** — the RWA-oracle flow as 8 real MCP tools, not just scripts | [`src/plugins/casper.tool.ts`](src/plugins/casper.tool.ts) (T13-live) | 12/12 tests — any MCP client can call `casper_register_skill`, `casper_create_job`, `casper_get_account_state`, etc. directly |
 
 ## Quick start — offline orchestration (no Casper credentials needed)
 
@@ -84,17 +85,19 @@ verification are produced by REAL T10/T11 code, not stubbed.
 
 ## Live run — Casper Testnet (owner-driven, requires funded keystore)
 
-> ⚠️ This step is owner-driven because it needs funded Casper Testnet credentials. Everything
-> else is wired and tested — `register_rwa_oracle_skill.ts --live` and
-> `demo_casper_x402_live.ts --live` build, sign, and submit real `casper-js-sdk` transactions
-> today (`src/lib/casper/live_client.ts`); they just need Step 1's contract to exist first.
+> ⚠️ This step is owner-driven only because it needs funded Casper Testnet credentials — a
+> private key, which nobody should paste into an AI session or a CI log. Everything else is
+> wired, tested, and produces real artifacts today: `./contracts-odra/build-wasm.sh` compiles a
+> real, `WebAssembly.validate()`-clean `karma_odra.wasm` (533,873 bytes, all 24 entry points
+> exported), and `register_rwa_oracle_skill.ts --live` / `demo_casper_x402_live.ts --live` build,
+> sign, and submit real `casper-js-sdk` transactions (`src/lib/casper/live_client.ts`). The only
+> missing ingredient is a funded key to sign with.
 
 ### Step 0 — Toolchain
 
 ```bash
 rustup toolchain install nightly --profile minimal   # odra-macros 2.x needs nightly
 rustup target add wasm32-unknown-unknown --toolchain nightly
-cargo install cargo-odra
 # Casper client (used for put-deploy + query-balance)
 cargo install casper-client
 ```
@@ -103,8 +106,9 @@ cargo install casper-client
 
 ```bash
 cd contracts-odra
-cargo +nightly odra build
-# Produces wasm/karma_odra.wasm
+./build-wasm.sh
+# Writes wasm/karma_odra.wasm — see contracts-odra/README.md § "wasm32 build — how this
+# actually works" for why this script, not `cargo odra build`, is the reliable path today.
 
 casper-client put-deploy \
   --node-address https://node.testnet.cspr.cloud \
@@ -112,16 +116,22 @@ casper-client put-deploy \
   --secret-key $DEPLOYER_KEY \
   --payment-amount 200000000000 \
   --session-path ./wasm/karma_odra.wasm \
-  --session-arg "review_window_ms:U64:'259200000'"   # 3 days
+  --session-args-json '[
+    {"name": "review_window_ms", "type": "U64", "value": "259200000"},
+    {"name": "governance_signers", "type": {"List": "Key"}, "value": ["account-hash-<deployer-account-hash>"]},
+    {"name": "governance_threshold", "type": "U32", "value": 1},
+    {"name": "timelock_delay_ms", "type": "U64", "value": "0"}
+  ]'
 
 # Record the printed `contract_package_hash` as KARMA_ODRA_REGISTRY in .env
 ```
 
-> **Known blocker as of this writing:** `cargo odra build` doesn't yet produce the wasm file —
-> see `contracts-odra/README.md` § "wasm32 build — known blocker" for the exact error, the two
-> fixes already applied (Odra.toml casing, `no_std` on the wasm32 target — native tests stay
-> 120/120 green throughout), and the one concrete step left (a `build.rs` + `cdylib` restructure,
-> or pinning a cargo-odra release that matches `odra 2.8.1`).
+> `init()`'s real signature (`contracts-odra/src/agent_skill_registry.rs`) takes all four args
+> above — `governance_signers` seeds the P0-B multisig (at least one signer; use the deployer's
+> own account-hash for a single-signer setup) and becomes the initial arbiter. `--session-args-json`
+> (a file or inline JSON, per `casper-client put-deploy --help`) handles the `List<Key>` arg
+> cleanly; the single-arg `--session-arg` form used in earlier drafts of this doc only covered
+> `review_window_ms` and would have reverted with `InvalidGovernanceConfig`.
 
 ### Step 2 — Register the `rwa_price_oracle` skill
 

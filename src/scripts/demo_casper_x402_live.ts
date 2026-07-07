@@ -23,6 +23,7 @@ import { CasperX402Plugin, verifyCasperExactPayload, type CasperX402SignedPayloa
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
 import { keystoreManager } from "../lib/keystore.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
+import { fetchBtcUsdPrice } from "../lib/casper/rwa_price_feed.js";
 
 const PORT = 8934;
 const PRICE_MOTES = "10000000"; // 0.01 CSPR
@@ -72,13 +73,16 @@ async function main(): Promise<void> {
     }
     console.log("[provider] verified OK — payer:", envelope.payload.payer);
 
-    // Fulfil: sign a mock RWA feed with the provider's Casper key (same shape as demo_casper_e2e.ts).
-    const feed = { feed: "BTC/USD", price: "42000.50", timestamp: Date.now() };
+    // Fulfil: a REAL live BTC/USD quote (CoinGecko), signed with the provider's Casper key —
+    // falls back to a fixed price (logged, never silent) if the network call fails.
+    const quote = await fetchBtcUsdPrice();
+    const feed = { feed: quote.feed, price: quote.price, timestamp: quote.timestamp };
+    console.log(`[provider] price feed: ${feed.feed} = $${feed.price} (source: ${quote.source})`);
     const feedCanonical = JSON.stringify(feed);
     const feedSig = providerKp.sign(new TextEncoder().encode(feedCanonical));
 
     res.writeHead(200, { "Content-Type": "application/json" }).end(
-      JSON.stringify({ feed, signature: Buffer.from(feedSig).toString("hex") }),
+      JSON.stringify({ feed, signature: Buffer.from(feedSig).toString("hex"), source: quote.source }),
     );
   });
   await new Promise<void>((resolve) => server.listen(PORT, resolve));

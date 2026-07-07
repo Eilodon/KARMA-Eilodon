@@ -13,15 +13,14 @@ nullification — are preserved.
 ```
 contracts-odra/
 ├── Cargo.toml                          # odra 2.2 (resolves to 2.8 transitive); odra-test dev-dep
-├── Odra.toml                           # `cargo odra build` contract registration
-├── bin/
-│   ├── build_contract.rs               # cargo-odra WASM entry (deploy path only)
-│   └── build_schema.rs
+├── Odra.toml                           # contract registration (fqn) — cargo-odra config
+├── build.rs                            # odra_build::build() — real wasm entry-point codegen hook
+├── build-wasm.sh                       # working `cargo odra build` replacement (see below)
 └── src/
     ├── lib.rs                          # crate root + invariant overview
-    ├── agent_skill_registry.rs         # contract (~620 LoC)
+    ├── agent_skill_registry.rs         # contract (~1330 LoC)
     └── agent_skill_registry/
-        └── tests.rs                    # 32 tests, mirror of test/AgentSkillRegistry.t.sol
+        └── tests.rs                    # 120 tests, mirror of test/AgentSkillRegistry.t.sol
 ```
 
 ## Test loop
@@ -33,9 +32,10 @@ rustup toolchain install nightly --profile minimal
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml
 ```
 
-Expected: **32 passed; 0 failed** (happy path, refund window, ghost-requester / dispute /
+Expected: **120 passed; 0 failed** (happy path, refund window, ghost-requester / dispute /
 claim-after-review, double-complete guard, trust gate, identity policy, self-deal nullification,
-duplicate task-hash exactly-once, constructor bounds, and the seven Tier-2 bond cases).
+duplicate task-hash exactly-once, constructor bounds, the seven Tier-2 bond cases, plus the P0-A
+evaluator and P0-B governance/timelock mechanics).
 
 ## Casper-specific deltas vs Solidity
 
@@ -57,37 +57,40 @@ duplicate task-hash exactly-once, constructor bounds, and the seven Tier-2 bond 
 ## Deploy path (T13)
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install cargo-odra
-cargo odra build  # writes wasm/karma_odra.wasm
+./build-wasm.sh   # writes wasm/karma_odra.wasm — a real, WebAssembly.validate()-clean module
 ```
 
-### wasm32 build — known blocker
+Verified output: 533,873 bytes, 59 exports including every entry point (`register_skill`,
+`create_job`, `deliver_result`, `confirm_completion`, `withdraw`, `deposit_bond`, `get_skill`,
+`get_job`, …) plus the Odra dispatcher (`call`) and linear memory. Native `cargo test` stays
+120/120 green throughout — `build-wasm.sh` only affects the wasm32 target.
 
-Actually running the above (not just documenting it) surfaced two real, now-fixed gaps and one
-still-open one:
+### wasm32 build — how this actually works (not `cargo odra build`)
 
-- **Fixed** — cargo-odra 0.1.7 looks for `Odra.toml` (capital O); the repo shipped `odra.toml`.
-  Renamed.
-- **Fixed** — the wasm32 target has no std runtime, so linking `std` alongside
-  `odra-casper-wasm-env`'s own panic handler collided on the `panic_impl` lang item
-  (`error[E0152]`). `src/lib.rs` now carries `#![cfg_attr(target_arch = "wasm32", no_std)]` —
-  native `cargo test` is unaffected (still 120/120 green), only the wasm32 artifact goes `no_std`.
-  `odra::prelude` already re-exports the `alloc`-backed `String`/`Vec` the contract uses, so no
-  further `no_std` porting was needed.
-- **Still open** — `cargo-odra 0.1.7`'s build step shells out to `cargo build --bin
-  <crate>_build_contract --target wasm32-unknown-unknown`, i.e. it expects `bin/build_contract.rs`
-  to be a real `[[bin]]` target. But `odra-build 2.8.1`'s actual public API is `odra_build::build()`
-  (singular, no `_contract` suffix) and is designed to run as a **build script** (`build.rs`,
-  native host arch, emits `cargo:rustc-cfg=odra_module=...` consumed by the `#[odra::module]` macro
-  while compiling the crate itself as a `cdylib`) — not as a compiled-to-wasm binary. `bin/`'s two
-  files predate this and don't match either cargo-odra 0.1.7's invocation or odra-build 2.8.1's
-  real API; declaring them as `[[bin]]` targets just moves the failure from "no bin target found"
-  to "no function `build_contract` in crate `odra_build`" without producing a working wasm.
-  Likely root cause: cargo-odra's CLI version isn't pinned anywhere (unlike `odra`/`odra-test`,
-  which are pinned to `=2.8.1`), so `cargo install cargo-odra` grabs whatever is currently latest,
-  which doesn't line up with the pinned library version's build protocol.
-  **Concrete next step**: replace `bin/build_contract.rs` with a crate-root `build.rs` calling
-  `odra_build::build()`, add `cdylib` to `[lib] crate-type`, and set `ODRA_MODULE` /
-  `ODRA_BACKEND` per cargo-odra's actual (version-matched) expectations — or pin a cargo-odra
-  release known to match `odra 2.8.1`.
+`cargo-odra 0.1.7`'s `build` subcommand shells out to `cargo build --bin
+<crate>_build_contract --target wasm32-unknown-unknown`, expecting a `[[bin]]` target — but
+`odra-build 2.8.1`'s real API is `odra_build::build()` (no `_contract` suffix), designed to run
+as a **build script**, not a compiled-to-wasm binary. The CLI tool and the pinned library version
+don't line up (cargo-odra isn't version-pinned anywhere, unlike `odra`/`odra-test` at `=2.8.1`),
+so `cargo odra build` doesn't work here. `build-wasm.sh` bypasses cargo-odra's CLI entirely and
+drives `cargo build` directly with what it actually needs:
+
+- **`build.rs`** calling `odra_build::build()` — a real Cargo build script (not `bin/`), which
+  reads `ODRA_MODULE` / `ODRA_BACKEND` and emits the `cargo:rustc-cfg=odra_module=...` flag the
+  `#[odra::module]` macro checks to decide whether to compile in the wasm entry-point glue
+  (`#[no_mangle] extern "C" fn register_skill() { … }` etc.) for *this* contract.
+- **`ODRA_MODULE=AgentSkillRegistry`** — must equal `HasIdent::ident()`'s value (the bare type
+  name the macro generates, not the `fqn` path in `Odra.toml`).
+- **`[lib] crate-type = ["cdylib", "rlib"]`** — a loadable wasm module needs `cdylib`; `rlib`
+  alone (the pre-existing setting) can only ever produce a native-linkable Rust artifact.
+- **`#![cfg_attr(target_arch = "wasm32", no_std)]`** in `src/lib.rs` — the wasm32 target has no
+  std runtime; linking `std` alongside `odra-casper-wasm-env`'s own panic handler collided on the
+  `panic_impl` lang item (`error[E0152]`) until this was added. `odra::prelude` already re-exports
+  the `alloc`-backed `String`/`Vec` the contract uses, so no further `no_std` porting was needed.
+- **`RUSTFLAGS="-C link-arg=--import-undefined"`** — without it, the linker treats the Casper
+  host functions (`casper_revert`, `casper_get_named_arg`, `casper_dictionary_put`, …) as missing
+  symbols and fails. They're real host imports the Casper node supplies at execution time, not
+  actually undefined; this flag tells `rust-lld` to leave them as wasm imports instead of erroring.
+
+`Odra.toml` also needed renaming from `odra.toml` — cargo-odra 0.1.7 looks for the capitalized
+filename.

@@ -148,6 +148,7 @@
     <span class="stamp good"><span class="dot"></span>120/120 Odra contract tests passing</span>
     <span class="stamp good"><span class="dot"></span>Real ECDSA/SHA-256 payment verification</span>
     <span class="stamp good"><span class="dot"></span>Casper-native secp256k1 keystore</span>
+    <span class="stamp good"><span class="dot"></span>Real 534KB compiled wasm, verified</span>
     <span class="stamp"><span class="dot"></span>Testnet deploy — final step, see status below</span>
   </div>
 
@@ -192,9 +193,10 @@
 [client] step 3: POST /invoke with X-Payment — one request, real signature verified server-side
 [provider] X-Payment received, verifying (real ECDSA/SHA-256, no facilitator round-trip)...
 <span class="ok">[provider] verified OK</span> — payer: account-hash-4372145f...2ffd9
+[provider] price feed: BTC/USD = $63076.00 (source: coingecko)
 ┌── Step 3 — provider response ──┐
 │ status = 200                    │
-│ feed = {"feed":"BTC/USD","price":"42000.50",...} │
+│ feed = {"feed":"BTC/USD","price":"63076.00",...} │
 └──────────────────────────────────┘
 <span class="ok">[demo] HTTP + crypto loop PASS</span> <span class="muted">(offline — re-run --live once a funded key submits the on-chain leg)</span></pre>
     </div>
@@ -204,7 +206,10 @@
 ...
 <span class="ok">test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</span></pre>
     </div>
-    <p class="cap">Reproduce both yourself — no funded wallet needed for either command above.</p>
+    <p class="cap">Reproduce both yourself — no funded wallet needed for either command above. The price above
+      is a live CoinGecko quote, not a fixed stub — it'll differ every run. There's also a real
+      <a href="casper-x402-demo.svg">animated terminal-cast recording</a> of this exact run, captured with
+      asciinema — same content as the transcript above, played back frame-by-frame.</p>
   </div>
 
   <div class="section">
@@ -217,7 +222,9 @@
         <tr><td>x402 payment envelope</td><td><span class="pill real">real</span></td><td>secp256k1/SHA-256/DER signed and independently re-verified — not a structural stub.</td></tr>
         <tr><td>HTTP 402 → pay → verify loop</td><td><span class="pill real">real</span></td><td>Runs against a live local server, shown above verbatim.</td></tr>
         <tr><td>Casper keystore</td><td><span class="pill real">real</span></td><td>Same secp256k1 key already signing Ethereum/Stellar — one backup, three chains.</td></tr>
-        <tr><td>On-chain deploy + settlement tx</td><td><span class="pill pending">final step</span></td><td>Wasm build + <code>casper-client put-deploy</code> — needs a funded Testnet key, wired and ready to run.</td></tr>
+        <tr><td>MCP tool surface</td><td><span class="pill real">real</span></td><td>8 tools (<code>casper_register_skill</code>, <code>casper_create_job</code>, <code>casper_get_account_state</code>, …) — any MCP client can drive this directly, not just a terminal script.</td></tr>
+        <tr><td>Compiled contract wasm</td><td><span class="pill real">real</span></td><td>533,873 bytes, <code>WebAssembly.validate()</code>-clean, all 24 entry points exported — <code>contracts-odra/build-wasm.sh</code>, reproducible today.</td></tr>
+        <tr><td>On-chain deploy + settlement tx</td><td><span class="pill pending">final step</span></td><td><code>casper-client put-deploy</code> of the wasm above — needs a funded Testnet key, wired and ready to run.</td></tr>
       </table>
     </div>
   </div>
