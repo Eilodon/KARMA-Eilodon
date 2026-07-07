@@ -35,20 +35,12 @@
 > all captured from real terminal runs against the live contract, all real tx hashes, real
 > `testnet.cspr.live` screenshots, no typed-out copy.
 
-> 🏆 **Stellar Hacks: Real-World ZK — judges start here:** [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
-> live Soroban verifier [`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP)
-> on Testnet · a Groth16/BN254 credential proof verified on-chain via native host functions
-> (CAP-0074), with a score-bound commitment, an on-chain-pinned job-history root, a
-> replay-guarded nullifier, and a per-call USDC x402 fast-lane.
->
-> ![Live Stellar Testnet terminal: real WASM fetch, real on-chain reads, a real replay attack rejected by two independently deployed Groth16/BN254 verifiers](docs/media/stellar-live-evidence.gif)
->
-> ☝️ **Not a recording of a script — every command above hit Stellar Testnet live** (regenerate
-> it yourself: `docs/media/record-stellar-evidence.sh`).
->
-> 🎬 **[Watch the ~78s narrated video](docs/media/stellar-zk-demo.mp4)** — the idea, the 2
-> soundness bugs we found in our own circuit and how we fixed them, then the live
-> "proof + payment in one HTTP request" flow running for real, voiceover included.
+> **Proof this is a protocol, not a single-chain app:** the same identity/reputation/settlement
+> model that's live on Casper above also runs on **Stellar** — a Groth16/BN254 zero-knowledge
+> reputation gate, verified on-chain via Soroban's native host functions (CAP-0074), settling
+> per-call in USDC over x402. Architecture, live contract addresses, and the captured terminal
+> evidence are in [Zero-knowledge reputation gating](#architecture-zero-knowledge-reputation-gating-proven-on-stellar)
+> below; full write-up in [DEMO_STELLAR.md](DEMO_STELLAR.md).
 
 > A protocol for agent economies — not a single-chain app. Agents publish skills, get discovered
 > by relevance and reputation, and invoke each other under enforceable trust gates: identity,
@@ -59,26 +51,28 @@
 **KARMA is a spec with reference implementations, not a spec with one implementation.**
 [`docs/standards/`](docs/standards/) defines `IPaymentPlugin v1` (a 3-method settlement
 interface — `quote` / `pay` / `verify`) and a public, PR-governed `IdentityPolicy` registry.
-**Stellar and Casper are both already v1.0 ✓ conformant** implementations of that same interface
-(see [reference-implementations.md](docs/standards/reference-implementations.md)); Pharos is the
+**Casper is a v1.0 ✓ conformant** implementation of that interface — governance-hardened,
+deployed and verified end-to-end on Testnet (see [Live deployment](#live-deployment) and
+[DEMO_CASPER.md](DEMO_CASPER.md)) — and so is Stellar (see
+[reference-implementations.md](docs/standards/reference-implementations.md)); Pharos is the
 original chain the spec was extracted from. The documented playbook for landing a new chain
 adapter is estimated at **1–2 sessions** — not months. That's the actual bet here: this isn't
 "KARMA also runs on your chain," it's "your chain becomes a conformant node in a protocol that
-already runs on two others" — and the deepest, earliest implementation is the one every later
-adopter has to interoperate with.
+already runs on others" — and Casper's is the deployment every later adopter in this ecosystem
+has to interoperate with.
 
-**On Stellar specifically, that implementation is the deepest one we've shipped.** Trust is
-enforced by math, not a server: an agent proves "my reputation is above this skill's threshold"
-via a Groth16 proof, verified on-chain by Stellar's native BN254 host functions (CAP-0074) — the
-actual score, job history, and identity never leave the agent — and settles per-call in USDC over
-x402, live, in one HTTP request. Full story + live evidence: [DEMO_STELLAR.md](DEMO_STELLAR.md).
+**On Casper, that implementation is the deepest one we've shipped.** Identity gate, reputation,
+escrow, symmetric-bond dispute arbitration with a neutral on-chain arbiter, multisig+timelock
+governance, and weighted skill composition — all live on Testnet, 120 Rust tests, real
+transactions end-to-end (register → bond → escrow → deliver → dispute → arbitrate → withdraw).
+Full story + tx-by-tx evidence: [DEMO_CASPER.md](DEMO_CASPER.md).
 
-The same skill / identity / reputation model is also proven end-to-end on **Pharos** (Solidity
-escrow + reputation, live contract, 96 Foundry tests) and **Casper** (Odra port, 120 Rust tests),
-gating identity via the **Terminal3 Agent Auth SDK** where a chain supports server-mediated
-identity — real, tested, independently-judged proof that the spec holds up outside Stellar too,
-not just a claim. Details in [DEMO.md](DEMO.md) · [DEMO_CASPER.md](DEMO_CASPER.md) ·
-[docs/RUNTIME.md](docs/RUNTIME.md).
+The same skill / identity / reputation model is also proven end-to-end on **Stellar** (zero-
+knowledge reputation gating via Groth16/BN254, live Soroban verifiers) and **Pharos** (Solidity
+escrow + reputation, live contract, 96 Foundry tests), gating identity via the **Terminal3 Agent
+Auth SDK** where a chain supports server-mediated identity — real, tested proof that the spec
+holds up outside Casper too, not just a claim. Details in [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
+[DEMO.md](DEMO.md) · [docs/RUNTIME.md](docs/RUNTIME.md).
 
 ---
 
@@ -117,20 +111,21 @@ Full comparison: [docs/standards/relation-to-adjacent-standards.md](docs/standar
 ## Why KARMA
 
 - **A protocol, not a port.** `IPaymentPlugin v1` and the `IdentityPolicy` registry are versioned,
-  documented specs (`docs/standards/`) — Stellar and Casper are independent, v1.0-conformant
+  documented specs (`docs/standards/`) — Casper and Stellar are independent, v1.0-conformant
   implementations of the same interface, not copy-pasted integrations. Adding a fourth chain follows
   a documented recipe estimated at 1–2 sessions.
-- **Zero-knowledge reputation gating (Stellar track).** An agent proves "reputation ≥ threshold for
-  skill Y" via Groth16, verified on-chain by Stellar's native BN254 host functions (CAP-0074) — the
+- **Zero-knowledge reputation gating.** An agent proves "reputation ≥ threshold for
+  skill Y" via Groth16, verified on-chain by native BN254 host functions (CAP-0074) — the
   score, job history, and credential secret never leave the agent. Two independent verifier contracts
-  (single-skill gate + portfolio credential) are live on Testnet. See [DEMO_STELLAR.md](DEMO_STELLAR.md).
+  (single-skill gate + portfolio credential) are live on Stellar Testnet, proving the primitive works
+  outside a single chain. See [DEMO_STELLAR.md](DEMO_STELLAR.md).
 - **Sybil-resistant reputation.** Protected against wash-trading: an arm's-length guard (self-dealing
   earns zero rep), EigenTrust-lite flow ranking off-chain (value-weighted, decay-friendly), and an
   optional on-chain capital bond — the same reputation kernel every chain adapter reads from.
-- **Real on-chain settlement, proven on multiple chains.** Escrow + dispute + refund on Pharos
-  (Solidity, live), ZK credential verification on Stellar (Soroban, live), skill composition on
-  Casper (Odra, 120 tests) — same trust model, chain-appropriate enforcement each time, not three
-  unrelated demos.
+- **Real on-chain settlement, proven on multiple chains.** Escrow + dispute + arbitration +
+  skill composition on Casper (Odra, 120 tests, governance-hardened), ZK credential verification on
+  Stellar (Soroban, live), escrow + dispute + refund on Pharos (Solidity, live) — same trust model,
+  chain-appropriate enforcement each time, not three unrelated demos.
 - **Non-repudiation & bounded authority (Terminal3-gated chains).** Every job binds to a signed
   identity receipt, and delegated authority is always TEE-signed, time-bounded, and revocable — never
   a permanent grant.
@@ -145,7 +140,11 @@ Full comparison: [docs/standards/relation-to-adjacent-standards.md](docs/standar
   `casper-network/ceps`. That's the difference between a buildathon entry and infrastructure the
   ecosystem keeps after judging ends.
 
-## Architecture (Stellar ZK track)
+## Architecture: zero-knowledge reputation gating (proven on Stellar)
+
+One of KARMA's trust primitives — "prove your reputation clears this skill's threshold without
+revealing the score, job history, or identity" — is live today, verified on-chain via native
+BN254 host functions:
 
 ```text
 Agent (client-side, off-chain)             Soroban verifier (on-chain, Stellar Testnet)
@@ -162,24 +161,36 @@ Agent (client-side, off-chain)             Soroban verifier (on-chain, Stellar T
 
 This diagram isn't aspirational — `src/scripts/demo_stellar_x402_live.ts` runs it for real: a
 signed x402 payment (Soroban auth entry) and the ZK proof travel in one client HTTP POST, and the
-provider stub settles the USDC on-chain and verifies the proof on-chain before responding. Full
-architecture, the two soundness gaps we found in our own circuit + how we fixed them, and the live
-transaction table (including this flow's settlement + proof-verification tx hashes):
-[DEMO_STELLAR.md](DEMO_STELLAR.md).
+provider stub settles the USDC on-chain and verifies the proof on-chain before responding.
 
-**The same spec, proven on other chains too** (separate, already-judged submissions — condensed
-here so this README stays legible for the Stellar track, but this is the evidence behind the
-"protocol, not a port" claim above, not filler):
+![Live Stellar Testnet terminal: real WASM fetch, real on-chain reads, a real replay attack rejected by two independently deployed Groth16/BN254 verifiers](docs/media/stellar-live-evidence.gif)
+
+☝️ Not a recording of a script — every command above hit Stellar Testnet live (regenerate it
+yourself: `docs/media/record-stellar-evidence.sh`). 🎬 [Watch the ~78s narrated video](docs/media/stellar-zk-demo.mp4)
+— the idea, the 2 soundness gaps found in this circuit and how they were fixed, then the live
+"proof + payment in one HTTP request" flow running for real, voiceover included.
+
+Live contracts: `agent_credential_verifier`
+[`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP) ·
+`reputation_aggregation_verifier`
+[`CDR55N…SRMO`](https://stellar.expert/explorer/testnet/contract/CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO).
+Full architecture, the two soundness gaps found in this circuit + how they were fixed, and the
+live transaction table: [DEMO_STELLAR.md](DEMO_STELLAR.md).
+
+**The same spec, proven on multiple chains** — this is the evidence behind the "protocol, not a
+port" claim above, not filler:
 
 | Chain | What's live | Spec conformance | Tests |
 |---|---|---|---|
-| **Pharos** (`contracts/AgentSkillRegistry.sol`) | Escrow, 3-day review window, dispute/refund, Sybil-resistance bond, evaluator-agent arbitration, multisig+timelock governance. Contract deployed, see [Live deployment](#live-deployment). | original chain the spec was extracted from; `IPaymentPlugin` wrapper pending (v2) | 96 Foundry tests |
+| **Casper** (`contracts-odra/`) — this submission | Escrow, symmetric dispute-bond arbitration, multisig+timelock governance, skill composition with weighted revenue split. Governance-hardened, deployed and verified end-to-end on Testnet, see [Live deployment](#live-deployment). | `IPaymentPlugin` **v1.0 ✓** | 120 Rust tests |
+| **Stellar** | Zero-knowledge reputation gating (Groth16/BN254, native host functions), USDC settlement over x402. | `IPaymentPlugin` **v1.0 ✓** | 12 + 19 Rust tests (Soroban) |
+| **Pharos** (`contracts/AgentSkillRegistry.sol`) | Escrow, 3-day review window, dispute/refund, Sybil-resistance bond, evaluator-agent arbitration, multisig+timelock governance. The original chain the spec was extracted from. | `IPaymentPlugin` wrapper pending (v2) | 96 Foundry tests |
 | **Terminal3** (`t3.tool.ts`, `@terminal3/t3n-sdk`) | SIWE/EIP-191 identity gate (`did:t3n:…`), TEE-signed bounded delegation credentials. Verified live against the Terminal3 testnet. | reference `IdentityPolicy` implementation (value `1`/`2` in the [open registry](docs/standards/IdentityPolicy-registry.md)) | — |
-| **Casper** (`contracts-odra/`) | Odra port of the registry + skill composition with weighted revenue split. | `IPaymentPlugin` **v1.0 ✓** | 120 Rust tests |
 
-Deep dives if useful: [DEMO.md](DEMO.md) (Pharos), [DEMO_CASPER.md](DEMO_CASPER.md) (Casper),
+Deep dives: [DEMO_CASPER.md](DEMO_CASPER.md) (Casper) · [DEMO_STELLAR.md](DEMO_STELLAR.md)
+(Stellar) · [DEMO.md](DEMO.md) (Pharos) ·
 [docs/standards/reference-implementations.md](docs/standards/reference-implementations.md) (spec
-conformance matrix, all chains), [docs/RUNTIME.md](docs/RUNTIME.md) (full operations reference).
+conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full operations reference).
 
 ---
 
@@ -307,7 +318,16 @@ pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop 
 
 ## Live deployment
 
-**Stellar Testnet** (Soroban, native BN254) — full tx table + reproduction steps in
+**Casper Testnet** (Odra, governance-hardened) — this submission's primary deployment; full
+tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md):
+
+| | |
+|---|---|
+| **`AgentSkillRegistry`** | `hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa` (governance-hardened redeploy) |
+| **Governance** | real 2-of-2 multisig + 48h timelock — confirmed live by decoding the contract's own `GovernanceConfigured` event |
+
+**Stellar Testnet** (Soroban, native BN254) — the same trust model's zero-knowledge reputation
+gate, proven on a second chain; full tx table + reproduction steps in
 [DEMO_STELLAR.md](DEMO_STELLAR.md):
 
 | | |
@@ -316,7 +336,7 @@ pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop 
 | **`reputation_aggregation_verifier`** | [`CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO`](https://stellar.expert/explorer/testnet/contract/CDR55NDIGKCWJXKQ334TNVHUAS37Q2ZBBGZZAV25OR6IC5O54UA7SRMO) |
 
 <details>
-<summary><strong>Pharos + Terminal3 (separate, already-judged submission)</strong></summary>
+<summary><strong>Pharos + Terminal3</strong> (the original chain the spec was extracted from)</summary>
 
 | | |
 |---|---|
@@ -337,8 +357,10 @@ pending. Full details: [DEMO.md](DEMO.md).
 
 ## Quick start
 
-> For the Stellar ZK track specifically, [DEMO_STELLAR.md](DEMO_STELLAR.md) has its own
-> self-contained quickstart (circuit + Soroban contract, no Pharos wallet needed). The steps below
+> For Casper specifically, [DEMO_CASPER.md](DEMO_CASPER.md) has its own self-contained quickstart
+> (Testnet RPC, no funded Pharos wallet needed). For the zero-knowledge reputation gate proven on
+> Stellar, [DEMO_STELLAR.md](DEMO_STELLAR.md) has its own quickstart (circuit + Soroban contract,
+> also no Pharos wallet needed). The steps below
 > are for running the general MCP server / test suite / Pharos demo.
 
 ### Requirements
@@ -353,7 +375,7 @@ pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 636 passed, 1 skipped
+pnpm test          # 734 passed, 1 skipped (see Testing section for the 3 known-unrelated failures)
 pnpm build
 ```
 
@@ -411,7 +433,8 @@ HTTP transport, production auth (JWT/OIDC), Docker, and the full configuration r
 
 ## Demo
 
-*(Pharos track — for the Stellar ZK demo, see [DEMO_STELLAR.md](DEMO_STELLAR.md).)*
+*(Pharos escrow demo below. For the Casper live demo, see [DEMO_CASPER.md](DEMO_CASPER.md); for
+the zero-knowledge reputation gate proven on Stellar, see [DEMO_STELLAR.md](DEMO_STELLAR.md).)*
 
 ```bash
 pnpm demo:discover     # offline: BM25 ranking + injection sanitization, no chain/keystore
@@ -470,7 +493,22 @@ for multi-replica.
 
 ## Testing
 
-**Stellar ZK track:**
+**Casper (this submission):**
+
+```bash
+cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 120/120 Rust tests
+pnpm test                                                        # full Vitest suite (734 passed,
+                                                                  # 1 skipped, includes
+                                                                  # casper.tool.ts / indexer / codec)
+pnpm typecheck
+```
+
+Odra/Casper: **120 Rust tests** (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the
+full escrow/dispute/evaluator/composition/governance feature set, ms-based time and U512
+arithmetic. (`pnpm test`'s 3 remaining failures are in `karma_service_integration.test.ts`, a
+Pharos-only local-fixture test confirmed pre-existing and unrelated to Casper.)
+
+**Zero-knowledge proof verification (proven on Stellar):**
 
 ```bash
 cd contracts-soroban/agent_credential_verifier && cargo test --features testutils       # 12/12
@@ -482,11 +520,9 @@ Both Soroban test suites include a real, non-mocked Groth16 proof verified via t
 `bn254_multi_pairing_check` host function (no Arkworks fallback) — see [DEMO_STELLAR.md](DEMO_STELLAR.md).
 
 <details>
-<summary><strong>Other chains</strong> (separate, already-judged submissions)</summary>
+<summary><strong>Pharos</strong> (the original chain the spec was extracted from)</summary>
 
 ```bash
-pnpm test            # full Vitest suite (641 passed, 1 skipped)
-pnpm typecheck       # tsc --noEmit
 pnpm test:contract   # Foundry tests for AgentSkillRegistry.sol (96 tests, requires forge)
 pnpm test:enterprise # Layer-0 runtime hardening suites
 pnpm ci              # typecheck + lint + test
@@ -494,9 +530,6 @@ pnpm ci              # typecheck + lint + test
 
 Contract test coverage (Foundry): **96 Solidity tests** including P1-A symmetric dispute bond
 scenarios, P0-A evaluator agent scenarios, and P0-B governance/timelock scenarios.
-
-Odra/Casper: **120 Rust tests** (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the
-full parallel feature set including P0-A/P1-A mechanics ported for ms-based time and U512 arithmetic.
 
 </details>
 
