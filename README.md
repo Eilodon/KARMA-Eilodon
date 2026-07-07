@@ -568,6 +568,39 @@ docs/            RUNTIME.md (full operations reference), standards/ (public spec
 
 ---
 
+## Roadmap & team
+
+**Team.** Solo builder — **Eilodon**, affiliated with **B.ONE**.
+
+**Community.** [X / Twitter](https://x.com/MathEnemy) · Telegram [@HoaTrungBinh](https://t.me/HoaTrungBinh) · Discord: `mathenemy`.
+
+**What's next, concretely (no mainnet date promised until an audit happens — see
+[Security notes](#security-notes) below for why that matters):**
+
+- **Standardize the interface, not just this deployment.** Extract `docs/standards/` and its
+  conformance test vectors into a standalone, installable package; invite a second,
+  independently-authored implementation; submit `CEP-0000-agent-skill-trust-registry.md`
+  upstream to `casper-network/ceps` once that independent implementation exists (see
+  [Why KARMA](#why-karma) and the CEP's own Open Questions).
+- **v2 settlement rail extensions**, tracked in
+  [`IPaymentPlugin-v1.md`](docs/standards/IPaymentPlugin-v1.md) and
+  [`reference-implementations.md`](docs/standards/reference-implementations.md): a subscription
+  rail (time-windowed unlocks), streaming/chunked payments for long-running tasks, a Pharos
+  `IPaymentPlugin` wrapper, and multi-hop revenue-split composition beyond today's single-level
+  fan-out.
+- **N-of-M arbitration.** Today `arbitrate` trusts one governed arbiter address; whether disputes
+  should require multiple independent rulings is an open v2 question, not a v1 concern.
+- **Cross-chain reputation, verified on-chain rather than governed.** Today's
+  `propose_set_cross_chain_rep` is a governance-attested value; a future version replacing that
+  attestation with an on-chain-verifiable proof (in the spirit of the Stellar ZK track) is on the
+  table.
+
+This is deliberately scoped to what's actually planned, not a wishlist — a mainnet timeline,
+funding, and a monetization model aren't set yet, and this section will get updated once they are
+rather than claiming them early.
+
+---
+
 ## Security notes
 
 - The external child-process plugin runner is **best-effort hardening, not** an OS/container/microVM
