@@ -27,3 +27,4 @@ dashboard/
 # Agentic session artifacts (local-only)
 docs/superpowers/
 docs/superskills/
+.playwright-mcp/
