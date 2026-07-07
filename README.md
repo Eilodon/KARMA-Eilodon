@@ -199,7 +199,10 @@ conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full oper
 This is a real, full MCP server — 14 skill-economy tools + 8 Terminal3 identity tools + 25 Casper
 Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
 governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
-identity, Casper AgentSkillRegistry). Expand for the full surface:
+identity, Casper AgentSkillRegistry). The tables below label each tool group by architecture layer
+(Layer 1 = skill economy, Layer 3 = identity & delegation; Layer 2, the BM25 discovery index +
+`IPaymentPlugin` settlement rails, is infrastructure the tools above call into, not its own tool
+surface). Expand for the full surface:
 
 <details>
 <summary><strong>Full tool tables</strong></summary>
@@ -211,12 +214,12 @@ identity, Casper AgentSkillRegistry). Expand for the full surface:
 | `karma_health` | read | Runtime canary; RPC/contract env presence + skill-indexer health. |
 | `register_skill` | write | Register a skill on-chain (name, price, endpoint, optional reputation Trust-Gate + `identityPolicy`) + BM25 upsert. |
 | `discover_skills` | read | BM25 search (prefix + fuzzy), reputation-boosted, `maxPriceWei` / `minReputation` filters. |
-| `create_job` | write | Idempotent escrow via `taskHash`; enforces the skill's identity + reputation gates (single path); `exists` on replay. Supports optional `evaluator` + `evaluatorFeeWei` (P0-A). |
+| `create_job` | write | Idempotent escrow via `taskHash`; enforces the skill's identity + reputation gates (single path); `exists` on replay. Supports an optional third-party `evaluator` + `evaluatorFeeWei`. |
 | `deliver_result` | write | Provider submits `resultHash`; opens the 3-day review window. |
-| `complete_job` | write | Requester confirms; releases escrow + bumps reputation (arm's-length only, Tier-0). |
-| `dispute_result` | write | **P1-A (bond-backed):** Requester rejects within the window by locking a dispute bond (proportional to escrow). |
+| `complete_job` | write | Requester confirms; releases escrow + bumps reputation (arm's-length only — self-dealing earns no reputation). |
+| `dispute_result` | write | Bond-backed: requester rejects within the window by locking a dispute bond (proportional to escrow). |
 | `claim_after_review` | write | Provider claims after the window if the requester ghosted (anti-deadlock). |
-| `evaluate_result` | write | **P0-A:** Neutral evaluator approves (escrow → provider) or rejects (refund → requester). |
+| `evaluate_result` | write | Neutral evaluator approves (escrow → provider) or rejects (refund → requester). |
 | `read_job` | read | Read one job's on-chain state by id; exposes `evaluator` and `evaluatorFee` fields. |
 | `get_agent_reputation` | read | Agent's skills + scores + on-chain `agentReputation`. |
 | `query_social_graph` | read | Job edges for an agent (as provider / requester). |
@@ -253,7 +256,7 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 |---|---|---|
 | `casper_health` | read | Whether `CASPER_RPC_URL` + `KARMA_ODRA_REGISTRY` are configured. |
 | `casper_register_skill` | write | Register a skill (name, price, `identityPolicy`) — real signed transaction. |
-| `casper_deposit_bond` | write | Lock a Tier-2 Sybil-resistance bond (PD-007). |
+| `casper_deposit_bond` | write | Lock a Sybil-resistance capital bond. |
 | `casper_create_job` | write | Create + escrow a job against a skill (payable, `amount` = price). |
 | `casper_deliver_result` | write | Provider records a result hash, opens the review window. |
 | `casper_confirm_completion` | write | Requester releases escrow + bumps reputation (arm's-length). |
@@ -261,17 +264,17 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 | `casper_get_account_state` | read | Pending balance + reputation + bonded amount, read live from chain. |
 | `casper_register_composition` | write | Register a composite skill fanning escrow across 1-8 leaf skills by basis-points weight. |
 | `casper_get_composition` | read | Read a skill's composition manifest (leaf ids + weights), or `isComposite=false` for a primitive. |
-| `casper_create_job_with_evaluator` | write | **P0-A:** create a job with a neutral third-party evaluator instead of direct requester review. |
-| `casper_evaluate_result` | write | **P0-A:** the designated evaluator approves/rejects a delivered result; fee releases either way. |
-| `casper_dispute_result` | write | **P1-A:** requester posts a bond to contest a delivered result within the review window. |
-| `casper_respond_to_dispute` | write | **P1-A:** provider matches the bond to enter arbitration. |
+| `casper_create_job_with_evaluator` | write | Create a job with a neutral third-party evaluator instead of direct requester review. |
+| `casper_evaluate_result` | write | The designated evaluator approves/rejects a delivered result; fee releases either way. |
+| `casper_dispute_result` | write | Requester posts a bond to contest a delivered result within the review window. |
+| `casper_respond_to_dispute` | write | Provider matches the bond to enter arbitration. |
 | `casper_concede_dispute` | write | Provider concedes — forfeits both bonds + escrow to the requester. |
 | `casper_resolve_default_concede` | write | Anyone may call once the provider's response window elapses unanswered. |
 | `casper_arbitrate` | write | Arbiter-only: adjudicates a contested (both-sides-bonded) dispute — loser pays. |
 | `casper_get_cross_chain_rep` | read | Read an agent's cross-chain reputation attestation (0-100), live from chain. |
-| `casper_propose_set_cross_chain_rep` | write | **P0-B:** propose a cross-chain rep attestation (governance-signer; propose/approve/execute + timelock). |
-| `casper_propose_set_arbiter` | write | **P0-B:** propose a new arbiter address — same governed lifecycle, no single-signer bypass. |
-| `casper_propose_set_dispute_bond_bps` | write | **P0-B:** propose a new dispute-bond basis-points value — same governed lifecycle. |
+| `casper_propose_set_cross_chain_rep` | write | Propose a cross-chain rep attestation (governance-signer; propose/approve/execute + timelock). |
+| `casper_propose_set_arbiter` | write | Propose a new arbiter address — same governed lifecycle, no single-signer bypass. |
+| `casper_propose_set_dispute_bond_bps` | write | Propose a new dispute-bond basis-points value — same governed lifecycle. |
 | `casper_approve_proposal` | write | Approve a pending governance proposal (governance-signer, once each). |
 | `casper_execute_proposal` | write | Execute a proposal once threshold + timelock are satisfied (anyone may call). |
 | `casper_cancel_proposal` | write | Cancel a pending (not yet executed) proposal (governance-signer only). |
@@ -297,15 +300,15 @@ redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owne
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
 | x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` · `src/lib/casper/live_client.ts` | real HTTP + ECDSA verify loop today ([demo](src/scripts/demo_casper_x402_live.ts)); on-chain settlement testnet (owner-driven) |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
-| **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
-| **Cross-chain reputation oracle** (T1.3) — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
-| **Signed-TLS attestation** (T1.4 fallback) — verifiable RWA price feed | `src/lib/zk/signed_tls_attestation.ts` | in-repo, tested |
-| **Skill composition** (T2.1) — weighted revenue split + reputation propagation | `contracts-odra/src/agent_skill_registry.rs` · `src/lib/casper/{odra_registry,composition_tools}.ts` | Odra + in-process, tested |
-| **Autonomous economic loop** (T5.1) — budget-capped goal loop + dashboard | `src/lib/autonomous_loop/` · `src/scripts/run_autonomous_loop.ts` | dry-run tested; `--live` owner-driven |
-| **Trust-kernel hardening** (T0.1/T0.2) — dispute-rate + anti-wash into flow reputation | `src/lib/flow_reputation.ts` | in-repo (Sybil Tier-1) |
+| **ReputationAggregationProof** — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
+| **Cross-chain reputation oracle** — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
+| **Signed-TLS attestation** (fallback path) — verifiable RWA price feed | `src/lib/zk/signed_tls_attestation.ts` | in-repo, tested |
+| **Skill composition** — weighted revenue split + reputation propagation | `contracts-odra/src/agent_skill_registry.rs` · `src/lib/casper/{odra_registry,composition_tools}.ts` | Odra + in-process, tested |
+| **Autonomous economic loop** — budget-capped goal loop + dashboard | `src/lib/autonomous_loop/` · `src/scripts/run_autonomous_loop.ts` | dry-run tested; `--live` owner-driven |
+| **Trust-kernel hardening** — dispute-rate + anti-wash guards folded into flow reputation | `src/lib/flow_reputation.ts` | in-repo |
 
 Public specs live in [`docs/standards/`](docs/standards/) (IPaymentPlugin v1, IdentityPolicy registry,
-reference implementations); open design in [`docs/rfc/`](docs/rfc/) (symmetric dispute bond, P3-hard).
+reference implementations); open design in [`docs/rfc/`](docs/rfc/) (symmetric dispute bond).
 
 ```bash
 pnpm demo:cross-chain     # Pharos rep → ZK proof → Casper RWA (signed-TLS) → settle  (offline)
@@ -360,8 +363,8 @@ pending. Full details: [DEMO.md](DEMO.md).
 > For Casper specifically, [DEMO_CASPER.md](DEMO_CASPER.md) has its own self-contained quickstart
 > (Testnet RPC, no funded Pharos wallet needed). For the zero-knowledge reputation gate proven on
 > Stellar, [DEMO_STELLAR.md](DEMO_STELLAR.md) has its own quickstart (circuit + Soroban contract,
-> also no Pharos wallet needed). The steps below
-> are for running the general MCP server / test suite / Pharos demo.
+> also no Pharos wallet needed). The steps below are for running the general MCP server, the test
+> suite, and the Pharos demo.
 
 ### Requirements
 
@@ -455,7 +458,7 @@ loop is recorded in [DEMO.md](DEMO.md).
 ---
 
 <details>
-<summary><strong>Terminal3 integration status</strong> (separate, already-judged submission)</summary>
+<summary><strong>Terminal3 integration status</strong> (identity layer, proven on Pharos)</summary>
 
 Verified **live against the Terminal3 testnet** (not just mocks):
 
@@ -482,10 +485,9 @@ Notes for integrators:
 - Paid TEE operations (e.g. custodial credential signing) require a funded Terminal3 account; identity
   verification and usage reads are free.
 
-Residual gaps tracked as `PATTERN-DEBT-T3N-00x` in [docs/RUNTIME.md](docs/RUNTIME.md) and the
-app-layer pattern-debt registry: the DID session store is now shared + TTL'd + address-bound (closes the
-ad-hoc cache), but still in-memory ⇒ single-process/restart-volatile until a redis-backed parity is added
-for multi-replica.
+Known residual gap (tracked in [docs/RUNTIME.md](docs/RUNTIME.md)): the DID session store is now
+shared + TTL'd + address-bound (closes the ad-hoc cache), but still in-memory ⇒
+single-process/restart-volatile until a redis-backed parity is added for multi-replica.
 
 </details>
 
@@ -497,9 +499,7 @@ for multi-replica.
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 120/120 Rust tests
-pnpm test                                                        # full Vitest suite (734 passed,
-                                                                  # 1 skipped, includes
-                                                                  # casper.tool.ts / indexer / codec)
+pnpm test          # full Vitest suite — 734 passed, 1 skipped, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
@@ -528,8 +528,8 @@ pnpm test:enterprise # Layer-0 runtime hardening suites
 pnpm ci              # typecheck + lint + test
 ```
 
-Contract test coverage (Foundry): **96 Solidity tests** including P1-A symmetric dispute bond
-scenarios, P0-A evaluator agent scenarios, and P0-B governance/timelock scenarios.
+Contract test coverage (Foundry): **96 Solidity tests** including symmetric dispute bond
+scenarios, evaluator agent scenarios, and governance/timelock scenarios.
 
 </details>
 
@@ -542,7 +542,7 @@ from `src/lib/abi.ts`. Live T3N call sequences are covered by `src/scripts/t3_pa
 
 ```text
 src/
-  core/          SUPER-MCP runtime core (tasks, request context, pattern debt)
+  core/          SUPER-MCP runtime core (tasks, request context, structured debt tracking)
   mcp/           protocol adapters, tool registry, transports
   middlewares/   auth, rate limit, quota, idempotency, output firewall
   storage/       fs / redis / memory drivers + encryption (v3 hkdf, v4 kms)
@@ -554,7 +554,7 @@ src/
     payment/         IPaymentPlugin interface + registry
     zk/              RepAgg proof wrapper, cross-chain rep oracle, signed-TLS attestation
     stellar/ casper/ HKDF-derived keypairs; in-process Odra registry + composition tools
-    autonomous_loop/ T5.1 loop core + dashboard + live/dry-run runner
+    autonomous_loop/ loop core + dashboard + live/dry-run runner
   scripts/       setup_keystore, deploy_contract, demos (cross-chain, self-hosting,
                  stellar/casper), run_autonomous_loop, t3_payroll_smoke
   __tests__/     Vitest suites (runtime + app layer) — 71 files
@@ -562,7 +562,8 @@ circuits/        Circom circuits: agent_credential, reputation_aggregation (+ sn
 contracts/       AgentSkillRegistry.sol + KarmaTimelock.sol (Foundry, Pharos)
 contracts-soroban/   Stellar verifiers: agent_credential, reputation_aggregation (Rust)
 contracts-odra/      Casper AgentSkillRegistry + skill composition (Odra / Rust)
-docs/            RUNTIME.md, standards/, rfc/, ADRs, plans, session handoffs
+docs/            RUNTIME.md (full operations reference), standards/ (public specs),
+                 rfc/ (open design discussions), decisions/ (design-decision writeups), media/
 ```
 
 ---
@@ -570,7 +571,7 @@ docs/            RUNTIME.md, standards/, rfc/, ADRs, plans, session handoffs
 ## Security notes
 
 - The external child-process plugin runner is **best-effort hardening, not** an OS/container/microVM
-  sandbox; untrusted third-party plugins are not yet supported in production (DEBT-001).
+  sandbox; untrusted third-party plugins are not yet supported in production.
 - `karma.tool.ts` / `t3.tool.ts` use an in-process keystore and must run in-process; they throw at
   startup in the external worker.
 - The keystore is testnet-only. Rotate `KEYSTORE_PASSWORD` (re-encrypt) if it is ever exposed;
