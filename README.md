@@ -1,5 +1,20 @@
 # KARMA
 
+> 🤖 **Casper Agentic Buildathon — judges start here:** [DEMO_CASPER.md](DEMO_CASPER.md) ·
+> [90-second visual walkthrough](docs/media/casper-judges.html) · an RWA price-oracle agent that
+> discovers a skill, pays for it over a real signed x402 envelope, and settles the job on an Odra
+> `AgentSkillRegistry` — trust from escrow + cryptography, not a server anyone has to take on faith.
+>
+> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 120/120 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](docs/media/casper-judges.html)
+>
+> ☝️ **The terminal panels in that page are a real captured run**, not typed-out copy — reproduce
+> them yourself with `pnpm exec tsx src/scripts/demo_casper_x402_live.ts` (real local HTTP 402 →
+> pay → verify loop), `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` (120/120),
+> and `contracts-odra/build-wasm.sh` (a real, `WebAssembly.validate()`-clean 534KB
+> `karma_odra.wasm`, all 24 entry points exported). Submitting that wasm to Testnet is the one
+> remaining step, gated on a funded key nobody should paste into an AI session — see
+> [DEMO_CASPER.md](DEMO_CASPER.md) for exactly where that stands and how to finish it.
+
 > 🏆 **Stellar Hacks: Real-World ZK — judges start here:** [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
 > live Soroban verifier [`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP)
 > on Testnet · a Groth16/BN254 credential proof verified on-chain via native host functions
@@ -108,9 +123,9 @@ conformance matrix, all chains), [docs/RUNTIME.md](docs/RUNTIME.md) (full operat
 
 ## Tools
 
-This is a real, full MCP server — 13 skill-economy tools + 8 Terminal3 identity tools, all
-in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE identity). Expand for
-the full surface (separate, already-judged submission — not required reading for the Stellar track):
+This is a real, full MCP server — 13 skill-economy tools + 8 Terminal3 identity tools + 8 Casper
+Odra registry tools, all in-process, all backed by live testnet chains (Pharos escrow, Terminal3
+SIWE identity, Casper AgentSkillRegistry). Expand for the full surface:
 
 <details>
 <summary><strong>Full tool tables</strong></summary>
@@ -152,6 +167,25 @@ The SDK is exercised across ~23 distinct surfaces (WASM loader, `T3nClient` life
 reads, standalone crypto primitives). Raw private keys never leave `KeystoreManager` — all signing
 goes through viem `Account.signMessage` or the TEE-side custodial signer.
 
+### Casper skill registry (Layer 1, Odra) — `casper.tool.ts`
+
+The RWA-oracle flow ([DEMO_CASPER.md](DEMO_CASPER.md)) as MCP tools, not just standalone scripts —
+any MCP client can drive Casper's Odra `AgentSkillRegistry` directly. Each write builds, signs,
+and submits a real `casper-js-sdk` transaction (`src/lib/casper/live_client.ts`); reads query the
+contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_key.ts`). Requires
+`CASPER_RPC_URL` + `KARMA_ODRA_REGISTRY` — `casper_health` reports whether they're set.
+
+| Tool | Kind | Purpose |
+|---|---|---|
+| `casper_health` | read | Whether `CASPER_RPC_URL` + `KARMA_ODRA_REGISTRY` are configured. |
+| `casper_register_skill` | write | Register a skill (name, price, `identityPolicy`) — real signed transaction. |
+| `casper_deposit_bond` | write | Lock a Tier-2 Sybil-resistance bond (PD-007). |
+| `casper_create_job` | write | Create + escrow a job against a skill (payable, `amount` = price). |
+| `casper_deliver_result` | write | Provider records a result hash, opens the review window. |
+| `casper_confirm_completion` | write | Requester releases escrow + bumps reputation (arm's-length). |
+| `casper_withdraw` | write | Pull the caller's released-escrow balance (CEI pull-payment). |
+| `casper_get_account_state` | read | Pending balance + reputation + bonded amount, read live from chain. |
+
 </details>
 
 ---
@@ -160,14 +194,16 @@ goes through viem `Account.signMessage` or the TEE-side custodial signer.
 
 The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
 `SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
-chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's chain leg remains
-owner-driven testnet (funding a Casper account is manual).
+chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract
+compiles to a real, verified wasm today (`contracts-odra/build-wasm.sh`) and is reachable through
+8 MCP tools (`casper.tool.ts`) — the chain leg remains owner-driven testnet (funding + signing the
+deploy needs a real key, which stays with its owner, not in this session).
 
 | Capability | Where | Status |
 |---|---|---|
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
-| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` | testnet (owner-driven) |
+| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` · `src/lib/casper/live_client.ts` | real HTTP + ECDSA verify loop today ([demo](src/scripts/demo_casper_x402_live.ts)); on-chain settlement testnet (owner-driven) |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
 | **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
 | **Cross-chain reputation oracle** (T1.3) — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
@@ -258,7 +294,7 @@ Generates fresh keypairs (Web3 Secret Storage v3, scrypt + aes-128-ctr), writes 
 TRANSPORT_DRIVER=stdio
 STORAGE_DRIVER=fs
 MCP_SAFE_MODE=false
-MCP_PLUGIN_ALLOWLIST=system.tool.ts,karma.tool.ts,t3.tool.ts
+MCP_PLUGIN_ALLOWLIST=system.tool.ts,karma.tool.ts,t3.tool.ts,casper.tool.ts
 MCP_PLUGIN_ISOLATION_MODE=policy
 PHAROS_RPC_URL=https://atlantic.dplabs-internal.com
 PHAROS_CONTRACT_ADDRESS=0xc6d5c146209e0833634bd33fafb9e65081b905ae
