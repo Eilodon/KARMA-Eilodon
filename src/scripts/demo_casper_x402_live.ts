@@ -141,7 +141,11 @@ async function main(): Promise<void> {
   await keystoreManager.load(process.env.KEYSTORE_PATH!, process.env.KEYSTORE_PASSWORD!);
   const agentId = process.env.KARMA_AGENT_ID ?? keystoreManager.list()[0];
   if (!agentId) throw new Error("[demo] keystore has no agents loaded");
-  const client = new CasperLiveClient({ rpcUrl, contractHash: contract });
+  const client = new CasperLiveClient({
+    rpcUrl,
+    contractHash: contract,
+    rpcHeaders: process.env.CASPER_RPC_API_KEY ? { Authorization: process.env.CASPER_RPC_API_KEY } : undefined,
+  });
   const taskHash = Buffer.from(JSON.stringify({ envelope, skillId: 1 })).toString("hex").slice(0, 64);
   const { txHash } = await client.createJob(keystoreManager.getCasperKeypair(agentId), {
     skillId: 1n,

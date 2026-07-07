@@ -113,6 +113,7 @@ async function runLive(args: RegisterArgs): Promise<void> {
     rpcUrl: args.rpcUrl,
     contractHash: args.contract,
     chainName: process.env.CASPER_CHAIN_NAME ?? "casper-test",
+    rpcHeaders: process.env.CASPER_RPC_API_KEY ? { Authorization: process.env.CASPER_RPC_API_KEY } : undefined,
   });
   const { txHash } = await client.registerSkill(signer, {
     name: SKILL.name,

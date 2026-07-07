@@ -13,10 +13,19 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 rustup target add wasm32-unknown-unknown --toolchain nightly >/dev/null
 
-RUSTFLAGS="-C link-arg=--import-undefined" \
+# target-cpu=mvp: recent rustc/LLVM defaults wasm32-unknown-unknown codegen to the bulk-memory
+# proposal (LLVM lowers memcpy/memset-style copies straight to `memory.copy`/`memory.fill`), but
+# Casper's on-chain wasm engine only accepts the original MVP instruction set and rejects it at
+# preprocessing ("Bulk memory operations are not supported"). Disabling the single
+# target-feature=-bulk-memory flag is NOT enough — LLVM's memcpy-lowering heuristic still emits
+# `memory.copy` regardless of that flag; target-cpu=mvp pins the whole codegen subtarget to the
+# base spec, and -Z build-std rebuilds core/alloc (rustc's prebuilt sysroot) under the same
+# subtarget instead of the prebuilt-with-bulk-memory default (nightly-only; needs rust-src).
+RUSTFLAGS="-C link-arg=--import-undefined -C target-cpu=mvp" \
 ODRA_MODULE=AgentSkillRegistry \
 ODRA_BACKEND=casper \
-cargo +nightly build --target wasm32-unknown-unknown --release --lib
+cargo +nightly build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+  --target wasm32-unknown-unknown --release --lib
 
 mkdir -p wasm
 cp target/wasm32-unknown-unknown/release/karma_odra.wasm wasm/karma_odra.wasm

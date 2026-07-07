@@ -86,19 +86,22 @@ verification are produced by REAL T10/T11 code, not stubbed.
 ## Live run — Casper Testnet (owner-driven, requires funded keystore)
 
 > ⚠️ This step is owner-driven only because it needs funded Casper Testnet credentials — a
-> private key, which nobody should paste into an AI session or a CI log. Everything else is
-> wired, tested, and produces real artifacts today: `./contracts-odra/build-wasm.sh` compiles a
-> real, `WebAssembly.validate()`-clean `karma_odra.wasm` (533,873 bytes, all 24 entry points
-> exported), and `register_rwa_oracle_skill.ts --live` / `demo_casper_x402_live.ts --live` build,
-> sign, and submit real `casper-js-sdk` transactions (`src/lib/casper/live_client.ts`). The only
-> missing ingredient is a funded key to sign with.
+> private key, which nobody should paste into an AI session or a CI log. **A real install deploy
+> has been done and verified end-to-end (2026-07-07)** from `agent-alpha`'s keystore identity:
+> package hash `hash-a4e8ab23fe6bd87c97239bbc1292a2224cb34efc4f81a6c94edf06a7794f404f`, confirmed
+> live via the account's on-chain `named_keys` (`AgentSkillRegistry` + `_access_token`), not just
+> "the deploy tool exited 0." Three real gaps surfaced and got fixed along the way (see notes
+> below Step 1) — the recipe here is the corrected one, not the original guess.
 
 ### Step 0 — Toolchain
 
 ```bash
 rustup toolchain install nightly --profile minimal   # odra-macros 2.x needs nightly
+rustup component add rust-src --toolchain nightly    # needed for -Z build-std, see Step 1
 rustup target add wasm32-unknown-unknown --toolchain nightly
-# Casper client (used for put-deploy + query-balance)
+# Casper client (used for put-deploy + query-balance) — or use casper-js-sdk's SessionBuilder
+# directly (see src/lib/casper/live_client.ts), which is what was actually used for the verified
+# deploy, since casper-client can't set the Authorization header cspr.cloud now requires.
 cargo install casper-client
 ```
 
@@ -109,14 +112,23 @@ cd contracts-odra
 ./build-wasm.sh
 # Writes wasm/karma_odra.wasm — see contracts-odra/README.md § "wasm32 build — how this
 # actually works" for why this script, not `cargo odra build`, is the reliable path today.
+# As of 2026-07 this ALSO needs target-cpu=mvp + -Z build-std=core,alloc (see the script's
+# comments) — plain target-feature=-bulk-memory alone is not enough; recent rustc/LLVM still
+# emits memory.copy/memory.fill for large copies even with that flag, and Casper's on-chain
+# wasm engine rejects any bulk-memory instruction at preprocessing.
 
 casper-client put-deploy \
   --node-address https://node.testnet.cspr.cloud \
   --chain-name casper-test \
   --secret-key $DEPLOYER_KEY \
-  --payment-amount 200000000000 \
+  --payment-amount 800000000000 \
   --session-path ./wasm/karma_odra.wasm \
   --session-args-json '[
+    {"name": "odra_cfg_package_hash_key_name", "type": "String", "value": "AgentSkillRegistry"},
+    {"name": "odra_cfg_allow_key_override", "type": "Bool", "value": false},
+    {"name": "odra_cfg_is_upgradable", "type": "Bool", "value": true},
+    {"name": "odra_cfg_is_upgrade", "type": "Bool", "value": false},
+    {"name": "odra_cfg_constructor", "type": "String", "value": "init"},
     {"name": "review_window_ms", "type": "U64", "value": "259200000"},
     {"name": "governance_signers", "type": {"List": "Key"}, "value": ["account-hash-<deployer-account-hash>"]},
     {"name": "governance_threshold", "type": "U32", "value": 1},
@@ -126,12 +138,34 @@ casper-client put-deploy \
 # Record the printed `contract_package_hash` as KARMA_ODRA_REGISTRY in .env
 ```
 
-> `init()`'s real signature (`contracts-odra/src/agent_skill_registry.rs`) takes all four args
-> above — `governance_signers` seeds the P0-B multisig (at least one signer; use the deployer's
-> own account-hash for a single-signer setup) and becomes the initial arbiter. `--session-args-json`
-> (a file or inline JSON, per `casper-client put-deploy --help`) handles the `List<Key>` arg
-> cleanly; the single-arg `--session-arg` form used in earlier drafts of this doc only covered
-> `review_window_ms` and would have reverted with `InvalidGovernanceConfig`.
+> `init()`'s real signature (`contracts-odra/src/agent_skill_registry.rs`) takes the last four
+> args above — `governance_signers` seeds the P0-B multisig (at least one signer; use the
+> deployer's own account-hash for a single-signer setup) and becomes the initial arbiter.
+> `--session-args-json` (a file or inline JSON, per `casper-client put-deploy --help`) handles
+> the `List<Key>` arg cleanly; the single-arg `--session-arg` form used in earlier drafts of this
+> doc only covered `review_window_ms` and would have reverted with `InvalidGovernanceConfig`.
+>
+> **Three more gaps, found by actually running this (not just reading Odra's docs):**
+> 1. The `odra_cfg_*` args (first five above) are mandatory for *every* Odra install deploy
+>    (https://odra.dev/docs/backends/casper/#wasm-arguments) — omitting them fails with
+>    `ExecutionError::MissingArg` (`"User error: 64658"` — Odra's own error space starts at
+>    `65536 - 1000` for framework errors, `64536 + 122 = 64658`; this repo's own `Error` enum
+>    only occupies codes 1-53, so a code in the 64500s is never this contract's own logic).
+> 2. `--payment-amount 200000000000` (200 CSPR) is **not enough** — the real install consumed
+>    ~579 CSPR once the args above were fixed, most likely because disabling bulk-memory (Step 1's
+>    wasm note) forces slower byte-loop copies instead of the single fast instruction. Use
+>    `800000000000` (800 CSPR): comfortably above the real cost, safely under this testnet's
+>    `block_gas_limit` (812.5 CSPR per `chain_get_...`/`info_get_chainspec` — a single transaction
+>    cannot request more than this network-wide cap; check it fresh, it's a chainspec value, not
+>    a constant). Unused payment is **not refunded on this network** (`refund` was `0` even on a
+>    request that used a tiny fraction of its limit), so don't set this arbitrarily high either.
+> 3. `https://rpc.testnet.casper.network/rpc` (this doc's old RPC example) doesn't resolve in
+>    DNS — use `https://node.testnet.cspr.cloud/rpc` instead, but as of 2026-07 it requires a
+>    free API key (sign up at cspr.cloud), sent as a raw `Authorization: <key>` header (no
+>    `Bearer` prefix). `casper-client` has no flag for custom headers, so the verified deploy
+>    used `casper-js-sdk`'s `SessionBuilder` directly against `HttpHandler.setCustomHeaders`
+>    (see `CasperLiveClientOpts.rpcHeaders` in `src/lib/casper/live_client.ts`, and
+>    `CASPER_RPC_API_KEY` in `.env.example`) rather than the `casper-client` CLI shown above.
 
 ### Step 2 — Register the `rwa_price_oracle` skill
 
@@ -150,16 +184,29 @@ pnpm exec tsx src/scripts/register_rwa_oracle_skill.ts --live
 
 ### Step 3 — Provider deposits a Tier-2 Sybil bond (PD-007)
 
-```bash
-casper-client put-deploy \
-  --node-address $CASPER_RPC_URL \
-  --chain-name casper-test \
-  --secret-key $PROVIDER_KEY \
-  --payment-amount 1500000000 \
-  --session-package-hash $KARMA_ODRA_REGISTRY \
-  --session-entry-point deposit_bond \
-  --payment-amount-from-purse 1000000000
+```ts
+// pnpm exec tsx (see CasperLiveClient.depositBond in src/lib/casper/live_client.ts)
+const { txHash } = await client.depositBond(signer, 1_000_000_000n); // 1 CSPR bond
 ```
+
+> **`deposit_bond()` takes no named args** — it reads `self.env().attached_value()`, Odra's
+> "payable" convention (https://odra.dev/docs/basics/native-token). Casper has no native
+> account→contract token transfer, so a plain `ContractCallBuilder` call with a `U512` arg named
+> `amount` does nothing — `attached_value()` stays zero and the call reverts with
+> `ExecutionError::NoBond` (verified: this is exactly what the earlier draft of this doc's
+> `--payment-amount-from-purse` flag would have hit too, since `casper-client put-deploy` has no
+> such flag — that recipe was never actually run). The real mechanism is Odra's **"Cargo Purse"**
+> idiom: a one-time-use purse, funded by the caller, whose URef is passed as a `cargo_purse` arg;
+> the wasm-side glue transfers 100% of that purse's balance into the contract and reads it back
+> as `attached_value()`. Building that purse manually means either a two-transaction dance
+> (create purse via the mint system contract, then call `deposit_bond` referencing it) or Odra's
+> own answer to this: a generic, contract-agnostic **`proxy_caller` session** that does both in
+> one deploy. `CasperLiveClient.depositBond`/`createJob` (payable) route through
+> `submitPayable()`, which uses exactly that session — bundled at
+> `src/lib/casper/resources/proxy_caller_with_return.wasm` (copied from `odra-casper-test-vm`'s
+> `resources/`; Odra ships no separate npm/crates.io package for it, and it doesn't need building
+> from source — it's generic, not project-specific like `karma_odra.wasm`). Verified end-to-end
+> on testnet: `depositBond(1 CSPR)` succeeded, and `bondedOf(account)` read back `"1000000000"`.
 
 ### Step 4 — Run the live e2e (x402 fast-lane invocation)
 
@@ -169,6 +216,16 @@ pnpm exec tsx src/scripts/demo_casper_x402_live.ts --live
 # see it work today by running it WITHOUT --live), then, with --live and Step 1-3's env vars
 # set, submits a real create_job deploy via CasperLiveClient to settle the escrow on-chain.
 ```
+
+> `create_job` is **also** payable (no `amount` arg exists on the real entry point — the escrow
+> is `attached_value()`, checked to equal exactly the skill's `price_per_call`), so
+> `CasperLiveClient.createJob` routes through the same proxy-caller session as `depositBond`
+> (§Step 3). `task_hash`/`deliver_result`'s `result_hash` are Rust `Bytes` params — wire type
+> `List(U8)`, not the fixed-size `ByteArray` earlier drafts of this client used (confirmed
+> against the deployed contract's own entry-point signatures via `query_global_state`, not
+> guessed). Verified end-to-end on testnet: `createJob` → `getJob` read back the exact
+> `task_hash` + `escrowAmountMotes` + `status: "Open"`; `deliverResult` → `getJob` showed
+> `status: "Delivered"` and the exact `result_hash`.
 
 ### Expected live transactions
 
