@@ -148,8 +148,9 @@
     <span class="stamp good"><span class="dot"></span>120/120 Odra contract tests passing</span>
     <span class="stamp good"><span class="dot"></span>Real ECDSA/SHA-256 payment verification</span>
     <span class="stamp good"><span class="dot"></span>Casper-native secp256k1 keystore</span>
-    <span class="stamp good"><span class="dot"></span>Real 534KB compiled wasm, verified</span>
-    <span class="stamp"><span class="dot"></span>Testnet deploy — final step, see status below</span>
+    <span class="stamp good"><span class="dot"></span>Real ~538KB compiled wasm, verified</span>
+    <span class="stamp good"><span class="dot"></span>Deployed + verified end-to-end on Testnet</span>
+    <span class="stamp good"><span class="dot"></span>Real dispute ruled live — reputation slashed 50→40</span>
   </div>
 
   <div class="section">
@@ -213,6 +214,27 @@
   </div>
 
   <div class="section">
+    <h2>The courtroom, run for real</h2>
+    <p class="deck">Every agent economy needs a way to settle "I didn't get what I paid for" — most demos skip this.
+      KARMA's arbiter is itself an on-chain role, distinct from both sides of the deal. This ran live on Testnet
+      on 2026-07-07, real transactions, real verdict:</p>
+    <div class="flow">
+      <div class="flow-step"><div class="k">1 · deliver</div><div class="v">provider</div><div class="sub">submits a result</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="k">2 · dispute</div><div class="v">requester</div><div class="sub">posts a bond, contests it</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="k">3 · respond</div><div class="v">provider</div><div class="sub">matches the bond</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="k">4 · arbitrate</div><div class="v">neutral arbiter</div><div class="sub">a 3rd on-chain account rules</div></div>
+    </div>
+    <p class="cap">Verdict: <code>ProviderAtFault</code>. Result, read straight off the contract afterward — not
+      asserted, read: escrow + both bonds returned to the requester (<code>getJob().status == "Refunded"</code>),
+      and the provider's skill reputation actually dropped <strong>50 → 40</strong>. Full tx-by-tx trail —
+      including two real mistakes hit live along the way (an underfunded throwaway key, a duplicate task hash,
+      both caught by the contract's own error codes) — in <a href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/DEMO_CASPER.md#courtroom-dispute--arbitrate--done-live-2026-07-07">DEMO_CASPER.md</a>.</p>
+  </div>
+
+  <div class="section">
     <h2>What's real today, what's the last step</h2>
     <p class="deck">Said plainly, on purpose — a claim we can't back up is worse than no claim.</p>
     <div class="twrap">
@@ -222,17 +244,20 @@
         <tr><td>x402 payment envelope</td><td><span class="pill real">real</span></td><td>secp256k1/SHA-256/DER signed and independently re-verified — not a structural stub.</td></tr>
         <tr><td>HTTP 402 → pay → verify loop</td><td><span class="pill real">real</span></td><td>Runs against a live local server, shown above verbatim.</td></tr>
         <tr><td>Casper keystore</td><td><span class="pill real">real</span></td><td>Same secp256k1 key already signing Ethereum/Stellar — one backup, three chains.</td></tr>
-        <tr><td>MCP tool surface</td><td><span class="pill real">real</span></td><td>8 tools (<code>casper_register_skill</code>, <code>casper_create_job</code>, <code>casper_get_account_state</code>, …) — any MCP client can drive this directly, not just a terminal script.</td></tr>
-        <tr><td>Compiled contract wasm</td><td><span class="pill real">real</span></td><td>533,873 bytes, <code>WebAssembly.validate()</code>-clean, all 24 entry points exported — <code>contracts-odra/build-wasm.sh</code>, reproducible today.</td></tr>
-        <tr><td>On-chain deploy + settlement tx</td><td><span class="pill pending">final step</span></td><td><code>casper-client put-deploy</code> of the wasm above — needs a funded Testnet key, wired and ready to run.</td></tr>
+        <tr><td>MCP tool surface</td><td><span class="pill real">real</span></td><td>25 tools (<code>casper_register_skill</code>, <code>casper_create_job</code>, <code>casper_get_account_state</code>, composition, evaluator/dispute/arbitration, cross-chain-rep governance, …) — any MCP client can drive this directly, not just a terminal script.</td></tr>
+        <tr><td>Compiled contract wasm</td><td><span class="pill real">real</span></td><td>~538,000 bytes, <code>WebAssembly.validate()</code>-clean, all 59 entry points exported — <code>contracts-odra/build-wasm.sh</code>, reproducible today.</td></tr>
+        <tr><td>On-chain deploy + settlement tx</td><td><span class="pill real">real</span></td><td>Deployed at <code>hash-29b7daeb…</code> (governance-hardened redeploy), verified end-to-end: deploy, <code>deposit_bond</code>, <code>create_job</code>, <code>deliver_result</code> confirmed on the original deploy; the redeploy's real 2-of-2 multisig + 48h timelock confirmed by decoding the contract's own <code>GovernanceConfigured</code> event. See <code>DEMO_CASPER.md</code> for tx-by-tx evidence.</td></tr>
+        <tr><td>Full job lifecycle</td><td><span class="pill real">real</span></td><td>register → bond → escrow → deliver → confirm → withdraw, six real transactions, provider reputation bumped live to 55.</td></tr>
+        <tr><td>Courtroom — dispute + arbitrate</td><td><span class="pill real">real</span></td><td>A real contested delivery, ruled by a neutral on-chain arbiter — <code>ProviderAtFault</code>, reputation slashed 50→40, escrow refunded. Previously unit-tested only; now run live.</td></tr>
+        <tr><td>Cross-chain reputation governance</td><td><span class="pill real">real</span> / <span class="pill pending">pending</span></td><td><code>propose_set_cross_chain_rep</code> + <code>approve_proposal</code> both real and confirmed on-chain; <code>execute_proposal</code> correctly reverts <code>TimelockNotElapsed</code> against the real 48h clock — completes ~2026-07-09.</td></tr>
       </table>
     </div>
   </div>
 
   <div class="cta-row">
-    <a class="cta primary" href="../../DEMO_CASPER.md">Full reproduction guide →</a>
-    <a class="cta" href="../../README.md">Project README</a>
-    <a class="cta" href="../../contracts-odra/README.md">Odra contract source</a>
+    <a class="cta primary" href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/DEMO_CASPER.md">Full reproduction guide →</a>
+    <a class="cta" href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/README.md">Project README</a>
+    <a class="cta" href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/contracts-odra/README.md">Odra contract source</a>
   </div>
 
   <footer>KARMA — a protocol for agent economies. This page is a judge aid; the repository is the submission.</footer>
