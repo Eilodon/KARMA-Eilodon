@@ -111,6 +111,23 @@ class OdraBytesReader {
     return this.take(this.u32());
   }
 
+  /** `Vec<u64>`: u32-LE length prefix + that many 8-byte-LE elements (standard bytesrepr
+   *  `Vec<T>::to_bytes()` — length prefix, then each element's own encoding back-to-back). */
+  vecU64(): bigint[] {
+    const len = this.u32();
+    const out: bigint[] = [];
+    for (let i = 0; i < len; i += 1) out.push(this.u64());
+    return out;
+  }
+
+  /** `Vec<u32>`: u32-LE length prefix + that many 4-byte-LE elements. */
+  vecU32(): number[] {
+    const len = this.u32();
+    const out: number[] = [];
+    for (let i = 0; i < len; i += 1) out.push(this.u32());
+    return out;
+  }
+
   string(): string {
     return Buffer.from(this.bytesVec()).toString("utf8");
   }
@@ -171,6 +188,20 @@ export function decodeJob(bytes: Uint8Array): DecodedJob {
     evaluator: r.option(() => r.address()),
     evaluatorFeeMotes: r.u512(),
   };
+}
+
+export interface DecodedComposition {
+  leafSkillIds: bigint[];
+  weightsBps: number[];
+}
+
+/** Decodes a `Composition` struct's raw on-chain bytes (`{ leaf_skill_ids: Vec<u64>,
+ *  weights_bps: Vec<u32> }` — see `contracts-odra/src/agent_skill_registry.rs`). Stored under the
+ *  `compositions` mapping (field index 14); absent entry ⇒ the skill id is a primitive, not a
+ *  composite (see `CasperLiveClient.getComposition`/`isComposite`). */
+export function decodeComposition(bytes: Uint8Array): DecodedComposition {
+  const r = new OdraBytesReader(bytes);
+  return { leafSkillIds: r.vecU64(), weightsBps: r.vecU32() };
 }
 
 /** Decodes a plain `u32` `Mapping`/`Var` value's raw bytes (e.g. `agent_rep[account]`) — same

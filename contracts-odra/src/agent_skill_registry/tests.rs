@@ -2158,10 +2158,14 @@ fn p1a_rep_slash_floors_at_rep_floor() {
 
 #[test]
 fn p1a_set_dispute_bond_bps() {
+    // P0-B: dispute-bond-bps changes go through the same propose/approve(1-of-1)/timelock/execute
+    // lifecycle as cross-chain-rep — no single-signer immediate-effect path.
     let (env, mut reg, _, _) = setup();
     let deployer = env.get_account(0); // governance signer
     env.set_caller(deployer);
-    reg.set_dispute_bond_bps(5_000);
+    let pid = reg.propose_set_dispute_bond_bps(5_000);
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
     assert_eq!(reg.get_dispute_bond_bps(), 5_000);
 
     assert!(env.emitted_event(
@@ -2172,13 +2176,17 @@ fn p1a_set_dispute_bond_bps() {
 
 #[test]
 fn p1a_set_arbiter() {
+    // P0-B: arbiter changes go through the same propose/approve(1-of-1)/timelock/execute
+    // lifecycle as cross-chain-rep — no single-signer immediate-effect path.
     let (env, mut reg, alpha, _) = setup();
     let deployer = env.get_account(0);
     let old_arbiter = reg.get_arbiter();
     assert_eq!(old_arbiter, deployer);
 
     env.set_caller(deployer);
-    reg.set_arbiter(alpha);
+    let pid = reg.propose_set_arbiter(alpha);
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
     assert_eq!(reg.get_arbiter(), alpha);
 
     assert!(env.emitted_event(
@@ -2192,7 +2200,7 @@ fn p1a_set_dispute_bond_bps_non_signer_reverts() {
     let (env, mut reg, alpha, _) = setup();
     env.set_caller(alpha); // not governance signer
     assert_eq!(
-        reg.try_set_dispute_bond_bps(5_000),
+        reg.try_propose_set_dispute_bond_bps(5_000),
         Err(Error::NotGovernanceSigner.into()),
     );
 }
@@ -2202,7 +2210,7 @@ fn p1a_set_arbiter_non_signer_reverts() {
     let (env, mut reg, alpha, _) = setup();
     env.set_caller(alpha);
     assert_eq!(
-        reg.try_set_arbiter(alpha),
+        reg.try_propose_set_arbiter(alpha),
         Err(Error::NotGovernanceSigner.into()),
     );
 }
@@ -2360,7 +2368,9 @@ fn p1a_lower_bps_changes_required_bond() {
     let (env, mut reg, _, _) = setup();
     let deployer = env.get_account(0);
     env.set_caller(deployer);
-    reg.set_dispute_bond_bps(5_000); // 0.5× escrow
+    let pid = reg.propose_set_dispute_bond_bps(5_000); // 0.5× escrow
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
 
     let alpha = env.get_account(1);
     let beta = env.get_account(2);

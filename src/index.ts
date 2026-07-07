@@ -9,6 +9,7 @@ import { protectedResourceMetadata, resourceMetadataPath } from "./http/oauth_me
 import { protocolHeaderValidation } from "./middlewares/protocol_header.js";
 import { createStdioTransport, loadHttpServerAdapters } from "./mcp/adapter/mcp_protocol_adapter.js";
 import { startKarmaIndexer, stopKarmaIndexer } from "./lib/skill_indexer_runtime.js";
+import { startCasperIndexer, stopCasperIndexer } from "./lib/casper_indexer_runtime.js";
 import { registerConfiguredPaymentPlugins } from "./lib/payment/boot.js";
 
 let runtime: SuperMcpRuntime;
@@ -92,6 +93,29 @@ async function main() {
     }
   } else {
     console.error("[KARMA] Skill indexer not started (safe mode or PHAROS_CONTRACT_ADDRESS unset).");
+  }
+
+  // Casper's own discovery/reputation indexer (casper_indexer_runtime.ts) — polls the Odra
+  // registry's CES event log instead of watching, since Casper has no RPC push-subscribe
+  // equivalent to viem's watchContractEvent. Same non-fatal-failure and env-gating posture as the
+  // Pharos indexer above; a separate BM25 index/flow-rep graph, not merged with Pharos's (chain-
+  // local skill ids would collide — see casper_indexer_runtime.ts's header comment).
+  if (!ENV.MCP_SAFE_MODE && process.env.CASPER_RPC_URL && process.env.KARMA_ODRA_REGISTRY) {
+    try {
+      const { CasperLiveClient } = await import("./lib/casper/live_client.js");
+      const client = new CasperLiveClient({
+        rpcUrl: process.env.CASPER_RPC_URL,
+        contractHash: process.env.KARMA_ODRA_REGISTRY,
+        chainName: process.env.CASPER_CHAIN_NAME,
+        rpcHeaders: process.env.CASPER_RPC_API_KEY ? { Authorization: process.env.CASPER_RPC_API_KEY } : undefined,
+      });
+      startCasperIndexer(client);
+      console.error("[KARMA] Casper skill event indexer started (backfill + poll).");
+    } catch (err) {
+      console.error("[KARMA] Casper indexer failed to start (continuing without it):", err);
+    }
+  } else {
+    console.error("[KARMA] Casper indexer not started (safe mode or CASPER_RPC_URL/KARMA_ODRA_REGISTRY unset).");
   }
 
   if (ENV.TRANSPORT_DRIVER === "http") {
@@ -244,6 +268,7 @@ async function main() {
       }
 
       stopKarmaIndexer();
+      stopCasperIndexer();
 
       // Drop in-memory agent signing keys on shutdown (DEBT-007): shrinks the heap-exposure window
       // for the decrypted viem accounts. Best-effort (V8 can't force-zero the closure-held key).

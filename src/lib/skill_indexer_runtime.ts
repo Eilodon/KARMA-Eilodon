@@ -5,6 +5,12 @@ import {
   type SkillEventIndexer,
 } from "./contract.js";
 import { realKarmaService, type KarmaService, type OnchainSkill } from "./karma_service.js";
+
+/** The only slice of `KarmaService` event reconciliation actually touches — narrowed so a
+ *  chain-specific service (e.g. Casper's, backed by `CasperLiveClient` instead of viem) can
+ *  reuse `applyIndexedEvent`/`applyWithRetry` without implementing all ~30 Pharos-write methods
+ *  `KarmaService` also carries. Any real `KarmaService` still satisfies this structurally. */
+export type SkillIndexService = Pick<KarmaService, "readSkill" | "readJob" | "indexUpsert" | "indexDiscard" | "indexSetMinReputation">;
 import { skillIndex, legacyReputationBoost, DEFAULT_PAYMENT_OPTIONS, type SkillBoost } from "./bm25_index.js";
 import { FlowBoostSource, type FlowEdge } from "./flow_reputation.js";
 import type { SkillDocument } from "./types.js";
@@ -53,7 +59,7 @@ export function skillDocFromChain(skillId: bigint, s: OnchainSkill, repOverride?
  * passed only when KARMA_DISCOVERY_RANK=flow (see startKarmaIndexer), so default behavior is unchanged.
  */
 export async function applyIndexedEvent(
-  svc: KarmaService,
+  svc: SkillIndexService,
   e: IndexedEvent,
   flow?: {
     record(edge: FlowEdge): void;
@@ -129,7 +135,7 @@ const RECONCILE_RETRY_BASE_MS = 200;
  *  (transient RPC failures — 429, timeout, brief outage) with exponential backoff.
  *  Exported so it can be unit-tested independently of the indexer singleton. */
 export async function applyWithRetry(
-  svc: KarmaService,
+  svc: SkillIndexService,
   e: IndexedEvent,
   flow?: {
     record(edge: FlowEdge): void;

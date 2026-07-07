@@ -3,6 +3,7 @@ import { markTrustedRuntime, resetTrustedRuntimeForTest } from "../core/runtime_
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
 import type { CasperClientLike } from "../plugins/casper.tool.js";
 import type { ToolDefinition } from "../mcp/adapter/tool_registry.js";
+import { casperSkillIndex } from "../lib/casper_indexer_runtime.js";
 
 const SIGNER = deriveCasperPrivateKey(new Uint8Array(32).fill(0x44));
 
@@ -27,6 +28,22 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     pendingWithdrawalsOf: vi.fn(async () => "1000000"),
     agentReputationOf: vi.fn(async () => 55),
     bondedOf: vi.fn(async () => "2000000000"),
+    registerComposition: vi.fn(async () => ({ txHash: "tx-composition" })),
+    getComposition: vi.fn(async () => undefined),
+    createJobWithEvaluator: vi.fn(async () => ({ txHash: "tx-createjob-eval" })),
+    evaluateResult: vi.fn(async () => ({ txHash: "tx-evaluate" })),
+    disputeResult: vi.fn(async () => ({ txHash: "tx-dispute" })),
+    respondToDispute: vi.fn(async () => ({ txHash: "tx-respond" })),
+    concedeDispute: vi.fn(async () => ({ txHash: "tx-concede" })),
+    resolveDefaultConcede: vi.fn(async () => ({ txHash: "tx-default-concede" })),
+    arbitrate: vi.fn(async () => ({ txHash: "tx-arbitrate" })),
+    getCrossChainRep: vi.fn(async () => 0),
+    proposeSetCrossChainRep: vi.fn(async () => ({ txHash: "tx-propose-rep" })),
+    proposeSetArbiter: vi.fn(async () => ({ txHash: "tx-propose-arbiter" })),
+    proposeSetDisputeBondBps: vi.fn(async () => ({ txHash: "tx-propose-bps" })),
+    approveProposal: vi.fn(async () => ({ txHash: "tx-approve" })),
+    executeProposal: vi.fn(async () => ({ txHash: "tx-execute" })),
+    cancelProposal: vi.fn(async () => ({ txHash: "tx-cancel" })),
     ...over,
   };
 }
@@ -53,7 +70,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("registers exactly the 8 documented tools", () => {
+  it("registers exactly the 25 documented tools", () => {
     const names = createCasperTools(() => fakeClient()).map((t) => t.name);
     expect(names).toEqual([
       "casper_health",
@@ -64,6 +81,23 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_confirm_completion",
       "casper_withdraw",
       "casper_get_account_state",
+      "casper_discover_skills",
+      "casper_register_composition",
+      "casper_get_composition",
+      "casper_create_job_with_evaluator",
+      "casper_evaluate_result",
+      "casper_dispute_result",
+      "casper_respond_to_dispute",
+      "casper_concede_dispute",
+      "casper_resolve_default_concede",
+      "casper_arbitrate",
+      "casper_get_cross_chain_rep",
+      "casper_propose_set_cross_chain_rep",
+      "casper_propose_set_arbiter",
+      "casper_propose_set_dispute_bond_bps",
+      "casper_approve_proposal",
+      "casper_execute_proposal",
+      "casper_cancel_proposal",
     ]);
   });
 
@@ -80,6 +114,37 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       const tools = createCasperTools(() => fakeClient());
       const result = await find(tools, "casper_health").handler({}, {} as never);
       expect(result.structuredContent).toMatchObject({ configured: true });
+    });
+
+    it("surfaces the Casper event indexer's health alongside config status", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_health").handler({}, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        indexer: { running: false, lastSeenEventIndex: 0, reconcileErrors: 0 },
+      });
+    });
+  });
+
+  describe("casper_discover_skills", () => {
+    it("finds a skill upserted into casperSkillIndex by the event indexer", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      casperSkillIndex.upsert({
+        id: 101,
+        skill_id: 101,
+        name: "rwa_price_oracle",
+        description: "signed RWA price feed",
+        mcp_endpoint: "casper-mcp://providers/rwa_price_oracle",
+        price_per_call_wei: "10000000",
+        reputation_score: 60,
+        owner_address: "0x" + "11".repeat(32),
+        active: true,
+        payment_options: [],
+      });
+      const result = await find(tools, "casper_discover_skills").handler({ query: "rwa price" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ count: 1 });
+      const skills = (result.structuredContent as { skills: Array<{ skill_id: number }> }).skills;
+      expect(skills[0].skill_id).toBe(101);
+      casperSkillIndex.discard(101);
     });
   });
 
@@ -167,6 +232,194 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       await expect(find(tools, "casper_get_account_state").handler({}, {} as never)).rejects.toThrow(
         /needs agentId or accountHash/,
       );
+    });
+  });
+
+  describe("casper_register_composition", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "55".repeat(32);
+    });
+
+    it("forwards leaf ids/weights to the client and returns the broadcast tx hash", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_register_composition").handler(
+        {
+          agentId: "agent-alpha",
+          name: "bundle",
+          pricePerCallMotes: "10000000",
+          leafSkillIds: ["1", "2"],
+          weightsBps: [6000, 4000],
+        },
+        {} as never,
+      );
+      expect(client.registerComposition).toHaveBeenCalledWith(
+        SIGNER,
+        expect.objectContaining({
+          name: "bundle",
+          pricePerCallMotes: 10_000_000n,
+          leafSkillIds: [1n, 2n],
+          weightsBps: [6000, 4000],
+        }),
+      );
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-composition" });
+    });
+
+    it("rejects more than 8 leaves before ever touching the client", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const eight = Array.from({ length: 9 }, (_, i) => String(i + 1));
+      await expect(
+        find(tools, "casper_register_composition").handler(
+          { agentId: "agent-alpha", name: "bundle", pricePerCallMotes: "1", leafSkillIds: eight, weightsBps: eight.map(() => 1) },
+          {} as never,
+        ),
+      ).rejects.toThrow();
+      expect(client.registerComposition).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("casper_get_composition", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "66".repeat(32);
+    });
+
+    it("reports isComposite=false with a null composition for a primitive skill", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_get_composition").handler({ skillId: "1" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ isComposite: false, composition: null });
+    });
+
+    it("stringifies leaf skill ids and surfaces weights for a composite skill", async () => {
+      const client = fakeClient({
+        getComposition: vi.fn(async () => ({ leafSkillIds: [1n, 2n], weightsBps: [6000, 4000] })),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_composition").handler({ skillId: "3" }, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        isComposite: true,
+        composition: { leafSkillIds: ["1", "2"], weightsBps: [6000, 4000] },
+      });
+    });
+  });
+
+  describe("evaluator/dispute/arbitrate lifecycle (P0-A/P1-A)", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "77".repeat(32);
+    });
+
+    it("casper_create_job_with_evaluator forwards the evaluator account hash + fee to the client", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job_with_evaluator").handler(
+        {
+          agentId: "agent-alpha",
+          skillId: "1",
+          taskHashHex: "aa".repeat(32),
+          deadlineSecs: "259200",
+          evaluatorAccountHash: "account-hash-" + "bb".repeat(32),
+          evaluatorFeeMotes: "1000",
+          escrowMotes: "10001000",
+        },
+        {} as never,
+      );
+      expect(client.createJobWithEvaluator).toHaveBeenCalledWith(
+        SIGNER,
+        expect.objectContaining({ evaluatorAccountHash: "account-hash-" + "bb".repeat(32), evaluatorFeeMotes: 1000n }),
+      );
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-createjob-eval" });
+    });
+
+    it("casper_evaluate_result forwards the approved flag", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_evaluate_result").handler({ agentId: "agent-alpha", jobId: "1", approved: false }, {} as never);
+      expect(client.evaluateResult).toHaveBeenCalledWith(SIGNER, 1n, false);
+    });
+
+    it("casper_dispute_result / casper_respond_to_dispute forward the exact bond amount", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_dispute_result").handler({ agentId: "agent-alpha", jobId: "1", bondMotes: "5000000" }, {} as never);
+      expect(client.disputeResult).toHaveBeenCalledWith(SIGNER, 1n, 5_000_000n);
+
+      await find(tools, "casper_respond_to_dispute").handler({ agentId: "agent-alpha", jobId: "1", bondMotes: "5000000" }, {} as never);
+      expect(client.respondToDispute).toHaveBeenCalledWith(SIGNER, 1n, 5_000_000n);
+    });
+
+    it("casper_concede_dispute and casper_resolve_default_concede hit the right entry points", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_concede_dispute").handler({ agentId: "agent-alpha", jobId: "1" }, {} as never);
+      expect(client.concedeDispute).toHaveBeenCalledWith(SIGNER, 1n);
+
+      await find(tools, "casper_resolve_default_concede").handler({ callerAgentId: "agent-alpha", jobId: "1" }, {} as never);
+      expect(client.resolveDefaultConcede).toHaveBeenCalledWith(SIGNER, 1n);
+    });
+
+    it("casper_arbitrate forwards a valid verdict and rejects an invalid one before touching the client", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_arbitrate").handler({ agentId: "agent-alpha", jobId: "1", verdict: "RequesterAtFault" }, {} as never);
+      expect(client.arbitrate).toHaveBeenCalledWith(SIGNER, 1n, "RequesterAtFault");
+
+      await expect(
+        find(tools, "casper_arbitrate").handler({ agentId: "agent-alpha", jobId: "1", verdict: "Tie" }, {} as never),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe("cross-chain-rep governance (P0-B)", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "88".repeat(32);
+    });
+
+    it("casper_get_cross_chain_rep reads the score for a raw account hash", async () => {
+      const client = fakeClient({ getCrossChainRep: vi.fn(async () => 85) });
+      const tools = createCasperTools(() => client);
+      const foreignHash = "account-hash-" + "cc".repeat(32);
+      const result = await find(tools, "casper_get_cross_chain_rep").handler({ accountHash: foreignHash }, {} as never);
+      expect(client.getCrossChainRep).toHaveBeenCalledWith(foreignHash);
+      expect(result.structuredContent).toMatchObject({ accountHash: foreignHash, score: 85 });
+    });
+
+    it("casper_propose_set_cross_chain_rep forwards target/score/sourceChain", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const targetHash = "account-hash-" + "dd".repeat(32);
+      await find(tools, "casper_propose_set_cross_chain_rep").handler(
+        { agentId: "agent-alpha", targetAccountHash: targetHash, score: 85, sourceChain: "stellar" },
+        {} as never,
+      );
+      expect(client.proposeSetCrossChainRep).toHaveBeenCalledWith(SIGNER, targetHash, 85, "stellar");
+    });
+
+    it("casper_propose_set_arbiter / casper_propose_set_dispute_bond_bps forward their single argument", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const newArbiter = "account-hash-" + "ee".repeat(32);
+      await find(tools, "casper_propose_set_arbiter").handler({ agentId: "agent-alpha", newArbiterAccountHash: newArbiter }, {} as never);
+      expect(client.proposeSetArbiter).toHaveBeenCalledWith(SIGNER, newArbiter);
+
+      await find(tools, "casper_propose_set_dispute_bond_bps").handler({ agentId: "agent-alpha", bps: 5000 }, {} as never);
+      expect(client.proposeSetDisputeBondBps).toHaveBeenCalledWith(SIGNER, 5000);
+    });
+
+    it("casper_approve_proposal / casper_execute_proposal / casper_cancel_proposal forward the proposal id", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_approve_proposal").handler({ agentId: "agent-alpha", proposalId: "1" }, {} as never);
+      expect(client.approveProposal).toHaveBeenCalledWith(SIGNER, 1n);
+
+      await find(tools, "casper_execute_proposal").handler({ agentId: "agent-alpha", proposalId: "1" }, {} as never);
+      expect(client.executeProposal).toHaveBeenCalledWith(SIGNER, 1n);
+
+      await find(tools, "casper_cancel_proposal").handler({ agentId: "agent-alpha", proposalId: "1" }, {} as never);
+      expect(client.cancelProposal).toHaveBeenCalledWith(SIGNER, 1n);
     });
   });
 });

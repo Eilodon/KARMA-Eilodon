@@ -109,6 +109,103 @@ describe("CasperLiveClient (T13-live)", () => {
     expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("withdraw");
   });
 
+  it("registerComposition signs and submits leaf_skill_ids/weights_bps as List(U64)/List(U32)", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    const { txHash } = await client.registerComposition(SIGNER, {
+      name: "bundle",
+      description: "desc",
+      mcpEndpoint: "casper-mcp://providers/bundle",
+      pricePerCallMotes: 10_000_000n,
+      minReputationToInvoke: 0,
+      identityPolicy: 0,
+      leafSkillIds: [1n, 2n],
+      weightsBps: [6000, 4000],
+    });
+
+    expect(txHash).toBe("deadbeef");
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("register_composition");
+    const leafArg = transaction.args.getByName("leaf_skill_ids");
+    expect(leafArg!.list!.elements.map((e: InstanceType<typeof CLValue>) => e.ui64!.toString())).toEqual(["1", "2"]);
+    const weightsArg = transaction.args.getByName("weights_bps");
+    expect(weightsArg!.list!.elements.map((e: InstanceType<typeof CLValue>) => e.ui32!.toNumber())).toEqual([6000, 4000]);
+  });
+
+  it("createJobWithEvaluator (P0-A) encodes the evaluator as a Key CLValue and attaches escrow+fee via the proxy caller", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    const evaluatorAccountHash = "account-hash-" + "ee".repeat(32);
+    await client.createJobWithEvaluator(SIGNER, {
+      skillId: 1n,
+      taskHashHex: "ab".repeat(32),
+      deadlineSecs: 259_200n,
+      evaluatorAccountHash,
+      evaluatorFeeMotes: 1_000n,
+      escrowMotes: 10_001_000n,
+    });
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.args.getByName("entry_point")?.toString()).toBe("create_job_with_evaluator");
+    expect(transaction.args.getByName("attached_value")?.toString()).toBe("10001000");
+
+    const innerArgsBytes = Uint8Array.from(
+      transaction.args.getByName("args")!.list!.elements.map((e: InstanceType<typeof CLValue>) => e.ui8!.toNumber()),
+    );
+    const innerArgs = casperSdk.Args.fromBytes(innerArgsBytes);
+    expect(innerArgs.getByName("evaluator")?.getKey().toPrefixedString()).toBe(evaluatorAccountHash);
+    expect(innerArgs.getByName("evaluator_fee")?.toString()).toBe("1000");
+  });
+
+  it("arbitrate encodes Verdict as a plain U8 discriminant (ProviderAtFault=0, RequesterAtFault=1), not List(U8)", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await client.arbitrate(SIGNER, 1n, "RequesterAtFault");
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("arbitrate");
+    expect(transaction.args.getByName("verdict")?.ui8?.toNumber()).toBe(1);
+  });
+
+  it("disputeResult / respondToDispute attach the bond via the proxy caller with job_id as the only inner arg", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    await client.disputeResult(SIGNER, 1n, 5_000_000n);
+    let transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.args.getByName("entry_point")?.toString()).toBe("dispute_result");
+    expect(transaction.args.getByName("attached_value")?.toString()).toBe("5000000");
+
+    await client.respondToDispute(SIGNER, 1n, 5_000_000n);
+    transaction = rpc.putTransaction.mock.calls[1][0];
+    expect(transaction.args.getByName("entry_point")?.toString()).toBe("respond_to_dispute");
+    expect(transaction.args.getByName("attached_value")?.toString()).toBe("5000000");
+  });
+
+  it("proposeSetCrossChainRep (P0-B) encodes the target agent as a Key CLValue and the score/source_chain plainly", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    const targetHash = "account-hash-" + "ff".repeat(32);
+    await client.proposeSetCrossChainRep(SIGNER, targetHash, 85, "stellar");
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("propose_set_cross_chain_rep");
+    expect(transaction.args.getByName("agent")?.getKey().toPrefixedString()).toBe(targetHash);
+    expect(transaction.args.getByName("score")?.toString()).toBe("85");
+    expect(transaction.args.getByName("source_chain")?.toString()).toBe("stellar");
+  });
+
+  it("approveProposal / executeProposal / cancelProposal hit the right entry points with a job_id-shaped proposal_id arg", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    await client.approveProposal(SIGNER, 1n);
+    expect(rpc.putTransaction.mock.calls[0][0].entryPoint.customEntryPoint).toBe("approve_proposal");
+
+    await client.executeProposal(SIGNER, 1n);
+    expect(rpc.putTransaction.mock.calls[1][0].entryPoint.customEntryPoint).toBe("execute_proposal");
+
+    await client.cancelProposal(SIGNER, 1n);
+    expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("cancel_proposal");
+  });
+
   it("uses the configured chain name and a caller-overridable payment ceiling", async () => {
     const rpc = fakeSubmitter();
     const client = new CasperLiveClient(
@@ -178,6 +275,69 @@ describe("CasperLiveClient reads (T13-live, real dictionary-item derivation)", (
     rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("ECONNREFUSED"));
     const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
     await expect(client.pendingWithdrawalsOf(account)).rejects.toThrow("ECONNREFUSED");
+  });
+
+  it("getCrossChainRep (P0.1) parses a U32, defaulting to 0 when never attested", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(CLValue.newCLUInt32(85).bytes()) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getCrossChainRep(account)).toBe(85);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getCrossChainRep(account)).toBe(0);
+  });
+});
+
+describe("CasperLiveClient.getEventCount / getEvent (CES event log, T13-live)", () => {
+  function withEventCountResponse(clValue: InstanceType<typeof CLValue>) {
+    return vi.fn(async (_key: string, path: string[]) => {
+      if (path.length === 0) {
+        return { storedValue: { contractPackage: { versions: [{ contractHash: { hash: { toHex: () => ENTITY_HASH } } }] } } };
+      }
+      return { storedValue: { clValue } };
+    });
+  }
+
+  it("getEventCount reads a native CLValue::U32 shape", async () => {
+    const rpc = fakeSubmitter();
+    rpc.queryLatestGlobalState = withEventCountResponse(CLValue.newCLUInt32(5));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getEventCount()).toBe(5);
+  });
+
+  it("getEventCount falls back to the List(U8)-wrapped shape if that's what comes back instead", async () => {
+    const rpc = fakeSubmitter();
+    rpc.queryLatestGlobalState = withEventCountResponse(newCLOdraStructBytes(CLValue.newCLUInt32(5).bytes()));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getEventCount()).toBe(5);
+  });
+
+  it("getEvent reads the '__events' dictionary at the plain decimal index (no blake2b hashing) and decodes it", async () => {
+    const rpc = fakeSubmitter();
+    const rawEvent = Buffer.concat([
+      Buffer.from(CLValue.newCLString("event_SkillDeactivated").bytes()),
+      Buffer.from(CLValue.newCLUint64("7").bytes()),
+    ]);
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(rawEvent) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    const event = await client.getEvent(3);
+
+    expect(event).toEqual({ type: "SkillDeactivated", blockNumber: 3n, skillId: 7n });
+    const [, identifier] = rpc.getDictionaryItemByIdentifier.mock.calls[0];
+    expect(identifier.contractNamedKey.dictionaryName).toBe("__events");
+    expect(identifier.contractNamedKey.dictionaryItemKey).toBe("3");
+  });
+
+  it("getEvent returns undefined for an out-of-range index", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getEvent(999)).toBeUndefined();
   });
 });
 
@@ -263,5 +423,44 @@ describe("CasperLiveClient.getSkill / getJob (T13-live, complex-struct dictionar
     rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
     const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
     expect(await client.getJob(999n)).toBeUndefined();
+  });
+});
+
+describe("CasperLiveClient.getComposition / isComposite (T13-live, field index 14)", () => {
+  function u32(v: number): Uint8Array {
+    return CLValue.newCLUInt32(v).bytes();
+  }
+  function concat(...parts: Uint8Array[]): Uint8Array {
+    return Buffer.concat(parts.map((p) => Buffer.from(p)));
+  }
+  function vecU64(values: string[]): Uint8Array {
+    return concat(u32(values.length), ...values.map((v) => CLValue.newCLUint64(v).bytes()));
+  }
+  function vecU32(values: number[]): Uint8Array {
+    return concat(u32(values.length), ...values.map(u32));
+  }
+
+  it("getComposition decodes leaf skill ids + weights for a composite skill", async () => {
+    const rpc = fakeSubmitter();
+    const rawComposition = concat(vecU64(["1", "2"]), vecU32([6000, 4000]));
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(rawComposition) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    const composition = await client.getComposition(3n);
+
+    expect(composition?.leafSkillIds).toEqual([1n, 2n]);
+    expect(composition?.weightsBps).toEqual([6000, 4000]);
+    expect(await client.isComposite(3n)).toBe(true);
+  });
+
+  it("getComposition/isComposite treat a primitive (never-composed) skill as absent", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    expect(await client.getComposition(1n)).toBeUndefined();
+    expect(await client.isComposite(1n)).toBe(false);
   });
 });

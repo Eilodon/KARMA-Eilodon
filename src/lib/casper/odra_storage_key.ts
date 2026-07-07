@@ -71,4 +71,9 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
   pendingWithdrawals: 9,
   agentRep: 11,
   bondedAmount: 12,
+  /** `compositions: Mapping<u64, Composition>` — index 14, confirmed via `cargo +nightly expand
+   *  --lib agent_skill_registry` (same method as every other index above), not recomputed by hand. */
+  compositions: 14,
+  /** `cross_chain_rep: Mapping<Address, u32>` — index 15, confirmed the same way. */
+  crossChainRep: 15,
 } as const;

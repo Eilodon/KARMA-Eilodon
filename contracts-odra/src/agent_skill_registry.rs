@@ -176,6 +176,12 @@ pub enum ProposalAction {
         score: u32,
         source_chain: String,
     },
+    SetArbiter {
+        new_arbiter: Address,
+    },
+    SetDisputeBondBps {
+        bps: u32,
+    },
 }
 
 #[odra::odra_type]
@@ -921,20 +927,61 @@ impl AgentSkillRegistry {
         self.env().emit_event(DisputeArbitrated { job_id, verdict, arbiter: caller });
     }
 
-    /// P1-A: Governance sets the dispute bond percentage. 10_000 = 1× escrow (default).
-    pub fn set_dispute_bond_bps(&mut self, bps: u32) {
+    /// P1-A/P0-B: Propose a dispute bond percentage change. 10_000 = 1× escrow (default).
+    /// Governance-signer only; takes effect via the same multisig+timelock proposal lifecycle
+    /// as `propose_set_cross_chain_rep` — no single-signer immediate-effect path.
+    pub fn propose_set_dispute_bond_bps(&mut self, bps: u32) -> u64 {
         self.require_governance_signer();
-        let old = self.dispute_bond_bps.get_or_default();
-        self.dispute_bond_bps.set(bps);
-        self.env().emit_event(DisputeBondBpsUpdated { old_bps: old, new_bps: bps });
+        let caller = self.env().caller();
+        let proposal_id = self.proposal_counter.get_or_default() + 1;
+        self.proposal_counter.set(proposal_id);
+
+        let proposal = GovernanceProposal {
+            action: ProposalAction::SetDisputeBondBps { bps },
+            proposer: caller,
+            proposed_at: self.env().get_block_time(),
+            executed: false,
+            cancelled: false,
+        };
+        self.proposals.set(&proposal_id, proposal);
+        self.proposal_approvals.set(&proposal_id, vec![caller]);
+
+        self.env().emit_event(ProposalCreated { proposal_id, proposer: caller });
+        self.env().emit_event(ProposalApproved {
+            proposal_id,
+            signer: caller,
+            approval_count: 1,
+            threshold: self.governance_threshold.get_or_default(),
+        });
+        proposal_id
     }
 
-    /// P1-A: Governance sets the arbiter address for dispute resolution.
-    pub fn set_arbiter(&mut self, new_arbiter: Address) {
+    /// P1-A/P0-B: Propose an arbiter change. Governance-signer only; same proposal lifecycle
+    /// as `propose_set_cross_chain_rep` — no single-signer immediate-effect path.
+    pub fn propose_set_arbiter(&mut self, new_arbiter: Address) -> u64 {
         self.require_governance_signer();
-        let old = self.arbiter.get().unwrap();
-        self.arbiter.set(new_arbiter);
-        self.env().emit_event(ArbiterUpdated { old_arbiter: old, new_arbiter });
+        let caller = self.env().caller();
+        let proposal_id = self.proposal_counter.get_or_default() + 1;
+        self.proposal_counter.set(proposal_id);
+
+        let proposal = GovernanceProposal {
+            action: ProposalAction::SetArbiter { new_arbiter },
+            proposer: caller,
+            proposed_at: self.env().get_block_time(),
+            executed: false,
+            cancelled: false,
+        };
+        self.proposals.set(&proposal_id, proposal);
+        self.proposal_approvals.set(&proposal_id, vec![caller]);
+
+        self.env().emit_event(ProposalCreated { proposal_id, proposer: caller });
+        self.env().emit_event(ProposalApproved {
+            proposal_id,
+            signer: caller,
+            approval_count: 1,
+            threshold: self.governance_threshold.get_or_default(),
+        });
+        proposal_id
     }
 
     /// Evaluator approves or rejects a delivered result (P0-A). Only callable by the job's
@@ -1205,6 +1252,16 @@ impl AgentSkillRegistry {
                     score: *score,
                     source_chain: source_chain.clone(),
                 });
+            }
+            ProposalAction::SetArbiter { new_arbiter } => {
+                let old_arbiter = self.arbiter.get().unwrap();
+                self.arbiter.set(*new_arbiter);
+                self.env().emit_event(ArbiterUpdated { old_arbiter, new_arbiter: *new_arbiter });
+            }
+            ProposalAction::SetDisputeBondBps { bps } => {
+                let old_bps = self.dispute_bond_bps.get_or_default();
+                self.dispute_bond_bps.set(*bps);
+                self.env().emit_event(DisputeBondBpsUpdated { old_bps, new_bps: *bps });
             }
         }
 

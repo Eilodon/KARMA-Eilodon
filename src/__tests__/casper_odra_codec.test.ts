@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import casperSdk from "casper-js-sdk";
-import { decodeSkill, decodeJob } from "../lib/casper/odra_codec.js";
+import { decodeSkill, decodeJob, decodeComposition } from "../lib/casper/odra_codec.js";
 
 const { CLValue } = casperSdk;
 
@@ -34,6 +34,12 @@ function address(kind: "Account" | "Contract", hashHex: string): Uint8Array {
 }
 function concat(...parts: Uint8Array[]): Uint8Array {
   return Buffer.concat(parts.map((p) => Buffer.from(p)));
+}
+function vecU64(values: string[]): Uint8Array {
+  return concat(u32(values.length), ...values.map(u64));
+}
+function vecU32(values: number[]): Uint8Array {
+  return concat(u32(values.length), ...values.map(u32));
 }
 
 const OWNER_HASH = "11".repeat(32);
@@ -169,5 +175,21 @@ describe("decodeJob", () => {
       u8(99),
     );
     expect(() => decodeJob(bytes)).toThrow(/unknown JobStatus/);
+  });
+});
+
+describe("decodeComposition", () => {
+  it("decodes leaf skill ids (Vec<u64>) and weights (Vec<u32>) in Rust field order", () => {
+    const bytes = concat(vecU64(["1", "2", "3"]), vecU32([5000, 3000, 2000]));
+    const composition = decodeComposition(bytes);
+    expect(composition.leafSkillIds).toEqual([1n, 2n, 3n]);
+    expect(composition.weightsBps).toEqual([5000, 3000, 2000]);
+  });
+
+  it("decodes a single-leaf composition (the minimum allowed)", () => {
+    const bytes = concat(vecU64(["42"]), vecU32([10_000]));
+    const composition = decodeComposition(bytes);
+    expect(composition.leafSkillIds).toEqual([42n]);
+    expect(composition.weightsBps).toEqual([10_000]);
   });
 });

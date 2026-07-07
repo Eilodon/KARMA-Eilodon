@@ -8,7 +8,18 @@ import {
   u64ToBytes,
   AGENT_SKILL_REGISTRY_FIELD_INDEX,
 } from "./odra_storage_key.js";
-import { decodeSkill, decodeJob, decodeU32, decodeU512, type DecodedSkill, type DecodedJob } from "./odra_codec.js";
+import {
+  decodeSkill,
+  decodeJob,
+  decodeU32,
+  decodeU512,
+  decodeComposition,
+  type DecodedSkill,
+  type DecodedJob,
+  type DecodedComposition,
+} from "./odra_codec.js";
+import { EVENTS_DICT, EVENTS_LENGTH_KEY, decodeIndexedEvent } from "./odra_events.js";
+import type { IndexedEvent } from "../contract.js";
 const {
   RpcClient,
   HttpHandler,
@@ -17,6 +28,9 @@ const {
   Args,
   CLValue,
   CLTypeUInt8,
+  CLTypeUInt64,
+  CLTypeUInt32,
+  Key,
   ParamDictionaryIdentifier,
   ParamDictionaryIdentifierContractNamedKey,
 } = casperSdk;
@@ -81,12 +95,36 @@ export interface RegisterSkillInput {
   identityPolicy: number;
 }
 
+export interface RegisterCompositionInput {
+  name: string;
+  description: string;
+  mcpEndpoint: string;
+  pricePerCallMotes: bigint;
+  minReputationToInvoke: number;
+  identityPolicy: number;
+  /** Child skill ids (1..8) this composite fans its escrow out to. */
+  leafSkillIds: bigint[];
+  /** Basis-points weights, same length/order as `leafSkillIds`, must sum to 10_000. */
+  weightsBps: number[];
+}
+
 export interface CreateJobInput {
   skillId: bigint;
   /** 32-byte task hash, hex-encoded (no 0x prefix). */
   taskHashHex: string;
   deadlineSecs: bigint;
   /** Escrow attached to the payable call, in motes — must equal the skill's `price_per_call`. */
+  escrowMotes: bigint;
+}
+
+export interface CreateJobWithEvaluatorInput {
+  skillId: bigint;
+  taskHashHex: string;
+  deadlineSecs: bigint;
+  /** `"account-hash-<hex>"` — the neutral third party who will call `evaluateResult`. */
+  evaluatorAccountHash: string;
+  evaluatorFeeMotes: bigint;
+  /** Attached value — must equal exactly `price_per_call + evaluatorFeeMotes`. */
   escrowMotes: bigint;
 }
 
@@ -134,6 +172,21 @@ function bytesToCLList(bytes: Uint8Array): InstanceType<typeof CLValue> {
   return CLValue.newCLList(CLTypeUInt8, Array.from(bytes).map((b) => CLValue.newCLUint8(b)));
 }
 
+/** Odra's `Address`'s `CLTyped` impl is `CLType::Key` (`to_bytes()` delegates to
+ *  `Key::from(*self).to_bytes()` — confirmed in `odra-core-2.8.1/src/address.rs`, not assumed).
+ *  Accepts the same `"account-hash-<hex>"` / `"hash-<hex>"` prefixed string convention already
+ *  used elsewhere in this module (`casperAccountHash()`, `casper_get_account_state`). */
+function addressKeyArg(accountHashPrefixed: string): InstanceType<typeof CLValue> {
+  return CLValue.newCLKey(Key.newKey(accountHashPrefixed));
+}
+
+/** `Verdict`'s `CLTyped` impl is a plain `CLType::U8` discriminant in declaration order
+ *  (`ProviderAtFault = 0`, `RequesterAtFault = 1`) — confirmed via `cargo +nightly expand`, not
+ *  guessed; NOT the `List(U8)` wrapping used for Mapping/Var storage reads (that's a
+ *  dictionary-storage convention, unrelated to how a plain enum call arg is encoded). */
+export type Verdict = "ProviderAtFault" | "RequesterAtFault";
+const VERDICT_DISCRIMINANT: Record<Verdict, number> = { ProviderAtFault: 0, RequesterAtFault: 1 };
+
 /** Minimal seam `CasperLiveClient` needs from `RpcClient` — narrow on purpose so tests can
  *  inject a fake without reproducing casper-js-sdk's real JSON-RPC response parsing. */
 export interface CasperTransactionSubmitter {
@@ -147,7 +200,10 @@ export interface CasperTransactionSubmitter {
     key: string,
     path: string[],
   ): Promise<{
-    storedValue: { contractPackage?: { versions: Array<{ contractHash: { hash: { toHex(): string } } }> } };
+    storedValue: {
+      contractPackage?: { versions: Array<{ contractHash: { hash: { toHex(): string } } }> };
+      clValue?: InstanceType<typeof CLValue>;
+    };
   }>;
 }
 
@@ -187,6 +243,30 @@ export class CasperLiveClient {
     return this.submit(signer, "register_skill", args, paymentMotes);
   }
 
+  /** `register_composition(name, description, mcp_endpoint, price_per_call,
+   *  min_reputation_to_invoke, identity_policy, leaf_skill_ids: Vec<u64>, weights_bps: Vec<u32>)
+   *  -> u64` — registers the composite as a normal `Skill` entry (same id space as
+   *  `register_skill`) plus a `Composition` record; on-chain validation enforces 1..=8 leaves,
+   *  matching weight-vector length, weights summing to 10_000 bps, and single-level nesting
+   *  (every leaf must be an existing, active, non-composite skill). */
+  async registerComposition(
+    signer: CasperPrivateKey,
+    c: RegisterCompositionInput,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      name: CLValue.newCLString(c.name),
+      description: CLValue.newCLString(c.description),
+      mcp_endpoint: CLValue.newCLString(c.mcpEndpoint),
+      price_per_call: CLValue.newCLUInt512(c.pricePerCallMotes.toString()),
+      min_reputation_to_invoke: CLValue.newCLUInt32(c.minReputationToInvoke),
+      identity_policy: CLValue.newCLUint8(c.identityPolicy),
+      leaf_skill_ids: CLValue.newCLList(CLTypeUInt64, c.leafSkillIds.map((id) => CLValue.newCLUint64(id.toString()))),
+      weights_bps: CLValue.newCLList(CLTypeUInt32, c.weightsBps.map((w) => CLValue.newCLUInt32(w))),
+    });
+    return this.submit(signer, "register_composition", args, paymentMotes);
+  }
+
   /** `#[odra(payable)] deposit_bond()` — Odra's payable convention: attach CSPR via the `amount` runtime arg. */
   async depositBond(signer: CasperPrivateKey, amountMotes: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
     // deposit_bond() takes no named args — it reads self.env().attached_value(), which only a
@@ -205,6 +285,78 @@ export class CasperLiveClient {
       deadline_secs: CLValue.newCLUint64(j.deadlineSecs.toString()),
     });
     return this.submitPayable(signer, "create_job", innerArgs, j.escrowMotes, paymentMotes);
+  }
+
+  /** `create_job_with_evaluator(skill_id, task_hash: Bytes, deadline_secs, evaluator: Address,
+   *  evaluator_fee: U512) -> u64` — payable: `attached_value` must equal exactly
+   *  `price_per_call + evaluator_fee` (confirmed against the Rust doc comment, not assumed). */
+  async createJobWithEvaluator(
+    signer: CasperPrivateKey,
+    j: CreateJobWithEvaluatorInput,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const innerArgs = Args.fromMap({
+      skill_id: CLValue.newCLUint64(j.skillId.toString()),
+      task_hash: bytesToCLList(hexToBytes(j.taskHashHex)),
+      deadline_secs: CLValue.newCLUint64(j.deadlineSecs.toString()),
+      evaluator: addressKeyArg(j.evaluatorAccountHash),
+      evaluator_fee: CLValue.newCLUInt512(j.evaluatorFeeMotes.toString()),
+    });
+    return this.submitPayable(signer, "create_job_with_evaluator", innerArgs, j.escrowMotes, paymentMotes);
+  }
+
+  /** `evaluate_result(job_id, approved: bool)` — only the job's designated evaluator may call
+   *  this within the review window; the evaluator fee releases regardless of verdict. */
+  async evaluateResult(
+    signer: CasperPrivateKey,
+    jobId: bigint,
+    approved: boolean,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      job_id: CLValue.newCLUint64(jobId.toString()),
+      approved: CLValue.newCLValueBool(approved),
+    });
+    return this.submit(signer, "evaluate_result", args, paymentMotes);
+  }
+
+  /** `#[odra(payable)] dispute_result(job_id)` — requester contests a delivered result within the
+   *  review window; `attached_value` must equal exactly the required bond (bps of escrow, floored
+   *  at `MIN_DISPUTE_BOND_MOTES`) — read `get_dispute_bond_bps`/the skill's `price_per_call` off
+   *  `getSkill`/`getJob` to compute it, or over-estimate and let the contract revert on mismatch. */
+  async disputeResult(signer: CasperPrivateKey, jobId: bigint, bondMotes: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const innerArgs = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submitPayable(signer, "dispute_result", innerArgs, bondMotes, paymentMotes);
+  }
+
+  /** `#[odra(payable)] respond_to_dispute(job_id)` — provider matches the requester's dispute
+   *  bond exactly to contest (enter arbitration) within `RESPONSE_WINDOW` of the dispute. */
+  async respondToDispute(signer: CasperPrivateKey, jobId: bigint, bondMotes: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const innerArgs = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submitPayable(signer, "respond_to_dispute", innerArgs, bondMotes, paymentMotes);
+  }
+
+  /** `concede_dispute(job_id)` — provider forfeits both bonds + escrow to the requester. */
+  async concedeDispute(signer: CasperPrivateKey, jobId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submit(signer, "concede_dispute", args, paymentMotes);
+  }
+
+  /** `resolve_default_concede(job_id)` — anyone may call once `RESPONSE_WINDOW` elapses with no
+   *  provider response; resolves identically to `concede_dispute`. */
+  async resolveDefaultConcede(signer: CasperPrivateKey, jobId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submit(signer, "resolve_default_concede", args, paymentMotes);
+  }
+
+  /** `arbitrate(job_id, verdict: Verdict)` — arbiter-only; both sides must be bonded
+   *  (`dispute_result` + `respond_to_dispute` already called). Loser pays. */
+  async arbitrate(signer: CasperPrivateKey, jobId: bigint, verdict: Verdict, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      job_id: CLValue.newCLUint64(jobId.toString()),
+      verdict: CLValue.newCLUint8(VERDICT_DISCRIMINANT[verdict]),
+    });
+    return this.submit(signer, "arbitrate", args, paymentMotes);
   }
 
   /** `deliver_result(job_id, result_hash: Bytes)` */
@@ -274,6 +426,124 @@ export class CasperLiveClient {
     const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.jobs, u64ToBytes(jobId));
     const bytes = odraStructBytes(clValue);
     return bytes ? decodeJob(bytes) : undefined;
+  }
+
+  /** Reads `compositions[skillId]` — `undefined` if the id is a primitive skill (never composed)
+   *  or doesn't exist. Same "Mapping value ⇒ List(U8)" wire shape as `getSkill`/`getJob`. */
+  async getComposition(skillId: bigint): Promise<DecodedComposition | undefined> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.compositions, u64ToBytes(skillId));
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeComposition(bytes) : undefined;
+  }
+
+  /** Convenience read: `true` iff `skillId` has a `Composition` record (mirrors the contract's
+   *  own `is_composite` entry point, computed off a single dictionary read rather than a second
+   *  RPC round-trip). */
+  async isComposite(skillId: bigint): Promise<boolean> {
+    return (await this.getComposition(skillId)) !== undefined;
+  }
+
+  /** Reads `cross_chain_rep[account]` (0-100, or 0 if never attested) directly from the "state"
+   *  dictionary — the P0.1 bridge value set via the propose/approve/execute governance lifecycle
+   *  (`proposeSetCrossChainRep`/`approveProposal`/`executeProposal` below). */
+  async getCrossChainRep(accountHashHex: string): Promise<number> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.crossChainRep, accountAddressToBytes(accountHashHex));
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU32(bytes) : 0;
+  }
+
+  /** `propose_set_cross_chain_rep(agent: Address, score: u32, source_chain: String) -> u64` —
+   *  governance-signer only; the proposer's own approval counts automatically. Same
+   *  propose/approve/execute + 48h-timelock lifecycle gates `propose_set_arbiter`/
+   *  `propose_set_dispute_bond_bps` below (P0-B: no single-signer immediate-effect path for any
+   *  of the three). Returns only the broadcast tx hash — like every other write here, the
+   *  resulting `proposal_id` isn't returned over RPC; read `get_cross_chain_rep`/re-derive it from
+   *  the `ProposalCreated` event once tooling for that exists. */
+  async proposeSetCrossChainRep(
+    signer: CasperPrivateKey,
+    agentAccountHash: string,
+    score: number,
+    sourceChain: string,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      agent: addressKeyArg(agentAccountHash),
+      score: CLValue.newCLUInt32(score),
+      source_chain: CLValue.newCLString(sourceChain),
+    });
+    return this.submit(signer, "propose_set_cross_chain_rep", args, paymentMotes);
+  }
+
+  /** `propose_set_arbiter(new_arbiter: Address) -> u64` — governance-signer only. */
+  async proposeSetArbiter(signer: CasperPrivateKey, newArbiterAccountHash: string, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ new_arbiter: addressKeyArg(newArbiterAccountHash) });
+    return this.submit(signer, "propose_set_arbiter", args, paymentMotes);
+  }
+
+  /** `propose_set_dispute_bond_bps(bps: u32) -> u64` — governance-signer only. */
+  async proposeSetDisputeBondBps(signer: CasperPrivateKey, bps: number, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ bps: CLValue.newCLUInt32(bps) });
+    return this.submit(signer, "propose_set_dispute_bond_bps", args, paymentMotes);
+  }
+
+  /** `approve_proposal(proposal_id)` — governance-signer only; each signer may approve once. */
+  async approveProposal(signer: CasperPrivateKey, proposalId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ proposal_id: CLValue.newCLUint64(proposalId.toString()) });
+    return this.submit(signer, "approve_proposal", args, paymentMotes);
+  }
+
+  /** `execute_proposal(proposal_id)` — anyone may call once the approval threshold is met AND
+   *  the timelock delay has elapsed since the proposal was created. */
+  async executeProposal(signer: CasperPrivateKey, proposalId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ proposal_id: CLValue.newCLUint64(proposalId.toString()) });
+    return this.submit(signer, "execute_proposal", args, paymentMotes);
+  }
+
+  /** `cancel_proposal(proposal_id)` — governance-signer only; only while pending (not yet
+   *  executed or already cancelled). */
+  async cancelProposal(signer: CasperPrivateKey, proposalId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ proposal_id: CLValue.newCLUint64(proposalId.toString()) });
+    return this.submit(signer, "cancel_proposal", args, paymentMotes);
+  }
+
+  /** Total number of CES events emitted so far (`__events_length`) — a bare named-key `u32`
+   *  counter, NOT inside Odra's own `"state"` dictionary (see `odra_events.ts`'s header comment).
+   *  **Confirmed against the live deployed contract (2026-07-07)**: this comes back as a native
+   *  `CLValue::U32` (`.ui32`), NOT the `List(U8)`-wrapped encoding Odra's own Mapping/Var reads
+   *  use — makes sense in hindsight, since CES manages this key entirely outside Odra's storage
+   *  abstraction. The `odraStructBytes`/`decodeU32` fallback below is dead code against the
+   *  current contract; kept only in case a future CES/Odra version changes this. */
+  async getEventCount(): Promise<number> {
+    const entityKey = await this.resolveEntityHash();
+    const { storedValue } = await this.rpc.queryLatestGlobalState(entityKey, [EVENTS_LENGTH_KEY]);
+    const clValue = storedValue.clValue;
+    if (clValue?.ui32 !== undefined) return clValue.ui32.toNumber();
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU32(bytes) : 0;
+  }
+
+  /** Reads and decodes the event at `eventIndex` (0-based, per CES's own sequential numbering)
+   *  into KARMA's chain-agnostic `IndexedEvent` shape — `undefined` for an out-of-range index or
+   *  an event type this indexer doesn't act on (see `odra_events.ts`). The `"__events"` dictionary
+   *  item key is the plain decimal index string, not a blake2b hash (confirmed in
+   *  `casper-event-standard`'s source — `storage::dictionary_put(seed, &lenght.to_string(), …)`). */
+  async getEvent(eventIndex: number): Promise<IndexedEvent | undefined> {
+    const entityKey = await this.resolveEntityHash();
+    const { stateRootHash } = await this.rpc.getStateRootHashLatest();
+    const identifier = new ParamDictionaryIdentifier(
+      undefined,
+      new ParamDictionaryIdentifierContractNamedKey(entityKey, EVENTS_DICT, String(eventIndex)),
+    );
+    try {
+      const result = await this.rpc.getDictionaryItemByIdentifier(stateRootHash.toHex(), identifier);
+      const bytes = odraStructBytes(result.storedValue.clValue);
+      return bytes ? decodeIndexedEvent(eventIndex, bytes) : undefined;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const detail = (e as { sourceErr?: { data?: string } })?.sourceErr?.data;
+      if (/not found|ValueNotFound/i.test(msg) || (detail && /not found/i.test(detail))) return undefined;
+      throw e;
+    }
   }
 
   /** `this.contractHash` is the *package* hash (stable across upgrades — what
