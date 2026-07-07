@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { createPublicKey, verify as cryptoVerify } from "node:crypto";
+import casperSdk from "casper-js-sdk";
 import type { PrivateKey as CasperKeypair } from "casper-js-sdk";
 import { keystoreManager } from "../lib/keystore.js";
 import {
@@ -12,6 +14,7 @@ import type {
   PaymentReceipt,
   PaymentRequest,
 } from "../lib/payment/plugin.js";
+const { PublicKey } = casperSdk;
 
 /**
  * x402Plugin/Casper (T11) — IPaymentPlugin implementation for Casper's live x402 fast lane.
@@ -168,6 +171,20 @@ export class CasperX402Plugin implements IPaymentPlugin {
   }
 
   async pay(req: PaymentRequest, opts: { agentId: string }): Promise<PaymentReceipt> {
+    return (await this.payWithEnvelope(req, opts)).receipt;
+  }
+
+  /**
+   * Same as `pay()`, but also returns the full signed envelope — `PaymentReceipt` (the shared
+   * `IPaymentPlugin` shape) only carries `signature` through `txHash`, dropping `validAfter` /
+   * `validBefore` / `nonce`, so a resource server can't reconstruct the canonical payload from a
+   * receipt alone. Callers that need to actually verify the payment (not just self-check its
+   * shape) — e.g. the `X-PAYMENT` header a provider receives — want this method instead.
+   */
+  async payWithEnvelope(
+    req: PaymentRequest,
+    opts: { agentId: string },
+  ): Promise<{ receipt: PaymentReceipt; envelope: CasperX402SignedPayload }> {
     if (!this.networks.includes(req.network)) {
       throw new Error(`[x402-casper] unsupported network ${req.network}`);
     }
@@ -205,7 +222,7 @@ export class CasperX402Plugin implements IPaymentPlugin {
       publicKeyHex: pubHex,
       signature: Buffer.from(sigDER).toString("hex"),
     };
-    return {
+    const receipt: PaymentReceipt = {
       rail: this.rail,
       payer,
       payee: req.payTo,
@@ -213,13 +230,19 @@ export class CasperX402Plugin implements IPaymentPlugin {
       asset,
       network: req.network,
       facilitatorRef: this.facilitatorUrl,
-      // Forward the signed envelope through `txHash` until a settlement tx is realised by the
+      // Forward the signature through `txHash` until a settlement tx is realised by the
       // facilitator (T13). Distinct from a real chain hash — callers should not treat it as one;
-      // the receipt carries the envelope so the demo flow can stamp the `X-PAYMENT` header.
+      // `payWithEnvelope` carries the full envelope for callers that need to verify or transmit it.
       txHash: signedEnvelope.signature,
     };
+    return { receipt, envelope: signedEnvelope };
   }
 
+  /** Structural self-check only (shared `IPaymentPlugin` contract — receipts from every chain
+   *  round-trip through this). Does NOT verify the cryptographic signature: `PaymentReceipt`
+   *  doesn't carry `validAfter`/`validBefore`/`nonce`, so there's nothing to re-derive the
+   *  canonical payload from. A resource server verifying a real `X-PAYMENT` header should use
+   *  `verifyCasperExactPayload` against the full envelope instead. */
   async verify(receipt: PaymentReceipt): Promise<boolean> {
     if (receipt.rail !== this.rail) return false;
     if (!this.networks.includes(receipt.network)) return false;
@@ -227,6 +250,38 @@ export class CasperX402Plugin implements IPaymentPlugin {
     if (!receipt.payee || !receipt.amount) return false;
     return true;
   }
+}
+
+export type CasperExactPayloadVerdict = { ok: true } | { ok: false; reason: string };
+
+/**
+ * The real, cryptographic check a resource server (or a self-hosted facilitator, same pattern
+ * DEMO_STELLAR.md's provider stub uses for the Stellar rail) runs against a received `X-PAYMENT`
+ * envelope: signature validity, expiry window, and (optionally) the expected payee. Pure —
+ * no network calls.
+ */
+export function verifyCasperExactPayload(
+  envelope: CasperX402SignedPayload,
+  opts: { expectedPayee?: string; expectedNetwork?: string; now?: number } = {},
+): CasperExactPayloadVerdict {
+  const now = opts.now ?? Date.now();
+  if (envelope.scheme !== "exact") return { ok: false, reason: "unsupported scheme" };
+  if (opts.expectedNetwork && envelope.network !== opts.expectedNetwork) {
+    return { ok: false, reason: "network mismatch" };
+  }
+  if (opts.expectedPayee && envelope.payload.payee !== opts.expectedPayee) {
+    return { ok: false, reason: "payee mismatch" };
+  }
+  if (now < envelope.payload.validAfter) return { ok: false, reason: "not yet valid" };
+  if (now > envelope.payload.validBefore) return { ok: false, reason: "expired" };
+
+  const canonical = canonicalize(envelope.payload);
+  const pem = PublicKey.fromHex(envelope.publicKeyHex).toPem();
+  const nodePubKey = createPublicKey({ key: pem, format: "pem" });
+  const sigDER = Buffer.from(envelope.signature, "hex");
+  const validSig = cryptoVerify("sha256", new TextEncoder().encode(canonical), nodePubKey, sigDER);
+  if (!validSig) return { ok: false, reason: "invalid signature" };
+  return { ok: true };
 }
 
 /** Recommended payment option entry for a Casper-friendly skill's `register_skill` payload. */

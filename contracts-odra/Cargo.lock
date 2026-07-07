@@ -1138,6 +1138,7 @@ name = "karma-odra"
 version = "0.1.0"
 dependencies = [
  "odra",
+ "odra-build",
  "odra-test",
 ]
 
@@ -1363,6 +1364,16 @@ dependencies = [
  "odra-core",
  "odra-macros",
  "odra-schema",
+]
+
+[[package]]
+name = "odra-build"
+version = "2.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c5b91a79fa9a660b3a1237a719dd94e12813743f064ce129055b0c14bf89768"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

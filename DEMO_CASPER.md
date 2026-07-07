@@ -1,12 +1,15 @@
 # KARMA — Casper Agentic Buildathon demo (RWA-oracle + x402)
 
-> Casper Agentic Buildathon submission, T13 deliverable of plan
-> [`docs/superskills/plans/2026-06-23-stellar-casper-tracks.md`](docs/superskills/plans/2026-06-23-stellar-casper-tracks.md).
+> Casper Agentic Buildathon submission, T13 deliverable of the internal
+> stellar-casper-tracks build plan.
 
 This document is the reproduction guide a judge can follow to see KARMA's
 RWA-oracle invocation work end-to-end on Casper Testnet: an Odra-backed
 `AgentSkillRegistry`, an x402 fast-lane payment via Casper's live x402
 Facilitator, and a signed price feed settled by the standard escrow review window.
+
+**Short on time?** [90-second visual walkthrough](docs/media/casper-judges.html) — the same
+story below, with a real captured terminal transcript instead of a wall of markdown.
 
 ## What this submission does (architecture)
 
@@ -41,12 +44,14 @@ settle micropayments per HTTP request, no human in the loop.
 
 | Layer | Path | Status |
 |---|---|---|
-| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 32/32 |
+| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 120/120 |
 | Casper secp256k1 keystore adapter | [`src/lib/casper/keypair.ts`](src/lib/casper/keypair.ts) (T10) | 12/12 tests |
-| x402Plugin/Casper | [`src/plugins/x402_casper.ts`](src/plugins/x402_casper.ts) (T11) | 22/22 tests |
+| x402Plugin/Casper | [`src/plugins/x402_casper.ts`](src/plugins/x402_casper.ts) (T11) | 28/28 tests — `verifyCasperExactPayload` is real ECDSA/SHA-256, not structural |
 | KARMA × Casper composability demo | [`src/scripts/demo_casper_composability.ts`](src/scripts/demo_casper_composability.ts) (T12) | runs end-to-end |
-| RWA-oracle registration script | [`src/scripts/register_rwa_oracle_skill.ts`](src/scripts/register_rwa_oracle_skill.ts) (T13) | dry-run prints the deploy |
-| RWA-oracle e2e demo | [`src/scripts/demo_casper_e2e.ts`](src/scripts/demo_casper_e2e.ts) (T13) | runs end-to-end |
+| RWA-oracle registration script | [`src/scripts/register_rwa_oracle_skill.ts`](src/scripts/register_rwa_oracle_skill.ts) (T13) | dry-run by default; `--live` builds + signs + submits a real `casper-js-sdk` transaction |
+| RWA-oracle e2e demo | [`src/scripts/demo_casper_e2e.ts`](src/scripts/demo_casper_e2e.ts) (T13) | runs end-to-end (offline state machine) |
+| Live x402 HTTP loop | [`src/scripts/demo_casper_x402_live.ts`](src/scripts/demo_casper_x402_live.ts) (T13-live) | real local HTTP 402 → sign → verify round trip; `--live` adds the on-chain `create_job` leg |
+| Real RPC client (register/deposit/create_job/deliver/confirm/withdraw) | [`src/lib/casper/live_client.ts`](src/lib/casper/live_client.ts) (T13-live) | 5/5 tests — builds, signs, and submits real `casper-js-sdk` transactions once a contract is deployed |
 
 ## Quick start — offline orchestration (no Casper credentials needed)
 
@@ -79,14 +84,16 @@ verification are produced by REAL T10/T11 code, not stubbed.
 
 ## Live run — Casper Testnet (owner-driven, requires funded keystore)
 
-> ⚠️ This step is owner-driven because it needs funded Casper Testnet credentials,
-> the `cargo-odra` CLI, and a deployed Odra contract package. Steps below are the
-> reproduction plan.
+> ⚠️ This step is owner-driven because it needs funded Casper Testnet credentials. Everything
+> else is wired and tested — `register_rwa_oracle_skill.ts --live` and
+> `demo_casper_x402_live.ts --live` build, sign, and submit real `casper-js-sdk` transactions
+> today (`src/lib/casper/live_client.ts`); they just need Step 1's contract to exist first.
 
 ### Step 0 — Toolchain
 
 ```bash
-rustup target add wasm32-unknown-unknown
+rustup toolchain install nightly --profile minimal   # odra-macros 2.x needs nightly
+rustup target add wasm32-unknown-unknown --toolchain nightly
 cargo install cargo-odra
 # Casper client (used for put-deploy + query-balance)
 cargo install casper-client
@@ -96,7 +103,7 @@ cargo install casper-client
 
 ```bash
 cd contracts-odra
-cargo odra build
+cargo +nightly odra build
 # Produces wasm/karma_odra.wasm
 
 casper-client put-deploy \
@@ -110,6 +117,12 @@ casper-client put-deploy \
 # Record the printed `contract_package_hash` as KARMA_ODRA_REGISTRY in .env
 ```
 
+> **Known blocker as of this writing:** `cargo odra build` doesn't yet produce the wasm file —
+> see `contracts-odra/README.md` § "wasm32 build — known blocker" for the exact error, the two
+> fixes already applied (Odra.toml casing, `no_std` on the wasm32 target — native tests stay
+> 120/120 green throughout), and the one concrete step left (a `build.rs` + `cdylib` restructure,
+> or pinning a cargo-odra release that matches `odra 2.8.1`).
+
 ### Step 2 — Register the `rwa_price_oracle` skill
 
 ```bash
@@ -120,8 +133,9 @@ export KEYSTORE_PASSWORD=...
 export KARMA_AGENT_ID=agent-alpha
 
 pnpm exec tsx src/scripts/register_rwa_oracle_skill.ts --live
-# Prints the agent's Casper account-hash + RPC + contract package,
-# then drops into casper-client to submit the deploy.
+# Builds a real ContractCallBuilder transaction (register_skill, matching the Rust signature
+# 1-to-1), signs it with the agent's Casper key, submits it via RpcClient.putTransaction, and
+# prints the real transaction hash — no casper-client shell-out, no stub.
 ```
 
 ### Step 3 — Provider deposits a Tier-2 Sybil bond (PD-007)
@@ -140,15 +154,10 @@ casper-client put-deploy \
 ### Step 4 — Run the live e2e (x402 fast-lane invocation)
 
 ```bash
-# Pre-req: provider's mcp endpoint accepts X-PAYMENT headers (see DEMO_STELLAR.md §Step 3
-# for the matching Express + @x402/express middleware setup; Casper-side substitutes
-# the facilitator URL for Casper's live one):
-export CASPER_X402_FACILITATOR_URL=https://x402-facilitator.casper.network
-
-# Then the live runner posts against the provider stub with the x402 envelope from T11.
-# The facilitator settles CSPR atomically with the request, and the provider stub
-# fetches the signed RWA feed, calls `deliver_result` on Odra, and the requester
-# confirms completion + the provider withdraws.
+pnpm exec tsx src/scripts/demo_casper_x402_live.ts --live
+# Runs the real local HTTP 402 -> sign -> verify loop (no funded key needed for this part —
+# see it work today by running it WITHOUT --live), then, with --live and Step 1-3's env vars
+# set, submits a real create_job deploy via CasperLiveClient to settle the escrow on-chain.
 ```
 
 ### Expected live transactions
@@ -194,13 +203,18 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   with zero chain-specific glue. The wire format IS the integration.
 - **Odra port mirrors audited Solidity invariants.** CEI before
   `transfer_tokens`, pull-payment ledger, self-deal nullification on both
-  completion paths. 32 tests pin the boundary cases — happy path, ghost
+  completion paths. 120 tests pin the boundary cases — happy path, ghost
   requester, dispute window, double-complete, identity policy, duplicate
-  task-hash exactly-once, all 7 Tier-2 bond cases.
-- **No `@x402/casper` npm package yet.** T11's plugin builds the "exact"
-  payment payload natively (canonical-JSON + SHA-256 + secp256k1 + DER) —
-  exactly the pipeline Casper's live x402 Facilitator (announced with the
-  Casper AI Toolkit) verifies. Aligning the precise wire-field names to
-  Casper Foundation's facilitator spec is the final owner-driven step.
+  task-hash exactly-once, all 7 Tier-2 bond cases, plus the P0-A evaluator
+  and P0-B governance/timelock mechanics.
+- **No `@x402/casper` npm package yet, so KARMA runs its own verification** —
+  same topology DEMO_STELLAR.md uses for the Stellar rail. T11's plugin builds
+  the "exact" payment payload natively (canonical-JSON + SHA-256 + secp256k1 +
+  DER); `verifyCasperExactPayload` (T13-live) independently re-verifies that
+  signature, the expiry window, and the payee — real cryptography, not a
+  shape check. `demo_casper_x402_live.ts` runs the whole HTTP 402 → sign →
+  verify loop against a real local server today. Aligning the wire-field
+  names to Casper Foundation's official facilitator (once published) is a
+  drop-in swap, not a rewrite.
 - **Nightly Rust required.** `odra-macros 2.x` uses `#![feature(box_patterns)]`.
   Documented in `contracts-odra/README.md` and the plan's done-state notes.

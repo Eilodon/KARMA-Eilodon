@@ -8,6 +8,7 @@ import {
   canonicalizeCasperPaymentPayload,
   casperX402PaymentOption,
   convertCsprToMotes,
+  verifyCasperExactPayload,
   type CasperX402SignedPayload,
 } from "../plugins/x402_casper.js";
 import { deriveCasperPrivateKey } from "../lib/casper/keypair.js";
@@ -262,6 +263,80 @@ describe("canonicalize (T11)", () => {
     expect(canonicalizeCasperPaymentPayload({ a: { z: 1, y: 2 }, b: [3, 2] })).toBe(
       `{"a":{"y":2,"z":1},"b":[3,2]}`,
     );
+  });
+});
+
+describe("payWithEnvelope + verifyCasperExactPayload — real crypto verification (T13-live)", () => {
+  it("a freshly signed envelope verifies against the payee + network it was built for", async () => {
+    const p = newPlugin();
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    expect(
+      verifyCasperExactPayload(envelope, {
+        expectedPayee: envelope.payload.payee,
+        expectedNetwork: CASPER_TESTNET_CAIP2,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("rejects a tampered payload (signature no longer matches)", async () => {
+    const p = newPlugin();
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    const tampered: CasperX402SignedPayload = {
+      ...envelope,
+      payload: { ...envelope.payload, amount: "999999999" },
+    };
+    expect(verifyCasperExactPayload(tampered)).toEqual({ ok: false, reason: "invalid signature" });
+  });
+
+  it("rejects a signature from a different key than the claimed publicKeyHex", async () => {
+    const p = newPlugin();
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    const other = new CasperX402Plugin(FACILITATOR, () => OTHER_KEYPAIR);
+    const { envelope: otherEnvelope } = await other.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-b" },
+    );
+    const forged: CasperX402SignedPayload = { ...envelope, signature: otherEnvelope.signature };
+    expect(verifyCasperExactPayload(forged)).toEqual({ ok: false, reason: "invalid signature" });
+  });
+
+  it("rejects an expired envelope", async () => {
+    const p = newPlugin({ now: () => 1_000, ttlMs: 500 });
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    expect(verifyCasperExactPayload(envelope, { now: 2_000 })).toEqual({ ok: false, reason: "expired" });
+  });
+
+  it("rejects an envelope not yet valid", async () => {
+    const p = newPlugin({ now: () => 10_000 });
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    expect(verifyCasperExactPayload(envelope, { now: 0 })).toEqual({ ok: false, reason: "not yet valid" });
+  });
+
+  it("rejects a payee mismatch", async () => {
+    const p = newPlugin();
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: "account-hash-" + "ab".repeat(32), network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-a" },
+    );
+    expect(verifyCasperExactPayload(envelope, { expectedPayee: "account-hash-" + "ff".repeat(32) })).toEqual({
+      ok: false,
+      reason: "payee mismatch",
+    });
   });
 });
 

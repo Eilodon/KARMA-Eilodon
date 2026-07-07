@@ -1,5 +1,18 @@
 # KARMA
 
+> 🤖 **Casper Agentic Buildathon — judges start here:** [DEMO_CASPER.md](DEMO_CASPER.md) ·
+> [90-second visual walkthrough](docs/media/casper-judges.html) · an RWA price-oracle agent that
+> discovers a skill, pays for it over a real signed x402 envelope, and settles the job on an Odra
+> `AgentSkillRegistry` — trust from escrow + cryptography, not a server anyone has to take on faith.
+>
+> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 120/120 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](docs/media/casper-judges.html)
+>
+> ☝️ **The terminal panels in that page are a real captured run**, not typed-out copy — reproduce
+> them yourself with `pnpm exec tsx src/scripts/demo_casper_x402_live.ts` (real local HTTP 402 →
+> pay → verify loop) and `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` (120/120).
+> The on-chain Testnet deploy is the one remaining step, gated on a funded key — see
+> [DEMO_CASPER.md](DEMO_CASPER.md) for exactly where that stands and how to finish it.
+
 > 🏆 **Stellar Hacks: Real-World ZK — judges start here:** [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
 > live Soroban verifier [`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP)
 > on Testnet · a Groth16/BN254 credential proof verified on-chain via native host functions
@@ -167,7 +180,7 @@ owner-driven testnet (funding a Casper account is manual).
 |---|---|---|
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
-| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` | testnet (owner-driven) |
+| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` · `src/lib/casper/live_client.ts` | real HTTP + ECDSA verify loop today ([demo](src/scripts/demo_casper_x402_live.ts)); on-chain settlement testnet (owner-driven) |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
 | **ReputationAggregationProof** (T1.1) — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
 | **Cross-chain reputation oracle** (T1.3) — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
