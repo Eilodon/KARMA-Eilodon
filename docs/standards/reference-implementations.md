@@ -93,6 +93,14 @@ implementations. A breaking spec bump (v2) means existing implementations get a 
 Deprecated implementations are NOT deleted — they ship with a `@deprecated` JSDoc tag and
 a migration link. The `paymentPlugins` registry can hold both during the transition.
 
+## Casper Enhancement Proposal (draft)
+
+The Casper on-chain interface (`AgentSkillRegistry`: identity gate, reputation, escrow, symmetric
+dispute-bond arbitration, multisig+timelock governance) is drafted as a CEP in
+[`CEP-0000-agent-skill-trust-registry.md`](./CEP-0000-agent-skill-trust-registry.md). Not yet
+submitted upstream — see that file's Open Questions for what's blocking submission (independent
+second implementation, official CEP number).
+
 ## Open positions
 
 - Pharos escrow as a `IPaymentPlugin` wrapper (v2 cleanup).
