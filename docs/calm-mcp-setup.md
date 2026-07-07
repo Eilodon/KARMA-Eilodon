@@ -147,8 +147,20 @@ search and manual reading there, not `callers`/`callees`/`edit_context`.
 First connection on a machine without `calm` installed yet triggers
 `script/calm-mcp-launcher.sh`'s self-install fallback (a checksum-verified
 download from CALM's GitHub releases, same as the Setup Script above) — this
-makes the very first `calm` tool call slower but requires no manual step.
-To avoid that entirely, pre-install once yourself:
+makes the very first `calm` tool call slower but requires no manual step,
+**once the "Known gap" above is fixed upstream**. Until then that download
+404s and the launcher just fails with an error pointing here — pre-install
+by building from source instead (same fallback the Setup Script uses):
+
+```bash
+git clone --depth 1 https://github.com/Eilodon/CALM.git /tmp/CALM-src
+cd /tmp/CALM-src && cargo build --release -p calm-cli --features embeddings,tier0-5,scip-overlay
+mkdir -p ~/.local/bin && cp target/release/calm ~/.local/bin/calm
+rustup component add rust-analyzer   # optional, upgrades Rust call edges to "formal"
+```
+
+Once CALM cuts a release with correctly-named assets, the one-liner below
+starts working instead and this workaround is no longer needed:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Eilodon/CALM/main/scripts/install.sh | sh
