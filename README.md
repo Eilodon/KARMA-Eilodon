@@ -1,19 +1,39 @@
 # KARMA
 
 > 🤖 **Casper Agentic Buildathon — judges start here:** [DEMO_CASPER.md](DEMO_CASPER.md) ·
-> [90-second visual walkthrough](docs/media/casper-judges.html) · an RWA price-oracle agent that
-> discovers a skill, pays for it over a real signed x402 envelope, and settles the job on an Odra
-> `AgentSkillRegistry` — trust from escrow + cryptography, not a server anyone has to take on faith.
+> [90-second visual walkthrough (live page, no clone needed)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) ·
+> an RWA price-oracle agent that discovers a skill, pays for it over a real signed x402 envelope,
+> and settles the job on an Odra `AgentSkillRegistry` — trust from escrow + cryptography, not a
+> server anyone has to take on faith.
 >
-> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 120/120 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](docs/media/casper-judges.html)
+> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 120/120 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)
 >
 > ☝️ **The terminal panels in that page are a real captured run**, not typed-out copy — reproduce
 > them yourself with `pnpm exec tsx src/scripts/demo_casper_x402_live.ts` (real local HTTP 402 →
 > pay → verify loop), `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` (120/120),
-> and `contracts-odra/build-wasm.sh` (a real, `WebAssembly.validate()`-clean 534KB
-> `karma_odra.wasm`, all 24 entry points exported). Submitting that wasm to Testnet is the one
-> remaining step, gated on a funded key nobody should paste into an AI session — see
-> [DEMO_CASPER.md](DEMO_CASPER.md) for exactly where that stands and how to finish it.
+> and `contracts-odra/build-wasm.sh` (a real, `WebAssembly.validate()`-clean ~538KB
+> `karma_odra.wasm`, all 59 entry points exported). **The contract is deployed and verified
+> end-to-end on Testnet** (`hash-29b7daeb…`, governance-hardened redeploy) — see
+> [DEMO_CASPER.md](DEMO_CASPER.md) for the exact tx-by-tx evidence. Governance is a real 2-of-2
+> multisig with a 48h timelock, confirmed live by decoding the contract's own
+> `GovernanceConfigured` event, not just trusting the deploy args as submitted.
+>
+> **Four more live flows closed out same-day, all real transactions on that contract, all in
+> [DEMO_CASPER.md](DEMO_CASPER.md):** a full job lifecycle (register → bond → escrow → deliver →
+> confirm → withdraw, provider reputation bumped `→ 55` on-chain); the **courtroom pillar run for
+> real** — a requester disputes a delivered result, the provider matches the bond to contest, and a
+> neutral on-chain arbiter (a distinct account from both parties) rules `ProviderAtFault` —
+> reputation *actually slashed* `50 → 40`, escrow *actually refunded*, not a unit test; a real
+> `propose_set_cross_chain_rep` → `approve_proposal` chain for the "reputation travels with the
+> agent, not the chain" story, with `execute_proposal` correctly reverting `TimelockNotElapsed`
+> against the real 48h clock; and, in the spirit of "prove it, don't just claim it," the write-up
+> doesn't hide the two real mistakes hit live (an underfunded throwaway key, a duplicate task
+> hash) — including the exact error codes that caught them.
+>
+> 🎬 **[Watch the ~2:18 narrated video](docs/media/casper-demo-video.mp4)** — the economic loop,
+> the courtroom ruling live, and the governed cross-chain-rep timelock rejecting an early execute —
+> all captured from real terminal runs against the live contract, all real tx hashes, real
+> `testnet.cspr.live` screenshots, no typed-out copy.
 
 > 🏆 **Stellar Hacks: Real-World ZK — judges start here:** [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
 > live Soroban verifier [`CDBIDMG2…SATCJT4GTP`](https://stellar.expert/explorer/testnet/contract/CDBIDMG22BBIQPSWBNPMUOXXH7XJMHUHASEQYS3TDH766WSATCJT4GTP)
@@ -62,6 +82,38 @@ not just a claim. Details in [DEMO.md](DEMO.md) · [DEMO_CASPER.md](DEMO_CASPER.
 
 ---
 
+## What KARMA actually builds
+
+Most agent projects ship a worker — one bot, one function. KARMA ships the institutions
+underneath a functioning labor market, each with code running on-chain today:
+
+| Real-world institution | In KARMA | Status |
+|---|---|---|
+| Passport office | Terminal3 DID (`did:t3n:…`) + `IdentityPolicy` gate | live, testnet |
+| Credit bureau | On-chain reputation + EigenTrust-lite flow ranking + Sybil bond | live + tested |
+| A private CV (prove without revealing) | Two Groth16/BN254 ZK verifiers — skill gate + portfolio credential | live on-chain |
+| A hiring hall | BM25 skill discovery, reputation-boosted | tested |
+| An escrow bank | Escrow + release on Pharos and Casper | live, both chains |
+| A vending machine for machines | Per-call x402 settlement (USDC on Stellar, CSPR on Casper) | live / verified |
+| A courtroom — where the judge is also an agent | Dispute bond + neutral evaluator arbitration | live on-chain (Casper) |
+| A limited power of attorney | TEE-signed, time-bounded, revocable delegation (Terminal3) | live, testnet |
+| A company, not just a freelancer | Skill composition + weighted revenue split | deployed, Casper |
+
+Everyone else at this table is demoing a worker. We built the labor market.
+
+### Where this sits relative to adjacent standards
+
+Not competitors — each piece solves a different layer, and none of them solve all three:
+
+| Standard | Solves | Doesn't solve |
+|---|---|---|
+| MCP | Wire format — how an agent calls a tool | Commerce — no price, payment, or trust |
+| x402 | Payment scheme — how money moves for a call | Trust — no identity, reputation, dispute |
+| ERC-8004 | Identity + a pointer to reputation | Settlement — no escrow, no payment rail |
+| **KARMA** | **Identity + reputation + dispute resolution, wired to settlement, spoken over MCP** | — |
+
+Full comparison: [docs/standards/relation-to-adjacent-standards.md](docs/standards/relation-to-adjacent-standards.md).
+
 ## Why KARMA
 
 - **A protocol, not a port.** `IPaymentPlugin v1` and the `IdentityPolicy` registry are versioned,
@@ -82,6 +134,16 @@ not just a claim. Details in [DEMO.md](DEMO.md) · [DEMO_CASPER.md](DEMO_CASPER.
 - **Non-repudiation & bounded authority (Terminal3-gated chains).** Every job binds to a signed
   identity receipt, and delegated authority is always TEE-signed, time-bounded, and revocable — never
   a permanent grant.
+- **A path from library to standard, not just a claim of one.** A spec only one team implements
+  is a library, not a standard. The settlement/identity/dispute interface is already drafted as a
+  **Casper Enhancement Proposal** —
+  [`CEP-0000-agent-skill-trust-registry.md`](docs/standards/CEP-0000-agent-skill-trust-registry.md),
+  covering every entry point, event, and state transition in the live contract — so any Casper
+  project can adopt this trust layer without running a KARMA server at all. Next: extract
+  `docs/standards/` and its conformance test vectors into a standalone, installable package, and
+  invite a second, independently-authored implementation before submitting upstream to
+  `casper-network/ceps`. That's the difference between a buildathon entry and infrastructure the
+  ecosystem keeps after judging ends.
 
 ## Architecture (Stellar ZK track)
 
@@ -123,9 +185,10 @@ conformance matrix, all chains), [docs/RUNTIME.md](docs/RUNTIME.md) (full operat
 
 ## Tools
 
-This is a real, full MCP server — 13 skill-economy tools + 8 Terminal3 identity tools + 8 Casper
-Odra registry tools, all in-process, all backed by live testnet chains (Pharos escrow, Terminal3
-SIWE identity, Casper AgentSkillRegistry). Expand for the full surface:
+This is a real, full MCP server — 14 skill-economy tools + 8 Terminal3 identity tools + 25 Casper
+Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
+governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
+identity, Casper AgentSkillRegistry). Expand for the full surface:
 
 <details>
 <summary><strong>Full tool tables</strong></summary>
@@ -185,6 +248,22 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 | `casper_confirm_completion` | write | Requester releases escrow + bumps reputation (arm's-length). |
 | `casper_withdraw` | write | Pull the caller's released-escrow balance (CEI pull-payment). |
 | `casper_get_account_state` | read | Pending balance + reputation + bonded amount, read live from chain. |
+| `casper_register_composition` | write | Register a composite skill fanning escrow across 1-8 leaf skills by basis-points weight. |
+| `casper_get_composition` | read | Read a skill's composition manifest (leaf ids + weights), or `isComposite=false` for a primitive. |
+| `casper_create_job_with_evaluator` | write | **P0-A:** create a job with a neutral third-party evaluator instead of direct requester review. |
+| `casper_evaluate_result` | write | **P0-A:** the designated evaluator approves/rejects a delivered result; fee releases either way. |
+| `casper_dispute_result` | write | **P1-A:** requester posts a bond to contest a delivered result within the review window. |
+| `casper_respond_to_dispute` | write | **P1-A:** provider matches the bond to enter arbitration. |
+| `casper_concede_dispute` | write | Provider concedes — forfeits both bonds + escrow to the requester. |
+| `casper_resolve_default_concede` | write | Anyone may call once the provider's response window elapses unanswered. |
+| `casper_arbitrate` | write | Arbiter-only: adjudicates a contested (both-sides-bonded) dispute — loser pays. |
+| `casper_get_cross_chain_rep` | read | Read an agent's cross-chain reputation attestation (0-100), live from chain. |
+| `casper_propose_set_cross_chain_rep` | write | **P0-B:** propose a cross-chain rep attestation (governance-signer; propose/approve/execute + timelock). |
+| `casper_propose_set_arbiter` | write | **P0-B:** propose a new arbiter address — same governed lifecycle, no single-signer bypass. |
+| `casper_propose_set_dispute_bond_bps` | write | **P0-B:** propose a new dispute-bond basis-points value — same governed lifecycle. |
+| `casper_approve_proposal` | write | Approve a pending governance proposal (governance-signer, once each). |
+| `casper_execute_proposal` | write | Execute a proposal once threshold + timelock are satisfied (anyone may call). |
+| `casper_cancel_proposal` | write | Cancel a pending (not yet executed) proposal (governance-signer only). |
 
 </details>
 
@@ -194,10 +273,12 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 
 The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
 `SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
-chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract
-compiles to a real, verified wasm today (`contracts-odra/build-wasm.sh`) and is reachable through
-8 MCP tools (`casper.tool.ts`) — the chain leg remains owner-driven testnet (funding + signing the
-deploy needs a real key, which stays with its owner, not in this session).
+chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract is
+**deployed and verified end-to-end on Testnet** and reachable through 25 MCP tools
+(`casper.tool.ts`) — skill registry, composition, the full evaluator/dispute/arbitration lifecycle,
+and cross-chain-rep governance are all live-wired, not just modeled offline. A governance-hardening
+redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owner-driven testnet
+(funding + signing needs a real key, which stays with its owner, not in this session).
 
 | Capability | Where | Status |
 |---|---|---|

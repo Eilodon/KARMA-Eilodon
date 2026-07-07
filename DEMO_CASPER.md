@@ -8,8 +8,12 @@ RWA-oracle invocation work end-to-end on Casper Testnet: an Odra-backed
 `AgentSkillRegistry`, an x402 fast-lane payment via Casper's live x402
 Facilitator, and a signed price feed settled by the standard escrow review window.
 
-**Short on time?** [90-second visual walkthrough](docs/media/casper-judges.html) — the same
-story below, with a real captured terminal transcript instead of a wall of markdown.
+**Short on time?** [90-second visual walkthrough (live page)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) — the same
+story below, with a real captured terminal transcript instead of a wall of markdown. Or
+**[watch the ~2:18 narrated video](docs/media/casper-demo-video.mp4)** — the economic loop, a
+real courtroom verdict, and a real 48h-timelock rejection, captured live from the scripts in this
+repo (`src/scripts/demo_casper_full_job_lifecycle.ts`, `demo_casper_courtroom.ts`,
+`demo_casper_cross_chain_rep_governance.ts`).
 
 ## What this submission does (architecture)
 
@@ -83,15 +87,181 @@ deposit_bond → discover → create_job (x402) → fetch+sign feed → deliver_
 confirm_completion → withdraw. The Step 4 x402 envelope and the Step 7 feed
 verification are produced by REAL T10/T11 code, not stubbed.
 
+## Governance-hardening redeploy — DONE (2026-07-07)
+
+A code-level review of the original contract (`hash-a4e8ab23fe6bd87c97239bbc1292a2224cb34efc4f81a6c94edf06a7794f404f`,
+now superseded) found two gaps and closed both in source, then redeployed. **Current live
+contract: `hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`**
+(tx `c59518d18bc5096d820a3450aa64a93c116caf7cfe3fc403a79607d7cfcb203b`), verified live via RPC:
+`GovernanceConfigured` event decoded directly off-chain confirms `threshold=2`,
+`timelock_delay_ms=172800000` (48h) — the real multisig+timelock, not just the deploy args as
+submitted. Recipe used: `src/scripts/deploy_casper_governance_hardened.ts`.
+
+1. **Governance inconsistency (fixed in source, needs redeploy):** `set_arbiter`/
+   `set_dispute_bond_bps` used to take effect immediately behind a single `require_governance_signer()`
+   check — no multisig threshold, no timelock — while `set_cross_chain_rep` already went through the
+   full propose/approve/execute + 48h-timelock lifecycle. Both setters are now `propose_set_arbiter`/
+   `propose_set_dispute_bond_bps`, gated by the exact same proposal lifecycle (`agent_skill_registry.rs`,
+   `ProposalAction::SetArbiter`/`SetDisputeBondBps`). Verified: 120/120 Rust tests pass, wasm rebuilt
+   (`./build-wasm.sh`) and its exports independently confirmed via `WebAssembly.Module.exports()` —
+   `propose_set_arbiter`/`propose_set_dispute_bond_bps` present, the old `set_arbiter`/
+   `set_dispute_bond_bps` entry points gone.
+2. **Deploy-time governance config was effectively a single key, not a multisig:** the recipe below
+   (as run for the current live deploy) used `governance_threshold: 1` with **one** signer and
+   `timelock_delay_ms: "0"` — i.e. propose→execute could happen back-to-back by one signer, with no
+   real delay. If the "no single-key admin risk" claim matters for judging, the *redeploy* args need
+   ≥2 real independent signers, a threshold ≥2, and a non-zero `timelock_delay_ms` (e.g.
+   `"172800000"` = 48h, matching `DEFAULT_TIMELOCK_DELAY` in source) — not just the code fix above.
+
+**Recipe actually used** (`src/scripts/deploy_casper_governance_hardened.ts`, via `casper-js-sdk`'s
+`SessionBuilder` directly rather than the `casper-client` CLI — same auth-header reasoning as the
+original deploy, see Step 0 below):
+
+```ts
+const transaction = new SessionBuilder()
+  .from(signer1.publicKey)
+  .wasm(wasmBytes)
+  .installOrUpgrade()          // ← REQUIRED — see gotcha below
+  .runtimeArgs(Args.fromMap({
+    odra_cfg_package_hash_key_name: CLValue.newCLString("AgentSkillRegistry"),
+    odra_cfg_allow_key_override: CLValue.newCLValueBool(false),
+    odra_cfg_is_upgradable: CLValue.newCLValueBool(true),
+    odra_cfg_is_upgrade: CLValue.newCLValueBool(false),
+    odra_cfg_constructor: CLValue.newCLString("init"),
+    review_window_ms: CLValue.newCLUint64("259200000"),
+    governance_signers: CLValue.newCLList(CLTypeKey, [
+      CLValue.newCLKey(Key.newKey(signer1AccountHash)),
+      CLValue.newCLKey(Key.newKey(signer2AccountHash)),
+    ]),
+    governance_threshold: CLValue.newCLUInt32(2),
+    timelock_delay_ms: CLValue.newCLUint64("172800000"),
+  }))
+  .chainName("casper-test")
+  .payment(800_000_000_000)
+  .build();
+```
+
+**Gotcha found the hard way:** without `.installOrUpgrade()`, the deploy is submitted as a plain
+session and Casper rejects it with `ApiError::NotAllowedToAddContractVersion [48]` — and the full
+gas payment is still consumed on failure (no refund), so the first attempt cost ~800 CSPR for
+nothing before this was caught. The second attempt (with `.installOrUpgrade()`) succeeded and
+*did* refund the unused portion (~161 of 800 CSPR) — so "no refund on this network" isn't a
+blanket rule, it was specific to that failure mode.
+
+3. **Upgrade-token custody (unchanged by the code fix, still open):** Odra's install deploy writes
+   an `_access_token` named key to the deploying account; whoever holds it can push a contract
+   upgrade later, entirely outside the `governance_signers`/timelock gate above — a real, separate
+   single-key surface (currently held by governance signer 1's key, since it doubled as the
+   installing account). Two options, not mutually exclusive with the fix above: (a) move it to a
+   dedicated multisig-controlled account, or (b) set `odra_cfg_is_upgradable: false` on a later
+   "final" redeploy once the contract is believed feature-complete, trading future upgradability
+   for a stronger "no single key, period" claim. Not resolved here — this needs a decision.
+
+The MCP/client-side work needed to actually *use* the redeployed contract's fuller surface
+(composition, evaluator/dispute/arbitration, cross-chain-rep governance) was already wired and
+tested before the redeploy — see `casper.tool.ts`'s 25 tools — so `KARMA_ODRA_REGISTRY` (already
+updated in `.env`) was the only thing that needed changing for all of it to go live.
+
+## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07)
+
+Fired a real `propose_set_cross_chain_rep` → `approve_proposal` chain against the governance-hardened
+contract above, via `src/scripts/demo_casper_cross_chain_rep_governance.ts` — the concrete evidence
+that "reputation is portable across chains via a governed multisig+timelock flow, not a single-key
+override" isn't just unit-tested, it ran for real. Target agent is governance signer 2's own Casper
+account-hash (no extra keystore needed); `score=80`, `source_chain="soroban"` echo the Stellar ZK
+`ReputationAggregationProof` narrative (avg score ≥ 80 across ≥ 10 jobs, ≥ 5 domains).
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `propose_set_cross_chain_rep` (signer 1) | `1a7f2bcf7d02e5ccf4a46365586e336dc4c955927e822aa058f000e5d397e1ac` | `errorMessage: null`. Auto-approves the proposer (1/2). Event count 1→3 (`ProposalCreated` + `ProposalApproved`). |
+| `approve_proposal` (signer 2) | `9cadc5dbae1111df86f3b4bbb9847dac947aef7af97bb85f62cf6d42151c2aeb` | `errorMessage: null`. Threshold met (2/2). Event count 3→4. |
+| `execute_proposal` (attempted immediately) | `408563d08067a36cf4e9d6c01308dbaad4a80c62c18a4f0f03c3d5181e430d4c` | **Reverted, `errorMessage: "User error: 42"`** — `Error::TimelockNotElapsed` (`contracts-odra/src/agent_skill_registry.rs:95`), confirmed by ordinal, not guessed. `refund: 0` (failed txs don't refund on this network — same gotcha as the redeploy above). |
+| `get_cross_chain_rep(signer2)` read after the failed execute | — (free RPC read) | Returns `0` — confirms the revert really did prevent the write, not just returned an error string while mutating state. |
+
+Proposal created ~2026-07-07 15:5x UTC; the 48h timelock means `execute_proposal` can only succeed
+from ~2026-07-09 15:5x UTC onward. Re-run `pnpm exec tsx src/scripts/demo_casper_cross_chain_rep_governance.ts --execute`
+after that to complete the chain — it re-attempts `execute_proposal` (assumes `proposal_id=1`, the
+only proposal on this fresh registry) and prints `get_cross_chain_rep(signer2)` afterward, which
+should read back `80`.
+
+## Full job lifecycle — DONE live (2026-07-07)
+
+`src/scripts/demo_casper_full_job_lifecycle.ts` ran the whole loop — `register_skill` →
+`deposit_bond` (Tier-2 Sybil bond, PD-007) → `create_job` → `deliver_result` → `confirm_completion`
+→ `withdraw` — on the governance-hardened contract, provider = governance signer 1, requester =
+governance signer 2 (deliberately different accounts: `settle_completion`'s self-deal guard zeroes
+reputation signals when `requester == provider`). All six real transactions:
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `register_skill` | `ef969c711f385d5cf76419e2a8570cbbe7e620729392e879e58270ae7551b92b` | success — `skill_id=1` |
+| `deposit_bond` (1 CSPR) | `53aa9dc2846250cd48bdffebb32549e98a0665ad71708337da25ba00373e46c4` | success |
+| `create_job` (1 CSPR escrow) | `ed82d2cadc4e16a17070aadd9f999515750b24592c0784f779d5167270f6a08b` | success — `job_id=1` |
+| `deliver_result` | `466a58760ffd644a0986a3fee1d21103f3d5de685bc0a9b1edd0a0a7e9e86aec` | success |
+| `confirm_completion` | `4d9b1047e3ee03c4827e441c62d8b88dcf299c2ee22b006fc182114baf5073ac` | success |
+| `withdraw` | `649949fa95ac7ccb2808df017cedbf26580a6a76d54afcdec6e78af517201639` | success |
+
+Final on-chain read confirms it, not just the tx receipts: `getJob(1).status == "Completed"`,
+`getSkill(1).reputationScore == 55` (bumped from the registration baseline), `totalInvocations == 1`.
+
+## Courtroom (dispute + arbitrate) — DONE live (2026-07-07)
+
+The single biggest gap the 2026-07-07 audit flagged: `evaluate_result`/`dispute_result`/
+`claim_after_review`/`arbitrate` were implemented and unit-tested but **nobody had ever watched
+arbitration run**. `src/scripts/demo_casper_courtroom.ts` closes it — three distinct accounts (the
+contract's `init()` sets `arbiter = governance_signers[0]`, so governance signer 1 is genuinely the
+neutral judge here, not a party to the dispute), a real contested delivery, and a real verdict:
+
+- **arbiter** = governance signer 1
+- **requester** = governance signer 2
+- **provider** = a freshly generated throwaway testnet key, funded by a native CSPR transfer
+
+**Honest account of what actually happened, including two real mistakes hit live** (kept here
+rather than only showing the clean final run — this is testnet, and the mistakes are informative):
+
+1. **First attempt** (`skill_id=2`, `job_id=2`): register → create_job → deliver → dispute all
+   succeeded, but `respond_to_dispute` failed with `Insufficient funds` — the throwaway provider was
+   funded only 15 CSPR, undershooting `respond_to_dispute`'s real cost (`PROXY_DEFAULT_PAYMENT_MOTES`
+   = 20 CSPR ceiling, held at submission time, *on top of* the 1 CSPR bond itself). The follow-up
+   `arbitrate` call correctly reverted with `errorMessage: "User error: 52"` = `Error::ProviderNotResponded`
+   (confirmed by ordinal) — the contract correctly refused to rule on an unanswered dispute.
+   **`job_id=2` is now a real, permanently-orphaned "Disputed" job on the live contract** (the
+   throwaway key that could `respond_to_dispute` for it was never persisted) — it will resolve on
+   its own via `resolve_default_concede` (callable by anyone) once the 3-day `RESPONSE_WINDOW`
+   elapses. Left as-is rather than erased.
+2. **Second attempt** (`skill_id=3`): funding was fixed to 40 CSPR, but `create_job` reverted with
+   `errorMessage: "User error: 10"` = `Error::DuplicateTaskHash` — the task-hash literal was
+   accidentally left identical to the first attempt's. `skill_id=3` is registered but has zero jobs
+   against it.
+3. **Third attempt** (`skill_id=4`, `job_id=3`) — the one that completed:
+
+| Step | Tx hash | Result |
+|---|---|---|
+| fund provider (15 + 60 CSPR, two transfers) | `de143521f24ff69fa783849f0b1f5ae11aad633f0089002193fb42ccb893c6dd`, `60fdc5c7213767318b37c244bb8e91a09f47f6fa2ffc4521352fbf6a318949eb` | success |
+| `register_skill` | `f6e6d5307e804691d26eb9fa66d28c9b35f3ea5205f84109b2b730061c0d9749` | success — `skill_id=4` |
+| `create_job` (unique task hash this time) | `150b19e30097a07195b30c02bd89591c3ffd3527d4d97f287af911fc1bfae96e` | success — `job_id=3` |
+| `deliver_result` | `c7010ea202c1db98fb15c4ce860819e7b847e1a582442fbdf97afed6625be277` | success |
+| `dispute_result` (requester posts 1 CSPR bond) | `7852f1a144a6724fcf548296467423121bca340207f339bd2ba4a37523414608` | success |
+| `respond_to_dispute` (provider matches the bond) | `c53ffcd35a76c90e8daf9b1cfda33fe17c4083f828193e66f7a5ab50bca4d91e` | success (after the top-up) |
+| `arbitrate(ProviderAtFault)` | `0f8c64efb32e288bc13187542c5a2cb314569118eadd449a9e56fb3cd7197553` | success |
+
+Final on-chain read: `getJob(3).status == "Refunded"` (escrow + both bonds returned to the
+requester, exactly as `Verdict::ProviderAtFault` specifies) and `getSkill(4).reputationScore`
+dropped `50 → 40` — the provider's reputation was really slashed for losing the dispute, live, not
+in a unit test.
+
 ## Live run — Casper Testnet (owner-driven, requires funded keystore)
 
 > ⚠️ This step is owner-driven only because it needs funded Casper Testnet credentials — a
 > private key, which nobody should paste into an AI session or a CI log. **A real install deploy
-> has been done and verified end-to-end (2026-07-07)** from `agent-alpha`'s keystore identity:
-> package hash `hash-a4e8ab23fe6bd87c97239bbc1292a2224cb34efc4f81a6c94edf06a7794f404f`, confirmed
-> live via the account's on-chain `named_keys` (`AgentSkillRegistry` + `_access_token`), not just
-> "the deploy tool exited 0." Three real gaps surfaced and got fixed along the way (see notes
-> below Step 1) — the recipe here is the corrected one, not the original guess.
+> has been done and verified end-to-end**, twice: the original 2026-07-07 deploy
+> (`hash-a4e8ab23…`, from `agent-alpha`'s keystore identity), then the governance-hardening
+> redeploy the same day (`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`,
+> **current live contract**, from two dedicated governance-signer keys) — confirmed live via the
+> account's on-chain `named_keys` (`AgentSkillRegistry` + `_access_token`) and, for the redeploy,
+> via a decoded `GovernanceConfigured` event showing the real 2-of-2/48h-timelock config, not just
+> "the deploy tool exited 0." Several real gaps surfaced and got fixed along the way (see the
+> "Governance-hardening redeploy" section above) — the recipe here is the corrected one.
 
 ### Step 0 — Toolchain
 
