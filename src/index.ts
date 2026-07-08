@@ -1,3 +1,4 @@
+import type { McpHttpHandler } from "@modelcontextprotocol/server";
 import { ENV } from "./config/env.js";
 import { SuperMcpRuntime } from "./core/runtime.js";
 import { PluginLoader } from "./core/plugin_loader.js";
@@ -13,6 +14,7 @@ import { startCasperIndexer, stopCasperIndexer } from "./lib/casper_indexer_runt
 import { registerConfiguredPaymentPlugins } from "./lib/payment/boot.js";
 
 let runtime: SuperMcpRuntime;
+let mcpHandler: McpHttpHandler | undefined;
 
 // Last-resort safety net (KARMA-PH1-001): a stray unhandled promise rejection from any background
 // task (e.g. the on-chain indexer's watch/reconnect path) would, under Node's default, terminate
@@ -119,11 +121,17 @@ async function main() {
   }
 
   if (ENV.TRANSPORT_DRIVER === "http") {
-    const { StreamableHTTPServerTransport, createMcpExpressApp } = await loadHttpServerAdapters();
+    const { createMcpHandler, toNodeHandler, createMcpExpressApp } = await loadHttpServerAdapters();
     const cors = (await import("cors")).default;
     const express = (await import("express")).default;
 
     const app = createMcpExpressApp();
+    // legacy: "reject" matches KARMA's existing fail-closed protocol stance
+    // (protocolHeaderValidation already hard-rejects compat/legacy protocol
+    // modes below) -- this endpoint speaks 2026-07-28 stateless only, native
+    // to the transport now instead of self-declared in server/discover.
+    mcpHandler = createMcpHandler(() => runtime.createEphemeralServer(), { legacy: "reject" });
+    const mcpNodeHandler = toNodeHandler(mcpHandler);
     const allowedOrigins = new Set(parseList(ENV.ALLOWED_ORIGINS));
     const allowedHosts = new Set(parseList(ENV.ALLOWED_HOSTS).map(h => h.toLowerCase()));
 
@@ -217,25 +225,13 @@ async function main() {
     app.post("/mcp", async (req, res) => {
       const ctx = (req as any).superMcpContext;
       await withRequestContext(ctx, async () => {
-        let server: Awaited<ReturnType<typeof runtime.connectEphemeral>> | undefined;
-        let transport: InstanceType<typeof StreamableHTTPServerTransport> | undefined;
         try {
-          transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-            // Stateless JSON responses do not keep an active stream for progress
-            // notifications. Long-running work must use native MCP Tasks instead.
-            enableJsonResponse: true,
-          });
-          server = await runtime.connectEphemeral(transport);
-          await transport.handleRequest(req, res, req.body);
+          await mcpNodeHandler(req, res, req.body);
         } catch (error) {
           console.error("[KARMA] Error handling MCP HTTP request:", error);
           if (!res.headersSent) {
             res.status(500).json(jsonRpcError(-32603, "Internal server error"));
           }
-        } finally {
-          await transport?.close().catch(() => undefined);
-          await server?.close().catch(() => undefined);
         }
       });
     });
@@ -265,6 +261,9 @@ async function main() {
         await new Promise<void>((resolve, reject) => {
           (runtime as any)._httpServer.close((err: unknown) => err ? reject(err instanceof Error ? err : new Error("Server close failed", { cause: err })) : resolve());
         });
+      }
+      if (mcpHandler) {
+        await mcpHandler.close().catch(() => undefined);
       }
 
       stopKarmaIndexer();

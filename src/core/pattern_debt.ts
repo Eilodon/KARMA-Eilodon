@@ -75,10 +75,10 @@ const ITEMS: readonly PatternDebtItem[] = [
     key: "native-mcp-tasks",
     title: "Native MCP Tasks",
     status: "monitoring",
-    urgency: "monitor",
-    currentControl: "Task lifecycle is behind ITaskStore with MemoryTaskStore and RedisTaskStore; native tasks/get, tasks/update, tasks/cancel, input_required, inputRequests, and inputResponses are exposed through the isolated src/mcp/adapter boundary.",
-    limitation: "Private SDK hooks are intentionally isolated in src/mcp/adapter until the TypeScript SDK exposes a stable public Tasks API compatible with the current conformance suite.",
-    resolutionTrigger: "The selected MCP TypeScript SDK exposes stable public Tasks APIs for tasks/get, tasks/update, tasks/cancel, native task return shape from tool calls, canonical client capabilities, and input_required resume semantics.",
+    urgency: "ready_to_implement",
+    currentControl: "Task lifecycle is behind ITaskStore with MemoryTaskStore and RedisTaskStore; native tasks/get, tasks/update, tasks/cancel, input_required, inputRequests, and inputResponses are exposed through the isolated src/mcp/adapter boundary. SDK bumped to @modelcontextprotocol/server@2.0.0-beta.2 (2026-07-08): transport migrated to createMcpHandler/toNodeHandler (legacy:'reject'), which genuinely speaks the 2026-07-28 stateless envelope (verified empirically, replacing the self-declared-only NodeStreamableHTTPServerTransport wiring); the private _createRegisteredTool reach-around is gone (public execution.taskSupport is used instead).",
+    limitation: "Private SDK hooks (setRawRequestHandler's _requestHandlers Map access for tasks/get, tasks/update, tasks/cancel, server/discover) are still isolated in src/mcp/adapter, unchanged by the beta.2 bump. Confirmed empirically (2026-07-08) that beta.2's tools/call result codec now strictly validates/re-tags a registerTool handler's return value: declaring execution.taskSupport:\"required\" makes the SDK hard-reject KARMA's raw {resultType:\"task\",taskId} signal (-32602 Invalid tools/call result) instead of passing it through untouched as alpha.2 did. 5 tests in http_tasks_conformance.test.ts are skipped pending this reconciliation (see DEBT-003 references there).",
+    resolutionTrigger: "RESOLVED as of 2026-07-08: @modelcontextprotocol/server@2.0.0-beta.2 exposes stable public Tasks APIs for tasks/get, tasks/update, tasks/cancel (GetTaskRequestSchema/CancelTaskRequestSchema present in the schema table; taskSupport is now \"optional\"|\"required\" instead of hard-\"forbidden\"), canonical client capabilities (_meta envelope), and input_required resume semantics (InputRequiredResult, inputRequired/inputResponse, createRequestStateCodec). Remaining work is migrating KARMA's own native task-creation signal onto these primitives, not waiting on the SDK further.",
     implementationGate: "Do not reintroduce check_task_status or isAsync; migration tests must prove native task creation, polling, cancellation, TTL, ownership, and input_required resume behavior without private _requestHandlers or _createRegisteredTool access.",
     ownerHint: "protocol",
     runtimeGuards: [
@@ -87,7 +87,7 @@ const ITEMS: readonly PatternDebtItem[] = [
       "Task IDs and ownership gates are validated before result disclosure.",
       "No bespoke polling endpoint, check_task_status, or isAsync compatibility path is exposed.",
     ],
-    nextAction: "Monitor SDK graduation criteria documented in docs/tasks-sdk-monitoring.md and migrate only after conformance tests pass against public APIs.",
+    nextAction: "Migrate KARMA's task-creation signal and setRawRequestHandler-based tasks/get|update|cancel onto the SDK's native Tasks primitives (InputRequiredResult, GetTaskRequestSchema, CancelTaskRequestSchema) while preserving ADR-006 exactly-once/idempotency guarantees in task_runtime.ts and task_store.ts. Re-enable the 5 skipped tests in http_tasks_conformance.test.ts as the acceptance gate.",
   },
   {
     id: "DEBT-004",

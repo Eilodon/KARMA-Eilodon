@@ -21,14 +21,14 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1
       '@modelcontextprotocol/express':
-        specifier: ^2.0.0-alpha.2
-        version: 2.0.0-alpha.2(@modelcontextprotocol/server@2.0.0-alpha.2(@cfworker/json-schema@4.1.1))(express@5.2.1)
+        specifier: ^2.0.0-beta.2
+        version: 2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.2)(express@5.2.1)
       '@modelcontextprotocol/node':
-        specifier: ^2.0.0-alpha.2
-        version: 2.0.0-alpha.2(@modelcontextprotocol/server@2.0.0-alpha.2(@cfworker/json-schema@4.1.1))(hono@4.12.25)
+        specifier: ^2.0.0-beta.2
+        version: 2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.2)(hono@4.12.25)
       '@modelcontextprotocol/server':
-        specifier: ^2.0.0-alpha.2
-        version: 2.0.0-alpha.2(@cfworker/json-schema@4.1.1)
+        specifier: ^2.0.0-beta.2
+        version: 2.0.0-beta.2
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
@@ -652,28 +652,26 @@ packages:
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
 
-  '@modelcontextprotocol/express@2.0.0-alpha.2':
-    resolution: {integrity: sha512-TlTUFnpUCH3dqegSnAZpCe+pn4fM43tow0KLRa3QTTWaC/jctsl51QQykqXHse5UhBpqGw+QF1rLfWOwEI9PPw==}
+  '@modelcontextprotocol/express@2.0.0-beta.2':
+    resolution: {integrity: sha512-68JKVnCVhaiws14LpxWbFI2KW0iBMIb1DXJ/otNVwLZHWeVv/33PZ+lc8wl1wGRwRoMMPJVDvKo5oPWylCw85A==}
     engines: {node: '>=20'}
     peerDependencies:
-      '@modelcontextprotocol/server': ^2.0.0-alpha.2
-      express: ^5.2.1
+      '@modelcontextprotocol/server': ^2.0.0-beta.2
+      express: ^4.18.0 || ^5.0.0
 
-  '@modelcontextprotocol/node@2.0.0-alpha.2':
-    resolution: {integrity: sha512-7DQS8Nf3d/9Cv85hEtDjDU2kQg3UPuxcNvMDAvub91OJe4LmWkD5ZTTb/isrPzGBd2x8/I78dz8RPz/tkpqGDQ==}
+  '@modelcontextprotocol/node@2.0.0-beta.2':
+    resolution: {integrity: sha512-1ZV1t98ZpwsoiSpIxKOxZCB2qMhDkh4XMQIWhQVDsCG2pVyhSqduxsFiwMd1R0333+KzJ+ELY3RIR+iEvM9A+g==}
     engines: {node: '>=20'}
     peerDependencies:
-      '@modelcontextprotocol/server': ^2.0.0-alpha.2
+      '@modelcontextprotocol/server': ^2.0.0-beta.2
       hono: ^4.11.4
-
-  '@modelcontextprotocol/server@2.0.0-alpha.2':
-    resolution: {integrity: sha512-gmLgdHzlYM8L7Aw/+VE0kxjT25WKamtUSLNhdOgrJq5CrESvqVSoAfWSJJeNPUXNTluQ+dYDGFbKVitdsJtbPA==}
-    engines: {node: '>=20'}
-    peerDependencies:
-      '@cfworker/json-schema': ^4.1.1
     peerDependenciesMeta:
-      '@cfworker/json-schema':
+      hono:
         optional: true
+
+  '@modelcontextprotocol/server@2.0.0-beta.2':
+    resolution: {integrity: sha512-XK+sgFntT5ZzeqtTGpT9uti+Sqmq7YJZdx/N76eLJv9UA9vKvP04Qh9Hc45LCeIHGfTKRwDG6eh4C1Hs4omyIg==}
+    engines: {node: '>=20'}
 
   '@napi-rs/lzma-android-arm-eabi@1.4.5':
     resolution: {integrity: sha512-Up4gpyw2SacmyKWWEib06GhiDdF+H+CCU0LAV8pnM4aJIDqKKd5LHSlBht83Jut6frkB0vwEPmAkv4NjQ5u//Q==}
@@ -3864,22 +3862,22 @@ snapshots:
 
   '@js-sdsl/ordered-map@4.4.2': {}
 
-  '@modelcontextprotocol/express@2.0.0-alpha.2(@modelcontextprotocol/server@2.0.0-alpha.2(@cfworker/json-schema@4.1.1))(express@5.2.1)':
+  '@modelcontextprotocol/express@2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.2)(express@5.2.1)':
     dependencies:
-      '@modelcontextprotocol/server': 2.0.0-alpha.2(@cfworker/json-schema@4.1.1)
+      '@modelcontextprotocol/server': 2.0.0-beta.2
+      cors: 2.8.6
       express: 5.2.1
 
-  '@modelcontextprotocol/node@2.0.0-alpha.2(@modelcontextprotocol/server@2.0.0-alpha.2(@cfworker/json-schema@4.1.1))(hono@4.12.25)':
+  '@modelcontextprotocol/node@2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.2)(hono@4.12.25)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.25)
-      '@modelcontextprotocol/server': 2.0.0-alpha.2(@cfworker/json-schema@4.1.1)
+      '@modelcontextprotocol/server': 2.0.0-beta.2
+    optionalDependencies:
       hono: 4.12.25
 
-  '@modelcontextprotocol/server@2.0.0-alpha.2(@cfworker/json-schema@4.1.1)':
+  '@modelcontextprotocol/server@2.0.0-beta.2':
     dependencies:
       zod: 4.4.3
-    optionalDependencies:
-      '@cfworker/json-schema': 4.1.1
 
   '@napi-rs/lzma-android-arm-eabi@1.4.5':
     optional: true

@@ -217,10 +217,12 @@ Supported methods:
 | Method | Purpose |
 | --- | --- |
 | `tasks/get` | Return task status, pending input requests, terminal result, error, or cancel reason. |
-| `tasks/update` | Provide `inputResponses` for a task that is `input_required`. |
+| `tasks/update` | Provide `taskInputResponses` for a task that is `input_required`. |
 | `tasks/cancel` | Cancel a running or input-waiting task. |
 
 Task ownership is scoped by `tenantId + clientId + userId`. `tasks/update` is state-gated and nonce-bound — only valid while the task is `input_required`, using the current `inputRequestId`.
+
+Note: the wire param is named `taskInputResponses`, not `inputResponses` — the MCP 2026-07-28 SDK reserves the bare `inputResponses` (and `requestState`) key at the top level of every client-initiated request's `params` for its own native multi-round-trip retry mechanism, and strips it before any handler sees the request, including custom methods like this one. Internal storage (`TaskRecord.lastClientInput.inputResponses`, `TaskStore.consumeTaskInput`) keeps the original name; only this wire boundary differs.
 
 ---
 

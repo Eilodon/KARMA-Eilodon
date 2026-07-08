@@ -98,6 +98,13 @@ export class SuperMcpRuntime<T = Record<string, unknown>> {
     return server;
   }
 
+  // Factory for createMcpHandler()/serveStdio()-style callers that manage
+  // their own per-request transport internally and never call .connect()
+  // on the instance themselves (unlike connectEphemeral above).
+  createEphemeralServer(): McpServerInstance {
+    return this.createServer();
+  }
+
   async requestSampling(params: any) {
     return await this.server.server.createMessage(params);
   }

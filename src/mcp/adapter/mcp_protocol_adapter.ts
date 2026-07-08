@@ -1,5 +1,6 @@
-import { McpServer, StdioServerTransport, type Transport } from "@modelcontextprotocol/server";
-import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer, type Transport, createMcpHandler } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { z } from "zod/v4";
 import { ENV } from "../../config/env.js";
@@ -55,29 +56,15 @@ function registerToolWithExecution(
   execution: unknown,
   handler: unknown,
 ): void {
-  const privateCreate = (server as unknown as {
-    _createRegisteredTool?: (...args: unknown[]) => unknown;
-  })._createRegisteredTool;
-
-  if (typeof privateCreate === "function") {
-    privateCreate.call(
-      server,
-      name,
-      config.title,
-      config.description,
-      config.inputSchema,
-      config.outputSchema,
-      config.annotations,
-      { taskSupport: "forbidden" },
-      { ...(config._meta as Record<string, unknown>), execution },
-      handler,
-    );
-    return;
-  }
-
-  // SDK v2 alpha registerTool hard-codes execution.taskSupport to forbidden.
-  // KARMA owns native Tasks in the custom adapter until SDK Tasks are stable,
-  // so actual execution metadata is exposed through tools/list override and _meta.
+  // SDK v2 beta.2 registerTool exposes execution.taskSupport ("optional" |
+  // "required") as public config -- the alpha's forced-"forbidden" private
+  // reflection hack is gone. taskSupport is left unset here (not "optional")
+  // so the SDK never claims native task-creation eligibility for these
+  // tools: KARMA still owns the whole Task lifecycle in its own adapter
+  // (task_runtime.ts / task_store.ts, ADR-006 exactly-once semantics), and
+  // opting a tool into SDK-native tasks is a separate, deliberate decision
+  // this change does not make. The real execution metadata keeps flowing
+  // through _meta / the tools/list override, same as before.
   server.registerTool(name, { ...config, _meta: { ...(config._meta as Record<string, unknown>), execution } }, handler as any);
 }
 
@@ -103,9 +90,14 @@ export function registerToolListSurface<T>(server: McpServer, tools: ToolDefinit
         inputSchema,
         ...(outputSchema ? { outputSchema } : {}),
         annotations: tool.annotations,
-        execution: tool.execution,
+        // SDK v2 beta.2's tools/list response codec deletes a top-level
+        // `execution` key from every tool entry unconditionally (own reserved
+        // wire vocabulary for its native taskSupport signaling), so KARMA's
+        // own execution metadata must live under _meta instead to survive
+        // the wire -- same class of collision as the tasks/update rename.
         _meta: {
           schemaDialect: "https://json-schema.org/draft/2020-12/schema",
+          execution: tool.execution,
           "io.modelcontextprotocol/cache": {
             ttlMs: ENV.MCP_TOOL_LIST_TTL_MS,
             cacheScope: "server",
@@ -160,7 +152,8 @@ export async function createStdioTransport(): Promise<Transport> {
 
 export async function loadHttpServerAdapters() {
   return {
-    StreamableHTTPServerTransport: NodeStreamableHTTPServerTransport,
+    createMcpHandler,
+    toNodeHandler,
     createMcpExpressApp,
   };
 }
@@ -253,11 +246,19 @@ export function registerNativeTaskMethods(server: McpServer): void {
 
   setRawRequestHandler(server, "tasks/update", async (request) => {
     const ctx = getRequestContext();
-    const params = request.params as { taskId?: string; inputRequestId?: string; inputResponses?: Record<string, unknown> } | undefined;
+    // SDK v2 beta.2 reserves the top-level params keys `inputResponses` and
+    // `requestState` on every client-initiated request (protocol 2026-07-28's
+    // own multi-round-trip retry vocabulary) and strips them before any
+    // handler -- including custom, non-spec methods like this one -- ever
+    // sees the request. KARMA's own tasks/update predates that reservation
+    // and used the same wire key name, so the value must travel under a
+    // KARMA-namespaced key instead. Internal naming (TaskStore, TaskRuntime)
+    // is untouched -- only this wire boundary reads the renamed key.
+    const params = request.params as { taskId?: string; inputRequestId?: string; taskInputResponses?: Record<string, unknown> } | undefined;
     const taskId = params?.taskId;
     if (!taskId) throw new Error("taskId is required");
-    if (!params?.inputResponses || typeof params.inputResponses !== "object" || Array.isArray(params.inputResponses)) {
-      throw new Error("inputResponses is required");
+    if (!params?.taskInputResponses || typeof params.taskInputResponses !== "object" || Array.isArray(params.taskInputResponses)) {
+      throw new Error("taskInputResponses is required");
     }
     if (!params?.inputRequestId || typeof params.inputRequestId !== "string" || params.inputRequestId.trim().length === 0) {
       throw new Error("inputRequestId is required");
@@ -276,12 +277,12 @@ export function registerNativeTaskMethods(server: McpServer): void {
     const updatedAt = new Date().toISOString();
     const consumed = await globalTaskStore.consumeTaskInput(current.taskId, {
       inputRequestId: params.inputRequestId,
-      inputResponses: params.inputResponses,
+      inputResponses: params.taskInputResponses,
       metadata: {
         lastClientUpdate: {
           inputRequestId: params.inputRequestId,
           inputRequestKey: requestKey,
-          inputResponseKeys: Object.keys(params.inputResponses),
+          inputResponseKeys: Object.keys(params.taskInputResponses),
           updatedAt,
         },
       },
@@ -297,7 +298,7 @@ export function registerNativeTaskMethods(server: McpServer): void {
     const deliveredToLocalWaiter = globalNativeTaskRuntime.provideInputResponses(
       current.taskId,
       params.inputRequestId,
-      params.inputResponses,
+      params.taskInputResponses,
     );
     if (!deliveredToLocalWaiter) {
       const latest = await globalTaskStore.getTask(current.taskId);
