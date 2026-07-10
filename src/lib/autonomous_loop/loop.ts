@@ -211,7 +211,7 @@ export async function tick(
   const candidates = await adapter.discoverCandidates();
   const action = decide(tickedState, liveBudget, candidates, nextTickMs);
 
-  let nextState = tickedState;
+  let nextState: LoopState;
   if (action.kind === "invoke" && action.skill) {
     const earning = await adapter.invokeSkill(action.skill, tickedState);
     nextState = applyInvocation(tickedState, action.skill, earning);

@@ -628,6 +628,7 @@ export class CasperLiveClient {
       attached_value: CLValue.newCLUInt512(attachedValueMotes.toString()),
       amount: CLValue.newCLUInt512(attachedValueMotes.toString()),
     });
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- module-level constant path, not user input
     const wasmBytes = readFileSync(PROXY_CALLER_WASM_PATH);
     const transaction = new SessionBuilder()
       .from(signer.publicKey)

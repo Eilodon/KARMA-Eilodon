@@ -33,11 +33,11 @@ export type CasperEventClientLike = Pick<CasperLiveClient, "getSkill" | "getJob"
 export const casperSkillIndex = new BM25SkillIndex();
 
 function toAddress(hashHex: string): Address {
-  return `0x${hashHex}` as Address;
+  return `0x${hashHex}`;
 }
 
 function toHash(bytes: Uint8Array): Hash {
-  return `0x${Buffer.from(bytes).toString("hex")}` as Hash;
+  return `0x${Buffer.from(bytes).toString("hex")}`;
 }
 
 /** Solidity has no `Option<Address>` — Pharos's ABI represents "no evaluator" as the zero

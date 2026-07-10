@@ -198,7 +198,7 @@ function clientMeta() {
 async function pollUntil(rpc: Harness["rpc"], taskId: string, status: string): Promise<any> {
   let last: any;
   for (let i = 0; i < 20; i += 1) {
-    last = await rpc({ jsonrpc: "2.0", id: `get-${status}-${i}`, method: "tasks/get", params: { taskId, _meta: clientMeta() } });
+    last = await rpc({ jsonrpc: "2.0", id: `get-${status}-${i}`, method: "io.karma/tasks/get", params: { taskId, _meta: clientMeta() } });
     if (last.result?.status === status) return last;
     await delay(50);
   }
@@ -233,20 +233,39 @@ describe("HTTP native Tasks conformance", () => {
     expect(response.result._meta.cacheScope).toBe("server");
   });
 
-  // DEBT-003 (src/core/pattern_debt.ts): SDK v2 beta.2's tools/call result
-  // codec now strictly validates/re-tags a registerTool handler's return
-  // value against its own CallToolResult/native-task schema. KARMA's raw,
-  // hand-crafted `{resultType:"task", taskId}` signal (built before the SDK
-  // had a stable public Tasks API) is no longer honored as-is: confirmed
-  // empirically that declaring execution.taskSupport:"required" makes the
-  // SDK hard-reject the raw shape (-32602 Invalid tools/call result) instead
-  // of passing it through. Fixing this requires migrating KARMA's Task
-  // creation signal onto the SDK's native mechanism -- a deliberate,
-  // separately-reviewed change (see DEBT-003 for scope), not a quick patch.
-  // The tasks/get, tasks/update, and tasks/cancel tests below fail as a
-  // direct consequence: they all depend on a task having been created via
-  // this same path.
-  test.skip("tools/call returns CreateTaskResult and reconnect polling returns terminal result", async () => {
+  test("server/discover on HTTP advertises io.karma/tasks/* via the SDK's own default handler", async () => {
+    // "server/discover" is fully owned by the SDK on HTTP: the Server
+    // constructor installs a default handler, and createMcpHandler's
+    // serveModern() unconditionally re-installs it (installModernOnlyHandlers)
+    // on every request, AFTER the ephemeral server is created -- so a handler
+    // KARMA registers directly for this method name can never win (confirmed
+    // empirically). Rather than fight that, registerDiscover (mcp_protocol_adapter.ts)
+    // now contributes through the SDK's own spec-defined `capabilities.extensions`
+    // record via the public registerCapabilities() API. _ondiscover's default
+    // response is a pure `{...capabilities}` spread, so the io.karma/tasks
+    // extension shows up automatically without any handler override. See
+    // mcp_discover_non_http.test.ts for the same mechanism verified on the
+    // `initialize` response (the equivalent channel for non-HTTP/STDIO
+    // transports, where "server/discover" itself is unreachable regardless).
+    const response = await harness.rpc({
+      jsonrpc: "2.0",
+      id: "discover-1",
+      method: "server/discover",
+      params: { _meta: clientMeta() },
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.result.supportedVersions).toContain("2026-07-28");
+    expect(response.result.serverInfo.name).toBe("karma-server");
+    expect(response.result.capabilities.extensions[TASKS_EXTENSION]).toEqual({
+      methods: ["io.karma/tasks/get", "io.karma/tasks/update", "io.karma/tasks/cancel"],
+      list: false,
+      pollIntervalMs: 1000,
+      ttlMs: 60000,
+    });
+  });
+
+  test("tools/call returns CreateTaskResult and reconnect polling returns terminal result", async () => {
     const created = await harness.rpc({
       jsonrpc: "2.0",
       id: "create-quick",
@@ -266,8 +285,7 @@ describe("HTTP native Tasks conformance", () => {
     expect(completed.result.result.structuredContent).toEqual({ ok: true, value: "alpha" });
   });
 
-  // DEBT-003: blocked on the same native-task-creation-signal gap as above.
-  test.skip("tasks/update resumes input_required task", async () => {
+  test("tasks/update resumes input_required task", async () => {
     const created = await harness.rpc({
       jsonrpc: "2.0",
       id: "create-input",
@@ -287,22 +305,22 @@ describe("HTTP native Tasks conformance", () => {
     const updated = await harness.rpc({
       jsonrpc: "2.0",
       id: "update-input",
-      method: "tasks/update",
+      method: "io.karma/tasks/update",
       params: {
         taskId: created.result.taskId,
         inputRequestId,
         taskInputResponses: { default: { confirmed: true } },
+        _meta: clientMeta(),
       },
     });
-    expect(updated.result).toEqual({});
+    expect(updated.result).toEqual({ resultType: "complete" });
 
     const completed = await pollUntil(harness.rpc, created.result.taskId, "completed");
     expect(completed.result.result.structuredContent).toEqual({ ok: true, input: { confirmed: true } });
   });
 
 
-  // DEBT-003: blocked on the same native-task-creation-signal gap as above.
-  test.skip("tasks/update rejects early, stale, and duplicate input", async () => {
+  test("tasks/update rejects early, stale, and duplicate input", async () => {
     const quick = await harness.rpc({
       jsonrpc: "2.0",
       id: "create-early",
@@ -317,7 +335,7 @@ describe("HTTP native Tasks conformance", () => {
     const early = await harness.rpc({
       jsonrpc: "2.0",
       id: "update-early",
-      method: "tasks/update",
+      method: "io.karma/tasks/update",
       params: {
         taskId: quick.result.taskId,
         inputRequestId: "input_early",
@@ -344,7 +362,7 @@ describe("HTTP native Tasks conformance", () => {
     const stale = await harness.rpc({
       jsonrpc: "2.0",
       id: "update-stale",
-      method: "tasks/update",
+      method: "io.karma/tasks/update",
       params: {
         taskId: inputTask.result.taskId,
         inputRequestId: "input_stale",
@@ -357,7 +375,7 @@ describe("HTTP native Tasks conformance", () => {
     const accepted = await harness.rpc({
       jsonrpc: "2.0",
       id: "update-accepted",
-      method: "tasks/update",
+      method: "io.karma/tasks/update",
       params: {
         taskId: inputTask.result.taskId,
         inputRequestId,
@@ -365,12 +383,12 @@ describe("HTTP native Tasks conformance", () => {
         _meta: clientMeta(),
       },
     });
-    expect(accepted.result).toEqual({});
+    expect(accepted.result).toEqual({ resultType: "complete" });
 
     const duplicate = await harness.rpc({
       jsonrpc: "2.0",
       id: "update-duplicate",
-      method: "tasks/update",
+      method: "io.karma/tasks/update",
       params: {
         taskId: inputTask.result.taskId,
         inputRequestId,
@@ -384,8 +402,7 @@ describe("HTTP native Tasks conformance", () => {
     expect(completed.result.result.structuredContent).toEqual({ ok: true, input: { confirmed: true } });
   });
 
-  // DEBT-003: blocked on the same native-task-creation-signal gap as above.
-  test.skip("tasks/cancel cancels a running task", async () => {
+  test("tasks/cancel cancels a running task", async () => {
     const created = await harness.rpc({
       jsonrpc: "2.0",
       id: "create-block",
@@ -400,21 +417,20 @@ describe("HTTP native Tasks conformance", () => {
     const cancelled = await harness.rpc({
       jsonrpc: "2.0",
       id: "cancel-block",
-      method: "tasks/cancel",
+      method: "io.karma/tasks/cancel",
       params: { taskId: created.result.taskId, reason: "test cancel", _meta: clientMeta() },
     });
-    expect(cancelled.result).toEqual({});
+    expect(cancelled.result).toEqual({ resultType: "complete" });
 
     const status = await pollUntil(harness.rpc, created.result.taskId, "cancelled");
     expect(status.result.status).toBe("cancelled");
     expect(status.result.cancelReason).toBe("test cancel");
   });
 
-  // DEBT-003: blocked on the same native-task-creation-signal gap as above.
-  test.skip("expired task and cross-tenant reads do not leak existence", async () => {
+  test("expired task and cross-tenant reads do not leak existence", async () => {
     const expiredTaskId = await harness.createExpiredTask();
     await delay(1100);
-    const expired = await harness.rpc({ jsonrpc: "2.0", id: "get-expired", method: "tasks/get", params: { taskId: expiredTaskId, _meta: clientMeta() } });
+    const expired = await harness.rpc({ jsonrpc: "2.0", id: "get-expired", method: "io.karma/tasks/get", params: { taskId: expiredTaskId, _meta: clientMeta() } });
     expect(expired.error.message).toContain("Task not found or expired");
 
     const created = await harness.rpc({
@@ -428,7 +444,7 @@ describe("HTTP native Tasks conformance", () => {
       },
     });
     const crossTenant = await harness.rpc(
-      { jsonrpc: "2.0", id: "get-tenant-b", method: "tasks/get", params: { taskId: created.result.taskId, _meta: clientMeta() } },
+      { jsonrpc: "2.0", id: "get-tenant-b", method: "io.karma/tasks/get", params: { taskId: created.result.taskId, _meta: clientMeta() } },
       "tenant-b",
     );
     expect(crossTenant.error.message).toContain("Task not found or expired");

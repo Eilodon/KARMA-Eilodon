@@ -1,4 +1,5 @@
 import type { McpHttpHandler } from "@modelcontextprotocol/server";
+import type { StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import { ENV } from "./config/env.js";
 import { SuperMcpRuntime } from "./core/runtime.js";
 import { PluginLoader } from "./core/plugin_loader.js";
@@ -8,13 +9,15 @@ import { isBodyTooLargeError, isJsonRequest } from "./http/security.js";
 import { createServerCard } from "./http/server_card.js";
 import { protectedResourceMetadata, resourceMetadataPath } from "./http/oauth_metadata.js";
 import { protocolHeaderValidation } from "./middlewares/protocol_header.js";
-import { createStdioTransport, loadHttpServerAdapters } from "./mcp/adapter/mcp_protocol_adapter.js";
+import { loadStdioServerAdapter, loadHttpServerAdapters } from "./mcp/adapter/mcp_protocol_adapter.js";
 import { startKarmaIndexer, stopKarmaIndexer } from "./lib/skill_indexer_runtime.js";
 import { startCasperIndexer, stopCasperIndexer } from "./lib/casper_indexer_runtime.js";
 import { registerConfiguredPaymentPlugins } from "./lib/payment/boot.js";
+import { indexedEventToResourceUris } from "./plugins/karma.resources.js";
 
 let runtime: SuperMcpRuntime;
 let mcpHandler: McpHttpHandler | undefined;
+let stdioHandle: StdioServerHandle | undefined;
 
 // Last-resort safety net (KARMA-PH1-001): a stray unhandled promise rejection from any background
 // task (e.g. the on-chain indexer's watch/reconnect path) would, under Node's default, terminate
@@ -88,7 +91,16 @@ async function main() {
   // when no contract is configured. Failure here is non-fatal — the server still serves tools.
   if (!ENV.MCP_SAFE_MODE && process.env.PHAROS_CONTRACT_ADDRESS) {
     try {
-      startKarmaIndexer();
+      // DEBT-008 Phase 2: publish onto the SDK's own ServerEventBus (createMcpHandler's
+      // `mcpHandler.notify`), so every open subscriptions/listen stream gets
+      // notifications/resources/updated pushes. `mcpHandler` is assigned later in this same
+      // function (HTTP-transport branch below) -- the `?.` guard covers both the brief startup
+      // window before that assignment and the STDIO-transport case where it's never assigned at
+      // all, in which case this hook harmlessly no-ops (no subscriptions/listen stream can exist
+      // without an HTTP transport to begin with).
+      startKarmaIndexer(undefined, undefined, (e) => {
+        for (const uri of indexedEventToResourceUris(e)) mcpHandler?.notify.resourceUpdated(uri);
+      });
       console.error("[KARMA] Skill event indexer started (backfill + live watch).");
     } catch (err) {
       console.error("[KARMA] Skill indexer failed to start (continuing without it):", err);
@@ -145,13 +157,26 @@ async function main() {
       next();
     });
 
+    // Reject disallowed Origins with a clean 403 before `cors` ever runs. The `cors` package's
+    // origin callback only supports rejecting by forwarding an Error to `next(err)`, which falls
+    // through to Express's default error handler -- an uncaught-looking 500 with no body -- so the
+    // actual reject-with-403 decision has to happen in a plain middleware instead (matching the
+    // Host check above and the SDK's own "Invalid Origin: <value>" wording for evil/DNS-rebinding
+    // origins, which is enforced separately by createMcpExpressApp()).
+    app.use((req, res, next) => {
+      const origin = req.headers.origin;
+      if (origin && !allowedOrigins.has(origin)) {
+        res.status(403).json(jsonRpcError(-32000, `Invalid Origin: ${origin}`));
+        return;
+      }
+      next();
+    });
+
     app.use(cors({
       origin: (origin, callback) => {
-        if (!origin || allowedOrigins.has(origin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error("Origin not allowed"));
+        // The reject-with-403 decision already happened above; this only controls whether CORS
+        // response headers get emitted for an allowed origin. Never pass an Error here.
+        callback(null, !origin || allowedOrigins.has(origin));
       }
     }));
 
@@ -249,8 +274,12 @@ async function main() {
     });
     (runtime as any)._httpServer = server;
   } else {
-    const transport = await createStdioTransport();
-    await runtime.connect(transport);
+    // serveStdio() (not runtime.connect()) is the SDK's 2026-07-28-capable stdio entry point --
+    // see loadStdioServerAdapter()'s comment in mcp_protocol_adapter.ts. It negotiates the era
+    // per connection from the opening message and serves both 2025-era and 2026-07-28 clients
+    // correctly from the same ephemeral-server factory HTTP already uses.
+    const { serveStdio } = await loadStdioServerAdapter();
+    stdioHandle = serveStdio(() => runtime.createEphemeralServer());
   }
 
   const shutdown = async (signal: string) => {
@@ -264,6 +293,9 @@ async function main() {
       }
       if (mcpHandler) {
         await mcpHandler.close().catch(() => undefined);
+      }
+      if (stdioHandle) {
+        await stdioHandle.close().catch(() => undefined);
       }
 
       stopKarmaIndexer();

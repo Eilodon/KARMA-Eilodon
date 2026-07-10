@@ -47,7 +47,7 @@ async function waitForFinalization(
     await new Promise((r) => setTimeout(r, 5000));
     try {
       const info = await rpc.getTransactionByTransactionHash(txHash);
-      const exec = (info as any).executionInfo;
+      const exec = info.executionInfo;
       if (exec?.executionResult) {
         const err = exec.executionResult.errorMessage;
         console.log(`  finalized. errorMessage: ${err === null ? "null (success)" : err}`);

@@ -81,7 +81,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 5000));
     try {
       const info = await rpc.getTransactionByTransactionHash(txHash);
-      const exec = (info as any).executionInfo;
+      const exec = info.executionInfo;
       if (exec) {
         console.log("execution result:", JSON.stringify(exec, null, 2));
         break;

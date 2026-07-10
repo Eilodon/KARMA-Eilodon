@@ -176,6 +176,11 @@ let flowBoost: FlowBoostSource | undefined;
 export function startKarmaIndexer(
   svc: KarmaService = realKarmaService,
   fromBlock: bigint = BigInt(process.env.KARMA_INDEXER_FROM_BLOCK ?? 0),
+  // DEBT-008 Phase 2: fired alongside (never inside) the reconcile chain below — synchronous,
+  // fire-and-forget, and MUST NOT throw into the watcher. A throwing/slow onResourceEvent should
+  // never be able to delay or break BM25/flow-rep reconciliation, so it is wrapped defensively
+  // here rather than trusting every caller to guarantee that themselves.
+  onResourceEvent?: (e: IndexedEvent) => void,
 ): SkillEventIndexer {
   if (indexer) return indexer;
   // M1 fix: read env at call time (not module load) so tests can set it before calling this function.
@@ -191,6 +196,11 @@ export function startKarmaIndexer(
       reconcileErrors++;
       console.error(`[KARMA] skill-index reconcile failed for ${e.type} (after ${MAX_RECONCILE_RETRIES} retries):`, err);
     });
+    try {
+      onResourceEvent?.(e);
+    } catch (err) {
+      console.error(`[KARMA] onResourceEvent hook failed for ${e.type} (ignored, reconciliation unaffected):`, err);
+    }
   }, fromBlock);
   return indexer;
 }

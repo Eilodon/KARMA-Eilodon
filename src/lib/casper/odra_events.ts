@@ -11,7 +11,7 @@ import type { IndexedEvent } from "../contract.js";
  *  not actual behavior. If a future consumer starts doing EVM-specific validation on these
  *  fields, this cast is exactly where that would need revisiting. */
 function asOpaqueAddress(hex: string): Address {
-  return `0x${hex}` as Address;
+  return `0x${hex}`;
 }
 
 /** CES's own storage keys (`casper-event-standard-0.7.0/src/lib.rs`) — a dedicated dictionary and
