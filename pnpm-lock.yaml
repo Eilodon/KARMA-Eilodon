@@ -51,8 +51,8 @@ importers:
         specifier: 3.10.1
         version: 3.10.1(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(typescript@6.0.3)
       '@x402/core':
-        specifier: ^2.16.0
-        version: 2.16.0
+        specifier: ^2.17.0
+        version: 2.17.0
       '@x402/stellar':
         specifier: ^2.16.0
         version: 2.16.0
@@ -1495,6 +1495,9 @@ packages:
 
   '@x402/core@2.16.0':
     resolution: {integrity: sha512-7MjwOEiE6ICAYtOsK9vQl66Ho4jERDuuoRg/No2Nc2GQ7y/M/yu4DJ65LzeBycQE+Qrg2RqQG7KR51tyT+hzjQ==}
+
+  '@x402/core@2.17.0':
+    resolution: {integrity: sha512-BBooe9Kewl5KLaKadElFwhZzZ+n/X/m2djzGtc7OY51D8fk2vHTVvDZtBFEJYdJxtQoUZMKX73hew0ss81FENQ==}
 
   '@x402/stellar@2.16.0':
     resolution: {integrity: sha512-N32WNKvHk8PNfW0uOLL5Zm/JymPAlZfYk1BTwoNy8GJGdFmZW2MZUlGh0TiHbZFu42fxvEtwIR8b9AGOHgDiGA==}
@@ -4815,6 +4818,10 @@ snapshots:
       tinyrainbow: 3.1.0
 
   '@x402/core@2.16.0':
+    dependencies:
+      zod: 3.25.76
+
+  '@x402/core@2.17.0':
     dependencies:
       zod: 3.25.76
 
