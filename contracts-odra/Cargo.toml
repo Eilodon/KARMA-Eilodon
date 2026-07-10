@@ -12,13 +12,13 @@ crate-type = ["cdylib", "rlib"]
 # Pin EXACT version (=2.8.1) to prevent silent Odra-macros churn between local builds and CI
 # (the risk register flagged this as Odra version churn — mitigation: pin in Cargo.toml).
 # Bump deliberately; do not relax to a caret range.
-odra = { version = "=2.8.1", default-features = false }
+odra = { version = "=2.8.2", default-features = false }
 
 [build-dependencies]
-odra-build = "=2.8.1"
+odra-build = "=2.8.2"
 
 [dev-dependencies]
-odra-test = "=2.8.1"
+odra-test = "=2.8.2"
 
 # WASM compilation for Casper deployment: run `./build-wasm.sh`, not `cargo odra build` (the
 # cargo-odra 0.1.7 CLI doesn't match this odra-build API version — see contracts-odra/README.md
