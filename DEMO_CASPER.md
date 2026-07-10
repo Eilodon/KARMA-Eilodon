@@ -397,7 +397,55 @@ pnpm exec tsx src/scripts/demo_casper_x402_live.ts --live
 > `task_hash` + `escrowAmountMotes` + `status: "Open"`; `deliverResult` → `getJob` showed
 > `status: "Delivered"` and the exact `result_hash`.
 
-### Expected live transactions
+### Recorded live transactions
+
+Real, already-confirmed calls against the deployed `AgentSkillRegistry`
+([`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`](https://testnet.cspr.live/contract-package/29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa)),
+pulled from that contract's own `testnet.cspr.live` activity feed — not a template, these already
+happened and are independently verifiable by anyone. Grouped by the three flows described above:
+
+**Contract deploy** (governance-hardened redeploy, Jul 7, 2026, 10:23:06 PM GMT+7)
+
+| Tx hash | Status |
+|---|---|
+| [`c59518d1…b203b`](https://testnet.cspr.live/transaction/c59518d18bc5096d820a3450aa64a93c116caf7cfe3fc403a79607d7cfcb203b) | success |
+
+**Full job lifecycle** (register → bond → escrow → deliver → confirm → withdraw, blocks 8,427,491–496)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `register_skill` | [`ef969c71…1b92b`](https://testnet.cspr.live/transaction/ef969c711f385d5cf76419e2a8570cbbe7e620729392e879e58270ae7551b92b) | success |
+| `deposit_bond` | [`53aa9dc2…e46c4`](https://testnet.cspr.live/transaction/53aa9dc2846250cd48bdffebb32549e98a0665ad71708337da25ba00373e46c4) | success |
+| `create_job` | [`ed82d2ca…6a08b`](https://testnet.cspr.live/transaction/ed82d2cadc4e16a17070aadd9f999515750b24592c0784f779d5167270f6a08b) | success |
+| `deliver_result` | [`466a5876…86aec`](https://testnet.cspr.live/transaction/466a58760ffd644a0986a3fee1d21103f3d5de685bc0a9b1edd0a0a7e9e86aec) | success |
+| `confirm_completion` | [`4d9b1047…073ac`](https://testnet.cspr.live/transaction/4d9b1047e3ee03c4827e441c62d8b88dcf299c2ee22b006fc182114baf5073ac) | success |
+| `withdraw` | [`649949fa…01639`](https://testnet.cspr.live/transaction/649949fa95ac7ccb2808df017cedbf26580a6a76d54afcdec6e78af517201639) | success |
+
+**Courtroom dispute** (a requester disputes a delivered result, the provider matches the bond to
+contest, a neutral on-chain arbiter rules `ProviderAtFault`, blocks 8,427,961–967)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `deliver_result` | [`970977e1…85f72`](https://testnet.cspr.live/transaction/970977e1b1ed22f23f91fd5f35e65786582432a5bf09c1d91fea3d6860d85f72) | success |
+| `dispute_result` | [`d71fb230…fa0cf`](https://testnet.cspr.live/transaction/d71fb2308fc2c36503f9935d8a4f8af3df62e6e11d6b68db126b78c1b0cfa0cf) | success |
+| `respond_to_dispute` | [`c423f5cf…dedf5`](https://testnet.cspr.live/transaction/c423f5cfb8f34462ba1fc3bf7472f68b0ae1986b84ccd8e020acb8c606bdedf5) | success |
+| `arbitrate` (verdict: `ProviderAtFault`) | [`970c7827…5bec4`](https://testnet.cspr.live/transaction/970c782749b268b91d7650fcb899cc98375bd1696257de3f74e64cb78c05bec4) | success |
+
+**Cross-chain-rep governance** (propose → approve → an early `execute_proposal` correctly reverts
+`TimelockNotElapsed` against the real 48h clock, blocks 8,427,987–989)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `propose_set_cross_chain_rep` | [`226bd001…a33c4`](https://testnet.cspr.live/transaction/226bd0017f4fe35e2c26c1443aca2b2bc9e4ffc56bdf253e59ca1bdac10a33c4) | success |
+| `approve_proposal` | [`a5ae630a…27f14`](https://testnet.cspr.live/transaction/a5ae630aeeef37e07ef14392b2e4f78088f78507b95f0cd1b641a87c79627f14) | success |
+| `execute_proposal` (too-early attempt) | [`9784de3d…4b1ec`](https://testnet.cspr.live/transaction/9784de3dee55a36a70141a45627f62d32896c7609b6dd2749fee70b12f84b1ec) | **error, `User error: 42`** — `Error::TimelockNotElapsed` (`contracts-odra/src/agent_skill_registry.rs:95`), the expected/correct rejection, not a bug |
+
+Browse the full activity feed yourself: [testnet.cspr.live/contract-package/29b7daeb…](https://testnet.cspr.live/contract-package/29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa).
+
+### Expected live transactions (if you run it yourself)
+
+Reproducing any of the above from scratch (a fresh `register_skill`/`create_job`/etc., not a
+replay) will look like this:
 
 | Step | Tool | What you'll see |
 |---|---|---|

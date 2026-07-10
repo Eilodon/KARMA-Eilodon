@@ -326,8 +326,9 @@ tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md):
 
 | | |
 |---|---|
-| **`AgentSkillRegistry`** | `hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa` (governance-hardened redeploy) |
+| **`AgentSkillRegistry`** | [`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`](https://testnet.cspr.live/contract-package/29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa) (governance-hardened redeploy) |
 | **Governance** | real 2-of-2 multisig + 48h timelock — confirmed live by decoding the contract's own `GovernanceConfigured` event |
+| **Sample transactions** | 13 real, `testnet.cspr.live`-verified calls (lifecycle, courtroom, governance) — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions) in DEMO_CASPER.md |
 
 **Stellar Testnet** (Soroban, native BN254) — the same trust model's zero-knowledge reputation
 gate, proven on a second chain; full tx table + reproduction steps in
