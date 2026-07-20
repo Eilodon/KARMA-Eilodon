@@ -24,8 +24,8 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1
       '@modelcontextprotocol/express':
-        specifier: ^2.0.0-beta.2
-        version: 2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.3)(express@5.2.1)
+        specifier: ^2.0.0-beta.3
+        version: 2.0.0-beta.3(@modelcontextprotocol/server@2.0.0-beta.3)(express@5.2.1)
       '@modelcontextprotocol/node':
         specifier: ^2.0.0-beta.2
         version: 2.0.0-beta.3(@modelcontextprotocol/server@2.0.0-beta.3)(hono@4.12.30)
@@ -646,11 +646,11 @@ packages:
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
 
-  '@modelcontextprotocol/express@2.0.0-beta.2':
-    resolution: {integrity: sha512-68JKVnCVhaiws14LpxWbFI2KW0iBMIb1DXJ/otNVwLZHWeVv/33PZ+lc8wl1wGRwRoMMPJVDvKo5oPWylCw85A==}
+  '@modelcontextprotocol/express@2.0.0-beta.3':
+    resolution: {integrity: sha512-CDJ38z1eqtKK2fXGJnH+icIGoAj2ZZRfFPnTDVE59btTzJ7wqfDa/Rh1PO+c/vFhMQuhe8/CQX36vNiGkR4dbw==}
     engines: {node: '>=20'}
     peerDependencies:
-      '@modelcontextprotocol/server': ^2.0.0-beta.2
+      '@modelcontextprotocol/server': ^2.0.0-beta.3
       express: ^4.18.0 || ^5.0.0
 
   '@modelcontextprotocol/node@2.0.0-beta.3':
@@ -3918,7 +3918,7 @@ snapshots:
 
   '@js-sdsl/ordered-map@4.4.2': {}
 
-  '@modelcontextprotocol/express@2.0.0-beta.2(@modelcontextprotocol/server@2.0.0-beta.3)(express@5.2.1)':
+  '@modelcontextprotocol/express@2.0.0-beta.3(@modelcontextprotocol/server@2.0.0-beta.3)(express@5.2.1)':
     dependencies:
       '@modelcontextprotocol/server': 2.0.0-beta.3
       cors: 2.8.6
