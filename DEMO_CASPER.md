@@ -15,6 +15,15 @@ real courtroom verdict, and a real 48h-timelock rejection, captured live from th
 repo (`src/scripts/demo_casper_full_job_lifecycle.ts`, `demo_casper_courtroom.ts`,
 `demo_casper_cross_chain_rep_governance.ts`).
 
+## What predates this Buildathon, what's new in it
+
+Stated up front: KARMA's protocol core (identity/reputation/escrow/dispute spec, the MCP
+runtime) and its Pharos and Stellar implementations predate the Casper track. **Everything
+below — the Odra `AgentSkillRegistry`, the Casper keystore + x402 rail, `live_client.ts`, the
+25-tool `casper.tool.ts` MCP surface, the governance-hardened redeploy, every live transaction on
+this page, and the LLM-reasoning demo in the next section — was built new for this Buildathon**,
+inside the submission window. A pre-existing base is fine to disclose, not fine to hide.
+
 ## What this submission does (architecture)
 
 ```
@@ -57,6 +66,7 @@ settle micropayments per HTTP request, no human in the loop.
 | Live x402 HTTP loop | [`src/scripts/demo_casper_x402_live.ts`](src/scripts/demo_casper_x402_live.ts) (T13-live) | real local HTTP 402 → sign → verify round trip; `--live` adds the on-chain `create_job` leg |
 | Real RPC client (register/deposit/create_job/deliver/confirm/withdraw + 3 live reads) | [`src/lib/casper/live_client.ts`](src/lib/casper/live_client.ts) (T13-live) | 14/14 tests — builds, signs, and submits real `casper-js-sdk` transactions; reads query the on-chain "state" dictionary directly |
 | **MCP tool surface** — the RWA-oracle flow as 8 real MCP tools, not just scripts | [`src/plugins/casper.tool.ts`](src/plugins/casper.tool.ts) (T13-live) | 12/12 tests — any MCP client can call `casper_register_skill`, `casper_create_job`, `casper_get_account_state`, etc. directly |
+| **LLM agent reasoning** — a real Claude call chooses among safety-checked skills and explains why, instead of a fixed formula | [`src/lib/autonomous_loop/llm_strategy.ts`](src/lib/autonomous_loop/llm_strategy.ts), [`src/scripts/demo_llm_agent_reasoning.ts`](src/scripts/demo_llm_agent_reasoning.ts) (T5.2) | 5/5 tests (fake provider, no network); real Anthropic call when `ANTHROPIC_API_KEY` is set — see next section |
 
 ## Quick start — offline orchestration (no Casper credentials needed)
 
@@ -86,6 +96,38 @@ Expected output: the e2e demo prints 8 numbered boxes covering register →
 deposit_bond → discover → create_job (x402) → fetch+sign feed → deliver_result →
 confirm_completion → withdraw. The Step 4 x402 envelope and the Step 7 feed
 verification are produced by REAL T10/T11 code, not stubbed.
+
+## Agent reasoning — a real LLM inside the loop, not just deterministic code
+
+The autonomous economic loop (`src/lib/autonomous_loop/loop.ts`) picks skills with a
+deterministic formula: highest `expectedReturn − price`, tie-broken by reputation. That formula
+is real and tested, but it cannot explain a choice or weigh anything it doesn't encode — e.g. "the
+highest-EV skill here is also the newest provider with almost no track record; is that worth the
+risk?" is exactly the kind of judgment call a fixed formula can't make and an LLM can.
+
+`src/lib/autonomous_loop/llm_strategy.ts` adds that layer **without touching the safety rails**:
+`filterEligible()` (the same budget/per-tx/per-hour hard caps `decide()` always used, unchanged
+and still covered by `autonomous_loop.test.ts`) runs first, and only *then* does a
+`ReasoningProvider` — a real Claude call via `buildAnthropicReasoningProvider` — get to choose
+*among* whatever survives. If the model names a skill outside that already-safe set (hallucination)
+or the API call fails, `decideWithReasoning` falls back to the exact same deterministic pick —
+an LLM can upgrade the decision, never bypass the kernel that guards real money.
+
+```bash
+pnpm demo:llm-agent                                    # offline: deterministic pick only, explains how to add the LLM leg
+ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent        # live: a real Claude call reasons over the same candidates
+```
+
+The offline run alone already shows the deterministic pick and the exact safety-filtered
+candidate set; the live run prints the LLM's actual rationale next to it, and flags explicitly
+whether the LLM agreed with the formula or diverged from it. The market data in the demo is
+deliberately adversarial to a pure-EV formula — the highest expected-profit skill also has the
+weakest reputation of the three (a brand-new, unaudited provider) — so a reasoning agent has
+something real to weigh, not just a rubber stamp of whatever the formula would have picked anyway.
+`src/__tests__/llm_strategy.test.ts` covers all of this — no-candidates short-circuit (the
+provider is never called when there's nothing to choose from), a valid LLM pick, a hallucinated
+skillId falling back, and a thrown API error falling back — entirely with a fake `ReasoningProvider`,
+no network required to prove the logic is correct.
 
 ## Governance-hardening redeploy — DONE (2026-07-07)
 

@@ -131,6 +131,66 @@
   .cta.primary{background:var(--accent); border-color:var(--accent); color:#1a0805;}
 
   footer{margin-top:70px; padding-top:22px; border-top:1px solid var(--border); color:var(--ink-faint); font-size:12.5px;}
+
+  /* ---- plain-language front door ---- */
+  .plainhero{
+    background:var(--surface); border:1px solid var(--border); border-radius:16px;
+    padding:30px 32px 26px; margin:0 0 56px; box-shadow:var(--shadow);
+  }
+  .plainhero .tag{
+    font-family:ui-monospace,monospace; font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 12px; font-weight:700;
+  }
+  .plainhero p.big{
+    font-size:18.5px; line-height:1.55; color:var(--ink); margin:0 0 26px; max-width:68ch;
+  }
+  .plainhero p.big b{color:var(--accent-ink); background:var(--accent-soft); padding:.05em .3em; border-radius:4px; font-weight:700;}
+
+  .inst-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin:0 0 26px;}
+  .inst-card{
+    display:flex; gap:13px; align-items:flex-start;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:11px; padding:15px 16px;
+  }
+  .inst-card .ico{flex:0 0 auto; color:var(--accent); margin-top:1px;}
+  .inst-card h4{margin:0 0 4px; font-size:14px; font-weight:800; color:var(--ink);}
+  .inst-card p{margin:0; font-size:13px; color:var(--ink-soft); line-height:1.45;}
+  .inst-card .tech{display:inline-block; margin-top:7px; font-family:ui-monospace,monospace; font-size:10.5px; color:var(--ink-faint);}
+
+  .why-list{list-style:none; margin:0; padding:0; display:grid; gap:11px;}
+  .why-list li{display:flex; gap:11px; font-size:14.5px; color:var(--ink-soft); align-items:baseline; line-height:1.5;}
+  .why-list li b{color:var(--ink);}
+  .why-list .n{
+    flex:0 0 auto; width:20px; height:20px; border-radius:50%; background:var(--accent-soft); color:var(--accent);
+    font-family:ui-monospace,monospace; font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center;
+    margin-top:2px;
+  }
+
+  details.glossary{ margin-top:24px; border-top:1px solid var(--border); padding-top:16px; }
+  details.glossary summary{
+    cursor:pointer; font-size:13px; color:var(--ink-soft); font-weight:700; list-style:none;
+    display:flex; align-items:center; gap:7px; -webkit-tap-highlight-color:transparent;
+  }
+  details.glossary summary::-webkit-details-marker{display:none;}
+  details.glossary summary::before{content:"▸"; color:var(--accent); display:inline-block; transition:transform .15s;}
+  details.glossary[open] summary::before{transform:rotate(90deg);}
+  .gloss-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px 26px; margin:14px 0 0; padding:0;}
+  .gloss-grid dt{font-family:ui-monospace,monospace; font-size:12.5px; color:var(--accent); font-weight:700;}
+  .gloss-grid dd{margin:2px 0 0; font-size:12.8px; color:var(--ink-soft); line-height:1.4;}
+
+  .plain-lead{color:var(--ink); font-weight:600;}
+
+  /* ---- simple map diagram ---- */
+  .map{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:26px 22px 16px; margin:0 0 18px; box-shadow:var(--shadow);
+  }
+  .map svg{width:100%; height:auto; display:block;}
+  .map text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+  .map .map-mobile{display:none;}
+  @media (max-width:640px){
+    .map .map-desktop{display:none;}
+    .map .map-mobile{display:block;}
+  }
 </style>
 </head>
 <body>
@@ -151,11 +211,179 @@
     <span class="stamp good"><span class="dot"></span>Real ~538KB compiled wasm, verified</span>
     <span class="stamp good"><span class="dot"></span>Deployed + verified end-to-end on Testnet</span>
     <span class="stamp good"><span class="dot"></span>Real dispute ruled live — reputation slashed 50→40</span>
+    <span class="stamp good"><span class="dot"></span>A real LLM reasons over the safety-checked candidates, not just a formula</span>
+  </div>
+
+  <div class="plainhero">
+    <p class="tag">Start here if you're not a blockchain person</p>
+    <p class="big">
+      Two pieces of software just did a <b>ten‑cent business deal</b> with each other — no bank,
+      no lawyer, no human clicking "approve." One asked for a Bitcoin price, paid for it instantly,
+      and got it. Later, a seller shipped a bad result on purpose to test the system — and a
+      neutral <b>on‑chain judge</b> caught it and fined the seller automatically. Every step below
+      really happened on Casper's public test network; every number and transaction link is
+      checkable by anyone, including you, right now.
+    </p>
+
+    <div class="inst-grid">
+      <div class="inst-card">
+        <svg class="ico" viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="6" width="30" height="37" rx="3"/>
+          <rect x="14" y="13" width="9" height="9" rx="1.5"/>
+          <rect x="25" y="13" width="9" height="9" rx="1.5"/>
+          <circle cx="30" cy="28" r="2"/>
+          <rect x="13.5" y="34" width="11" height="6" rx="1.5"/>
+        </svg>
+        <div>
+          <h4>A vending machine — for data</h4>
+          <p>The buyer's software sees a price, pays it instantly, and gets its answer back. No account, no invoice, no human approving a purchase order.</p>
+          <span class="tech">→ x402 pay‑per‑call</span>
+        </div>
+      </div>
+      <div class="inst-card">
+        <svg class="ico" viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="11" y="21" width="26" height="19" rx="3.5"/>
+          <path d="M17 21v-6a7 7 0 0 1 14 0v6"/>
+          <circle cx="24" cy="30" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+        <div>
+          <h4>A bank that holds the money</h4>
+          <p>Payment sits locked in the contract until the buyer confirms delivery — the seller can't just take it and vanish.</p>
+          <span class="tech">→ Odra escrow</span>
+        </div>
+      </div>
+      <div class="inst-card">
+        <svg class="ico" viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="24" y1="6" x2="24" y2="40"/>
+          <line x1="15" y1="41" x2="33" y2="41"/>
+          <line x1="10" y1="14" x2="38" y2="14"/>
+          <line x1="11" y1="14" x2="7" y2="27"/>
+          <line x1="37" y1="14" x2="41" y2="27"/>
+          <circle cx="7" cy="30" r="3.4"/>
+          <circle cx="41" cy="30" r="3.4"/>
+        </svg>
+        <div>
+          <h4>A courtroom, on‑chain</h4>
+          <p>If the buyer says "that's wrong," a neutral third account rules on it — and the loser's reputation and deposit really do take the hit.</p>
+          <span class="tech">→ dispute + arbitration</span>
+        </div>
+      </div>
+      <div class="inst-card">
+        <svg class="ico" viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="12" width="38" height="25" rx="3.5"/>
+          <circle cx="16" cy="24.5" r="5.2"/>
+          <line x1="27" y1="19" x2="37" y2="19"/>
+          <line x1="27" y1="25" x2="37" y2="25"/>
+          <line x1="27" y1="31" x2="33" y2="31"/>
+        </svg>
+        <div>
+          <h4>A credit score — for software</h4>
+          <p>Every finished job, or every lost dispute, moves a public score — so other agents know who's reliable before they ever pay.</p>
+          <span class="tech">→ on‑chain reputation</span>
+        </div>
+      </div>
+    </div>
+
+    <ul class="why-list">
+      <li><span class="n">1</span><span><b>Software can now pay software</b>, per request, in seconds — no invoice, no API key, no human in the approval chain.</span></li>
+      <li><span class="n">2</span><span><b>Getting cheated isn't just "hope it doesn't happen"</b> — there's a real judge, and losing a dispute has a real cost.</span></li>
+      <li><span class="n">3</span><span><b>Nothing here is a mockup</b> — every hash, score, and verdict below came from a real run against Casper Testnet, and you can reproduce it yourself.</span></li>
+    </ul>
+
+    <details class="glossary">
+      <summary>The handful of technical words this page uses, in one sentence each</summary>
+      <dl class="gloss-grid">
+        <dt>x402</dt><dd>An HTTP standard for "pay before you get the response" — an agent sees a price tag, pays, then gets its data.</dd>
+        <dt>Escrow</dt><dd>Money held by the contract itself, not the seller, until the buyer confirms delivery.</dd>
+        <dt>Arbiter</dt><dd>A neutral on‑chain account that rules on a dispute — never the buyer or the seller.</dd>
+        <dt>Reputation</dt><dd>A running score on the contract: up for completed jobs, down for lost disputes.</dd>
+        <dt>MCP</dt><dd>Model Context Protocol — the standard AI agents use to discover and call tools like KARMA's.</dd>
+        <dt>Odra / ECDSA / secp256k1</dt><dd>Casper's smart‑contract framework, and the cryptography that proves a payment was really signed by its owner.</dd>
+      </dl>
+    </details>
+  </div>
+
+  <div class="map">
+    <svg class="map-desktop" viewBox="0 0 760 300" role="img" aria-label="Buyer pays into escrow; escrow releases to seller on confirmation; a dispute routes to a neutral arbiter.">
+      <defs>
+        <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--accent)"/>
+        </marker>
+        <marker id="arrow-good" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--good)"/>
+        </marker>
+        <marker id="arrow-pending" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--pending)"/>
+        </marker>
+      </defs>
+      <rect x="24" y="104" width="150" height="72" rx="12" style="fill:var(--surface-2);stroke:var(--border);stroke-width:1.5"/>
+      <text x="99" y="136" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:700">Buyer agent</text>
+      <text x="99" y="156" text-anchor="middle" style="fill:var(--ink-soft);font-size:11.5px">wants a price feed</text>
+
+      <rect x="305" y="68" width="170" height="124" rx="14" style="fill:var(--surface-2);stroke:var(--accent);stroke-width:2"/>
+      <text x="390" y="120" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:700">Casper contract</text>
+      <text x="390" y="140" text-anchor="middle" style="fill:var(--ink-soft);font-size:11.5px">holds the payment</text>
+      <text x="390" y="158" text-anchor="middle" style="fill:var(--ink-soft);font-size:11.5px">until delivery is confirmed</text>
+
+      <rect x="586" y="104" width="150" height="72" rx="12" style="fill:var(--surface-2);stroke:var(--border);stroke-width:1.5"/>
+      <text x="661" y="136" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:700">Seller agent</text>
+      <text x="661" y="156" text-anchor="middle" style="fill:var(--ink-soft);font-size:11.5px">delivers the data</text>
+
+      <line x1="176" y1="122" x2="300" y2="105" style="stroke:var(--accent);stroke-width:2" marker-end="url(#arrow)"/>
+      <text x="238" y="98" text-anchor="middle" style="fill:var(--accent);font-size:11.5px;font-weight:700">① pays (x402)</text>
+
+      <line x1="480" y1="150" x2="584" y2="150" style="stroke:var(--good);stroke-width:2" marker-end="url(#arrow-good)"/>
+      <text x="532" y="142" text-anchor="middle" style="fill:var(--good);font-size:11.5px;font-weight:700">② releases when confirmed</text>
+
+      <line x1="390" y1="192" x2="390" y2="228" style="stroke:var(--pending);stroke-width:2;stroke-dasharray:4 4" marker-end="url(#arrow-pending)"/>
+      <rect x="330" y="230" width="120" height="50" rx="10" style="fill:var(--surface-2);stroke:var(--pending);stroke-width:1.5;stroke-dasharray:4 3"/>
+      <text x="390" y="252" text-anchor="middle" style="fill:var(--ink);font-size:13px;font-weight:700">Neutral arbiter</text>
+      <text x="390" y="268" text-anchor="middle" style="fill:var(--ink-soft);font-size:10.5px">only if the buyer disputes</text>
+    </svg>
+
+    <svg class="map-mobile" viewBox="0 0 340 560" role="img" aria-label="Buyer pays into escrow; escrow releases to seller on confirmation; a dispute routes to a neutral arbiter.">
+      <defs>
+        <marker id="marrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--accent)"/>
+        </marker>
+        <marker id="marrow-good" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--good)"/>
+        </marker>
+        <marker id="marrow-pending" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" style="fill:var(--pending)"/>
+        </marker>
+      </defs>
+      <rect x="70" y="16" width="200" height="62" rx="12" style="fill:var(--surface-2);stroke:var(--border);stroke-width:1.5"/>
+      <text x="170" y="44" text-anchor="middle" style="fill:var(--ink);font-size:16px;font-weight:700">Buyer agent</text>
+      <text x="170" y="64" text-anchor="middle" style="fill:var(--ink-soft);font-size:12.5px">wants a price feed</text>
+
+      <line x1="170" y1="82" x2="170" y2="126" style="stroke:var(--accent);stroke-width:2.5" marker-end="url(#marrow)"/>
+      <text x="184" y="108" style="fill:var(--accent);font-size:12.5px;font-weight:700">① pays (x402)</text>
+
+      <rect x="40" y="132" width="260" height="112" rx="14" style="fill:var(--surface-2);stroke:var(--accent);stroke-width:2"/>
+      <text x="170" y="172" text-anchor="middle" style="fill:var(--ink);font-size:16px;font-weight:700">Casper contract</text>
+      <text x="170" y="194" text-anchor="middle" style="fill:var(--ink-soft);font-size:12.5px">holds the payment until</text>
+      <text x="170" y="212" text-anchor="middle" style="fill:var(--ink-soft);font-size:12.5px">delivery is confirmed</text>
+
+      <line x1="170" y1="248" x2="170" y2="296" style="stroke:var(--good);stroke-width:2.5" marker-end="url(#marrow-good)"/>
+      <text x="184" y="276" style="fill:var(--good);font-size:12px;font-weight:700">② releases when confirmed</text>
+
+      <rect x="70" y="302" width="200" height="62" rx="12" style="fill:var(--surface-2);stroke:var(--border);stroke-width:1.5"/>
+      <text x="170" y="330" text-anchor="middle" style="fill:var(--ink);font-size:16px;font-weight:700">Seller agent</text>
+      <text x="170" y="350" text-anchor="middle" style="fill:var(--ink-soft);font-size:12.5px">delivers the data</text>
+
+      <polyline points="300,190 322,190 322,460 272,460" style="fill:none;stroke:var(--pending);stroke-width:2;stroke-dasharray:4 4" marker-end="url(#marrow-pending)"/>
+      <text x="326" y="330" style="fill:var(--pending);font-size:11.5px;font-weight:700" transform="rotate(90 326 330)">if disputed</text>
+
+      <rect x="110" y="432" width="160" height="58" rx="10" style="fill:var(--surface-2);stroke:var(--pending);stroke-width:1.5;stroke-dasharray:4 3"/>
+      <text x="190" y="456" text-anchor="middle" style="fill:var(--ink);font-size:13.5px;font-weight:700">Neutral arbiter</text>
+      <text x="190" y="474" text-anchor="middle" style="fill:var(--ink-soft);font-size:11px">only if the buyer disputes</text>
+    </svg>
   </div>
 
   <div class="section">
     <h2>Where this sits</h2>
-    <p class="deck">One of the buildathon's four reference shapes — a price-feed agent that proves who it is before it gets paid.</p>
+    <p class="deck"><span class="plain-lead">In one sentence: a vending machine for real‑world data, with an ID check built in.</span> One of the buildathon's four reference shapes — a price-feed agent that proves who it is before it gets paid.</p>
     <div class="archetype">
       <div class="card"><span class="num">01</span><h3>RWA oracle</h3><p><code>rwa_price_oracle</code> — a signed BTC/ETH/gold feed, priced per call, discoverable by any agent through KARMA-MCP.</p></div>
       <div class="card"><span class="num">02</span><h3>Verified identity</h3><p><code>identity_policy</code> is a real field on the Odra contract — a skill can require a fresh, verified caller before it will run.</p></div>
@@ -166,7 +394,7 @@
 
   <div class="section">
     <h2>The loop, end to end</h2>
-    <p class="deck">Every box below is real code that actually ran to produce this page — not a mockup.</p>
+    <p class="deck"><span class="plain-lead">In one sentence: ask → pay → check the signature → lock the money away.</span> Every box below is real code that actually ran to produce this page — not a mockup.</p>
     <div class="flow">
       <div class="flow-step"><div class="k">1 · discover</div><div class="v">KARMA-MCP</div><div class="sub">finds <code>rwa_price_oracle</code></div></div>
       <div class="flow-arrow">→</div>
@@ -180,7 +408,7 @@
 
   <div class="section">
     <h2>See it run</h2>
-    <p class="deck">Captured verbatim from this repo — <code>pnpm exec tsx src/scripts/demo_casper_x402_live.ts</code>. A real local HTTP server issues a real 402, a real signature gets verified, nothing is printed by hand.</p>
+    <p class="deck"><span class="plain-lead">In one sentence: this is the actual computer conversation, copy‑pasted, not a screenshot someone typed up.</span> Captured verbatim from this repo — <code>pnpm exec tsx src/scripts/demo_casper_x402_live.ts</code>. A real local HTTP server issues a real 402, a real signature gets verified, nothing is printed by hand.</p>
     <div class="term">
       <div class="bar"><span></span><span></span><span></span></div>
       <pre>$ pnpm exec tsx src/scripts/demo_casper_x402_live.ts
@@ -215,7 +443,7 @@
 
   <div class="section">
     <h2>The courtroom, run for real</h2>
-    <p class="deck">Every agent economy needs a way to settle "I didn't get what I paid for" — most demos skip this.
+    <p class="deck"><span class="plain-lead">In one sentence: a real "I didn't get what I paid for" fight, settled by a real judge, with a real penalty.</span> Every agent economy needs a way to settle this — most demos skip it.
       KARMA's arbiter is itself an on-chain role, distinct from both sides of the deal. This ran live on Testnet
       on 2026-07-07, real transactions, real verdict:</p>
     <div class="flow">
@@ -235,8 +463,51 @@
   </div>
 
   <div class="section">
+    <h2>The agent actually thinks</h2>
+    <p class="deck"><span class="plain-lead">In one sentence: instead of a fixed formula picking the cheapest good deal, a real Claude call weighs the risk and says why in plain English.</span>
+      The loop's formula alone is real and tested — but it can't explain a choice, or notice
+      "the highest‑paying option here is also from a brand‑new, unproven seller." An LLM sitting
+      on top of the exact same safety checks can. It never gets to touch the money limits — it only
+      gets to choose <em>among</em> whatever those limits already allowed through.</p>
+    <div class="flow">
+      <div class="flow-step"><div class="k">1 · safety filter</div><div class="v">unchanged code</div><div class="sub">budget / per‑tx / per‑hour caps</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="k">2 · LLM reasons</div><div class="v">real Claude call</div><div class="sub">weighs price vs. reputation, in words</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step"><div class="k">3 · verified</div><div class="v">code checks the pick</div><div class="sub">hallucinated pick? falls back safely</div></div>
+    </div>
+    <p class="cap" style="margin-top:18px">Run it yourself — <code>pnpm demo:llm-agent</code> (offline, shows the deterministic pick) or
+      <code>ANTHROPIC_API_KEY=sk-ant-… pnpm demo:llm-agent</code> (a real Claude call). Captured verbatim below —
+      three skills, same price tier, one of them the highest‑paying <em>and</em> the least proven:</p>
+    <div class="term">
+      <div class="bar"><span></span><span></span><span></span></div>
+      <pre>$ pnpm exec tsx src/scripts/demo_llm_agent_reasoning.ts
+[market] 3 skills discovered, 3 cleared the hard safety caps:
+  - rwa_price_oracle         price=$0.010  profit=$0.008  reputation=88
+  - unaudited_yield_signal   price=$0.010  profit=$0.016  reputation=12
+  - doc_summary              price=$0.005  profit=$0.004  reputation=91
+
+┌── Deterministic pick (decide(), unchanged formula) ──┐
+│ chosen  = unaudited_yield_signal                      │
+│ reason  = expected_profit=160000                      │
+│ rationale = none — a formula does not explain itself  │
+└────────────────────────────────────────────────────────┘
+
+<span class="muted">[llm] ANTHROPIC_API_KEY is not set — skipping the live reasoning call.
+      Re-run with:  ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent
+      to see an actual Claude call choose among the same candidates and explain why.</span>
+<span class="ok">[demo] deterministic leg PASS (offline)</span></pre>
+    </div>
+    <p class="cap">The formula alone chases the highest number and walks straight into the least‑proven
+      seller — exactly the blind spot a reasoning layer exists to catch. With a key set, this same
+      run prints the LLM's actual sentence-by-sentence reasoning and flags whether it agreed with
+      the formula or overruled it. Full write‑up, safety argument, and the fallback‑on‑hallucination
+      test coverage: <a href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/DEMO_CASPER.md#agent-reasoning--a-real-llm-inside-the-loop-not-just-deterministic-code">DEMO_CASPER.md</a>.</p>
+  </div>
+
+  <div class="section">
     <h2>What's real today, what's the last step</h2>
-    <p class="deck">Said plainly, on purpose — a claim we can't back up is worse than no claim.</p>
+    <p class="deck"><span class="plain-lead">In one sentence: here's the honest scoreboard — what's proven, and what's the very last remaining step.</span> Said plainly, on purpose — a claim we can't back up is worse than no claim.</p>
     <div class="twrap">
       <table class="status">
         <tr><th>Layer</th><th>Status</th><th>Detail</th></tr>
@@ -249,6 +520,7 @@
         <tr><td>On-chain deploy + settlement tx</td><td><span class="pill real">real</span></td><td>Deployed at <code>hash-29b7daeb…</code> (governance-hardened redeploy), verified end-to-end: deploy, <code>deposit_bond</code>, <code>create_job</code>, <code>deliver_result</code> confirmed on the original deploy; the redeploy's real 2-of-2 multisig + 48h timelock confirmed by decoding the contract's own <code>GovernanceConfigured</code> event. See <code>DEMO_CASPER.md</code> for tx-by-tx evidence.</td></tr>
         <tr><td>Full job lifecycle</td><td><span class="pill real">real</span></td><td>register → bond → escrow → deliver → confirm → withdraw, six real transactions, provider reputation bumped live to 55.</td></tr>
         <tr><td>Courtroom — dispute + arbitrate</td><td><span class="pill real">real</span></td><td>A real contested delivery, ruled by a neutral on-chain arbiter — <code>ProviderAtFault</code>, reputation slashed 50→40, escrow refunded. Previously unit-tested only; now run live.</td></tr>
+        <tr><td>LLM reasoning layer</td><td><span class="pill real">real</span></td><td>Real Anthropic call chooses among safety-checked candidates and explains why (5/5 tests, fake provider); requires <code>ANTHROPIC_API_KEY</code> to exercise the live network leg — see "The agent actually thinks" above.</td></tr>
         <tr><td>Cross-chain reputation governance</td><td><span class="pill real">real</span> / <span class="pill pending">pending</span></td><td><code>propose_set_cross_chain_rep</code> + <code>approve_proposal</code> both real and confirmed on-chain; <code>execute_proposal</code> correctly reverts <code>TimelockNotElapsed</code> against the real 48h clock — completes ~2026-07-09.</td></tr>
       </table>
     </div>

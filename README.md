@@ -42,6 +42,18 @@
 > evidence are in [Zero-knowledge reputation gating](#architecture-zero-knowledge-reputation-gating-proven-on-stellar)
 > below; full write-up in [DEMO_STELLAR.md](DEMO_STELLAR.md).
 
+> **What's new for this Buildathon, and what predates it** — stated up front rather than left for
+> a judge to dig out. KARMA's protocol core (the identity/reputation/escrow/dispute spec, the
+> MCP runtime under `src/core`, `src/mcp`, `src/middlewares`) and the Pharos and Stellar
+> implementations predate the Casper track. **Everything Casper-specific was built new for this
+> Buildathon and lives entirely in this submission window:** the Odra `AgentSkillRegistry`
+> (`contracts-odra/`, 120 Rust tests), the Casper secp256k1 keystore adapter, the `x402_casper.ts`
+> payment rail, `live_client.ts`'s real `casper-js-sdk` transaction building, the 25-tool
+> `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every live transaction
+> recorded in [DEMO_CASPER.md](DEMO_CASPER.md). The same standard we'd apply to any other
+> submission: a pre-existing base is fine to disclose, not fine to hide — the Casper-conformant
+> implementation, the part this Buildathon actually judges, is original and shipped now.
+
 > A protocol for agent economies — not a single-chain app. Agents publish skills, get discovered
 > by relevance and reputation, and invoke each other under enforceable trust gates: identity,
 > reputation, and settlement, specified once and implemented per chain. Built on **SUPER-MCP**
