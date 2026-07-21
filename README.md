@@ -88,6 +88,31 @@ holds up outside Casper too, not just a claim. Details in [DEMO_STELLAR.md](DEMO
 
 ---
 
+## Fit to the Casper Agentic Buildathon
+
+Casper's own framing for this track: **["Casper is the trust layer for the agent economy"](https://www.casper.network/ai)**
+— the AI Toolkit gives agents a way to *pay* (x402); it doesn't yet give them a way to *trust*:
+identity, reputation, and a real verdict when a counterparty cheats. That's the exact gap KARMA
+fills, wired to Casper's own x402/MCP stack rather than sitting beside it.
+
+KARMA is also close to a literal build of the Buildathon brief's own **"RWA Oracle Agent with
+Verifiable On-Chain Identity" example build direction** ([full text](https://dorahacks.io/hackathon/casper-agentic-buildathon-finals/detail)):
+an agent posts verified off-chain data on-chain via x402, backed by an on-chain identity and a
+reputation score built from historical accuracy — a trust-minimized oracle. `DEMO_CASPER.md`'s
+RWA price-oracle flow is exactly that, plus the courtroom (dispute-bond arbitration) and
+governance layers the brief's direction doesn't ask for but a real trust layer needs.
+
+| Final Round judging criterion | Where in this repo |
+|---|---|
+| Technical Execution | 120/120 Rust tests (`contracts-odra`), 782 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
+| Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
+| Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
+| Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
+| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 26-tool MCP surface — the UX of a protocol is its interface for agents and for the humans who have to trust it |
+| Working Smart Contracts | `hash-29b7daeb…`, governance-hardened redeploy, 13+ real transactions — [Live deployment](#live-deployment) |
+| Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
+| Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
+
 ## What KARMA actually builds
 
 Most agent projects ship a worker — one bot, one function. KARMA ships the institutions
