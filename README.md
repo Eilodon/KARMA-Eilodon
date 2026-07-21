@@ -293,6 +293,28 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 
 </details>
 
+**Composability with the official Casper MCP Server:** every tool above is
+`casper_snake_case` (`casper_health`, `casper_create_job`, ...).
+[`msanlisavas/casper-mcp`](https://github.com/msanlisavas/casper-mcp) — the general-purpose
+Casper chain-data server (87 tools, PascalCase: `GetAccountBalance`, `GetBlock`,
+`BuildTransferTransaction`, wrapping CSPR.Cloud) — uses a completely disjoint naming convention,
+so the two register in the same MCP client with zero tool-name collisions. They also solve
+different problems: casper-mcp reads/writes raw chain data, KARMA is the identity/escrow/dispute
+layer built on top of it. Both run side by side, no code changes on either side:
+
+```json
+{
+  "mcpServers": {
+    "karma":  { "command": "node", "args": ["/path/to/KARMA-Eilodon/dist/index.js"] },
+    "casper": { "command": "casper-mcp", "args": ["--api-key", "YOUR_CSPR_CLOUD_API_KEY"] }
+  }
+}
+```
+
+An agent can call casper-mcp's `GetAccountBalance`/`GetAccountDeploys` to vet a counterparty
+before ever spending a call on KARMA's `casper_create_job` — two citizens of the same MCP
+ecosystem, not competitors.
+
 ---
 
 ## Chain-agnostic settlement & cryptographic primitives
