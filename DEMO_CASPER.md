@@ -57,7 +57,7 @@ settle micropayments per HTTP request, no human in the loop.
 
 | Layer | Path | Status |
 |---|---|---|
-| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 120/120 |
+| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 129/129 |
 | Casper secp256k1 keystore adapter | [`src/lib/casper/keypair.ts`](src/lib/casper/keypair.ts) (T10) | 12/12 tests |
 | x402Plugin/Casper | [`src/plugins/x402_casper.ts`](src/plugins/x402_casper.ts) (T11) | 28/28 tests — `verifyCasperExactPayload` is real ECDSA/SHA-256, not structural |
 | KARMA × Casper composability demo | [`src/scripts/demo_casper_composability.ts`](src/scripts/demo_casper_composability.ts) (T12) | runs end-to-end |
@@ -80,7 +80,7 @@ pnpm install --frozen-lockfile
 # 2. Compile + run the Odra contract tests (proves the port mirrors Solidity v4)
 rustup toolchain install nightly --profile minimal
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml
-# Expected: 32 passed; 0 failed.
+# Expected: 129 passed; 0 failed.
 
 # 3. Run the composability demo — shows the KARMA-MCP × Casper-MCP cross-server flow
 pnpm exec tsx src/scripts/demo_casper_composability.ts
@@ -129,7 +129,61 @@ provider is never called when there's nothing to choose from), a valid LLM pick,
 skillId falling back, and a thrown API error falling back — entirely with a fake `ReasoningProvider`,
 no network required to prove the logic is correct.
 
-## Governance-hardening redeploy — DONE (2026-07-07)
+## Attestation-hardening redeploy — DONE (2026-07-21)
+
+Adds on-chain LLM-decision attestation (P2-A: `attest_rationale`/`get_rationale_hash` — a
+requester commits a hash of their agent's stated reasoning for a job; a third party holding the
+plaintext independently re-hashes and compares against this on-chain value) on top of everything
+the 2026-07-07 governance-hardening redeploy already proved. Storage is purely additive
+(`Mapping<u64, Bytes>`, field index 25) — nothing about the existing `Job`/`Skill` schema changed.
+
+**Current live contract: `hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`**
+(supersedes `hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`, which is now
+retired — its own history is preserved below for the record, but new demos/tooling target the new
+hash). Deployed via the same `deploy_casper_governance_hardened.ts` recipe (unchanged — the P2-A
+feature needed no new deploy args), from a freshly-generated governance-signer-2 keypair funded by
+a native transfer, with the identical security shape as before: 2 signers, threshold 2, 48h
+timelock — independently verified against the contract's own storage, not just the deploy args:
+
+```
+governance_signers  = [account-hash-0daa27a3…, account-hash-d22cc952…]  (2 signers)
+governance_threshold = 2
+timelock_delay_ms    = 172800000  (48h)
+```
+
+**Every flow below was re-run fresh against the new contract, same-day, 23 real transactions
+total** (deploy + funding + lifecycle + courtroom + governance + the new P2-A attestation demo —
+see the tx tables in each section and [Recorded live transactions](#recorded-live-transactions)):
+
+| Tx | Hash |
+|---|---|
+| Install deploy (attestation-hardened) | `f93aa2368b29e5d5ea8fecebd6f44e1c6e4670e825c9907ceb7d20a9586dca69` |
+| Fund governance signer 2 (300 CSPR) | `2701ee9bb7f8553a61cf3359d0260ec7cb2d374bd89532c98ace27d2e4553da6` |
+
+### P2-A: `attest_rationale` / `get_rationale_hash` — DONE live (2026-07-21)
+
+`job_id=3`, created against `skill_id=1` (the full-lifecycle skill below). Rationale text is the
+kind of plain-English justification `decideWithReasoning` (`src/lib/autonomous_loop/llm_strategy.ts`)
+produces when an LLM picks a skill to invoke:
+
+> "Chose skill #1 (casper_full_lifecycle_demo) over other eligible candidates: expected return
+> 0.015 CSPR vs price 0.01 CSPR (EV +0.005), and provider reputation 55/100 clears the trust
+> threshold for this budget tier. Rejected higher-EV alternative from a rep-20 provider as too
+> risky for the position size."
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `create_job` (job_id=3) | `b873d9e83ef21f260064034e23e6df7ee544a8d8d325113a4aa7a51c1dfcb3b8` | success |
+| `attest_rationale(3, sha256(rationale))` | `a6c6c23ba84a4c9d5af7ba60ca1b2bef43276f23fadaf19d9083bdc24c940c72` | success |
+| `get_rationale_hash(3)` read after | — (free RPC read) | `3aeb6001dd1ab1256e0327b3abaa520cd0e08a7fce5733ab877f2058d6965f74` — byte-for-byte match with `sha256(rationale text)`, independently recomputed off-chain |
+| `attest_rationale(3, …)` again (double-attest) | `96ab9e2d423b2370a8bd0f2c477d549b97b5018cdc65f9455d9e5cb2eab91d9d` | **Reverted, `errorMessage: "User error: 54"`** = `Error::RationaleAlreadyAttested`, confirmed by ordinal |
+| `create_job` (job_id=4, separate job) | `f60d1c954882007e21bea94ef848328995fb10ae749004287afbdae725b5dc18` | success |
+| `attest_rationale(4, …)` as the **provider**, not the requester | `6c4205a12ef4b72f8fe6fed9abb9dbbafb25b01780f4f94ce37d1578b3a45b61` | **Reverted, `errorMessage: "User error: 13"`** = `Error::NotRequester`, confirmed by ordinal |
+
+`get_rationale_hash(4)` reads back `null` — the wrong-caller attempt really didn't write anything,
+not just returned an error while mutating state.
+
+## Governance-hardening redeploy — DONE (2026-07-07, historical — superseded by the attestation-hardened redeploy above)
 
 A code-level review of the original contract (`hash-a4e8ab23fe6bd87c97239bbc1292a2224cb34efc4f81a6c94edf06a7794f404f`,
 now superseded) found two gaps and closed both in source, then redeployed. **Current live
@@ -144,7 +198,7 @@ submitted. Recipe used: `src/scripts/deploy_casper_governance_hardened.ts`.
    check — no multisig threshold, no timelock — while `set_cross_chain_rep` already went through the
    full propose/approve/execute + 48h-timelock lifecycle. Both setters are now `propose_set_arbiter`/
    `propose_set_dispute_bond_bps`, gated by the exact same proposal lifecycle (`agent_skill_registry.rs`,
-   `ProposalAction::SetArbiter`/`SetDisputeBondBps`). Verified: 120/120 Rust tests pass, wasm rebuilt
+   `ProposalAction::SetArbiter`/`SetDisputeBondBps`). Verified: 129/129 Rust tests pass, wasm rebuilt
    (`./build-wasm.sh`) and its exports independently confirmed via `WebAssembly.Module.exports()` —
    `propose_set_arbiter`/`propose_set_dispute_bond_bps` present, the old `set_arbiter`/
    `set_dispute_bond_bps` entry points gone.
@@ -204,7 +258,17 @@ The MCP/client-side work needed to actually *use* the redeployed contract's full
 tested before the redeploy — see `casper.tool.ts`'s 25 tools — so `KARMA_ODRA_REGISTRY` (already
 updated in `.env`) was the only thing that needed changing for all of it to go live.
 
-## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07)
+## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
+
+> **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `proposal_id=1`
+> on the fresh registry): propose → approve → attempted execute, same outcome as the original run
+> below.
+>
+> | Step | Tx hash | Result |
+> |---|---|---|
+> | `propose_set_cross_chain_rep` (signer 1) | `c419cac985c43568806f36d8b46f6ab13dd0567c763c2ab93695bb6ed346577d` | success. Event count 15→17 |
+> | `approve_proposal` (signer 2) | `6a648b4d03c00dd1905e5342e962cb784e9858a881c919c4e1b73a7dd3d4a81e` | success, threshold 2/2. Event count 17→18 |
+> | `execute_proposal` (attempted immediately) | `7313fec0a98dc30cfec7dd120c04c0ebf405bc57f288321504095f4bb57fa6dc` | **Reverted, `errorMessage: "User error: 42"`** = `Error::TimelockNotElapsed`, confirmed by ordinal |
 
 Fired a real `propose_set_cross_chain_rep` → `approve_proposal` chain against the governance-hardened
 contract above, via `src/scripts/demo_casper_cross_chain_rep_governance.ts` — the concrete evidence
@@ -226,7 +290,21 @@ after that to complete the chain — it re-attempts `execute_proposal` (assumes 
 only proposal on this fresh registry) and prints `get_cross_chain_rep(signer2)` afterward, which
 should read back `80`.
 
-## Full job lifecycle — DONE live (2026-07-07)
+## Full job lifecycle — DONE live (2026-07-07, re-run 2026-07-21)
+
+> **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `skill_id=1`,
+> `job_id=1` on the fresh registry) — same script, unmodified, one-take success:
+>
+> | Step | Tx hash |
+> |---|---|
+> | `register_skill` | `9bd9ac1157e77f5dba82f26354b1c66b7ead7ecdaa7ce45c233881dc81aee78a` |
+> | `deposit_bond` | `99911584abfe2d6da2ec76a7a50cb1f5ba5b4a8baabb0025926f4f90ca70711d` |
+> | `create_job` | `010ea730d530e4c4de2b51424b0e1ce2d1dad8d3793a2b006c036a8c32d7e8ae` |
+> | `deliver_result` | `3393f97fb3b8333a5a50196fbf9a13a08c2d20c207da8fbb354231150bfa3e9f` |
+> | `confirm_completion` | `b5cd2a178baca61fdeedfd0ca2403119e3d77362e5b6a4963510b47884e83a51` |
+> | `withdraw` | `b216218ea7f78d40d7d6c720693edb59ff200a2294a6d7a3b6c8b8a71734f77f` |
+>
+> Final read confirms it again: `getJob(1).status == "Completed"`, `getSkill(1).reputationScore == 55`.
 
 `src/scripts/demo_casper_full_job_lifecycle.ts` ran the whole loop — `register_skill` →
 `deposit_bond` (Tier-2 Sybil bond, PD-007) → `create_job` → `deliver_result` → `confirm_completion`
@@ -246,7 +324,24 @@ reputation signals when `requester == provider`). All six real transactions:
 Final on-chain read confirms it, not just the tx receipts: `getJob(1).status == "Completed"`,
 `getSkill(1).reputationScore == 55` (bumped from the registration baseline), `totalInvocations == 1`.
 
-## Courtroom (dispute + arbitrate) — DONE live (2026-07-07)
+## Courtroom (dispute + arbitrate) — DONE live (2026-07-07, re-run 2026-07-21)
+
+> **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `skill_id=2`,
+> `job_id=2` on the fresh registry) — same script, unmodified, **one-take success this time** (no
+> underfunding, no duplicate task hash — the two mistakes below stayed fixed):
+>
+> | Step | Tx hash |
+> |---|---|
+> | fund throwaway provider (100 CSPR) | `3a37cdd03cba218d921589122dbcf916b9436a49a38b0f6fc8b07c5767f01f6e` |
+> | `register_skill` | `10167faf6f1bcaccf6315c2fdd2c5fbe321536ddd0a32b16dd8cab6ab84fbd19` |
+> | `create_job` | `277e7a312b408db253d21122cc269580b5bef12b430ea79390136599af21ff26` |
+> | `deliver_result` | `d3843b7c33c13cdd4c993b145dbd1094b2bc915b0c7d1e462b33c60731e9f48c` |
+> | `dispute_result` | `f40b58a43022e91de85d719ed38cefe9e48bcb15f22810b0056d156ca45c6a82` |
+> | `respond_to_dispute` | `d21f7788b4a6a7325a16977cd25c304a0c015dcea133a4c3e7865414ba31c19d` |
+> | `arbitrate(ProviderAtFault)` | `14f137467b597cb0c160aa93778d557ae2a0b2c657640cf08d190f55265930e9` |
+>
+> Final read confirms it again: `getJob(2).status == "Refunded"`, `getSkill(2).reputationScore`
+> dropped `50 → 40`.
 
 The single biggest gap the 2026-07-07 audit flagged: `evaluate_result`/`dispute_result`/
 `claim_after_review`/`arbitrate` were implemented and unit-tested but **nobody had ever watched
@@ -295,15 +390,18 @@ in a unit test.
 ## Live run — Casper Testnet (owner-driven, requires funded keystore)
 
 > ⚠️ This step is owner-driven only because it needs funded Casper Testnet credentials — a
-> private key, which nobody should paste into an AI session or a CI log. **A real install deploy
-> has been done and verified end-to-end**, twice: the original 2026-07-07 deploy
-> (`hash-a4e8ab23…`, from `agent-alpha`'s keystore identity), then the governance-hardening
-> redeploy the same day (`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`,
-> **current live contract**, from two dedicated governance-signer keys) — confirmed live via the
-> account's on-chain `named_keys` (`AgentSkillRegistry` + `_access_token`) and, for the redeploy,
-> via a decoded `GovernanceConfigured` event showing the real 2-of-2/48h-timelock config, not just
-> "the deploy tool exited 0." Several real gaps surfaced and got fixed along the way (see the
-> "Governance-hardening redeploy" section above) — the recipe here is the corrected one.
+> private key, which should only ever reach an AI session or a CI log deliberately, from someone
+> authorized to spend that key's funds, never incidentally. **A real install deploy has been done
+> and verified end-to-end**, three times: the original 2026-07-07 deploy (`hash-a4e8ab23…`, from
+> `agent-alpha`'s keystore identity), the governance-hardening redeploy the same day
+> (`hash-29b7daeb…`, from two dedicated governance-signer keys), and the attestation-hardening
+> redeploy on 2026-07-21 (`hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`,
+> **current live contract**, adding P2-A's `attest_rationale`/`get_rationale_hash`, same 2-of-2/48h
+> governance shape) — confirmed live via the deploying account's on-chain `named_keys`
+> (`AgentSkillRegistry` + `_access_token`) and, for both hardening redeploys, by directly decoding
+> the contract's own governance storage, not just "the deploy tool exited 0." Several real gaps
+> surfaced and got fixed along the way (see the "Governance-hardening redeploy" and
+> "Attestation-hardening redeploy" sections above) — the recipe here is the corrected one.
 
 ### Step 0 — Toolchain
 
@@ -440,6 +538,64 @@ pnpm exec tsx src/scripts/demo_casper_x402_live.ts --live
 > `status: "Delivered"` and the exact `result_hash`.
 
 ### Recorded live transactions
+
+Real, already-confirmed calls against the **current** deployed `AgentSkillRegistry`
+([`hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`](https://testnet.cspr.live/contract-package/42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d),
+attestation-hardened, 2026-07-21) — not a template, these already happened and are independently
+verifiable by anyone. 23 transactions total: deploy, signer funding, full lifecycle, courtroom,
+governance, and the new P2-A attestation demo.
+
+**Contract deploy** (attestation-hardened, 2026-07-21)
+
+| Tx hash | Status |
+|---|---|
+| [`f93aa236…dca69`](https://testnet.cspr.live/transaction/f93aa2368b29e5d5ea8fecebd6f44e1c6e4670e825c9907ceb7d20a9586dca69) | success |
+| Fund governance signer 2 (300 CSPR): [`2701ee9b…3da6`](https://testnet.cspr.live/transaction/2701ee9bb7f8553a61cf3359d0260ec7cb2d374bd89532c98ace27d2e4553da6) | success |
+
+**Full job lifecycle** (`skill_id=1`, `job_id=1`)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `register_skill` | [`9bd9ac11…e78a`](https://testnet.cspr.live/transaction/9bd9ac1157e77f5dba82f26354b1c66b7ead7ecdaa7ce45c233881dc81aee78a) | success |
+| `deposit_bond` | [`99911584…711d`](https://testnet.cspr.live/transaction/99911584abfe2d6da2ec76a7a50cb1f5ba5b4a8baabb0025926f4f90ca70711d) | success |
+| `create_job` | [`010ea730…e8ae`](https://testnet.cspr.live/transaction/010ea730d530e4c4de2b51424b0e1ce2d1dad8d3793a2b006c036a8c32d7e8ae) | success |
+| `deliver_result` | [`3393f97f…3e9f`](https://testnet.cspr.live/transaction/3393f97fb3b8333a5a50196fbf9a13a08c2d20c207da8fbb354231150bfa3e9f) | success |
+| `confirm_completion` | [`b5cd2a17…3a51`](https://testnet.cspr.live/transaction/b5cd2a178baca61fdeedfd0ca2403119e3d77362e5b6a4963510b47884e83a51) | success |
+| `withdraw` | [`b216218e…f77f`](https://testnet.cspr.live/transaction/b216218ea7f78d40d7d6c720693edb59ff200a2294a6d7a3b6c8b8a71734f77f) | success |
+
+**Courtroom dispute** (`skill_id=2`, `job_id=2`, verdict `ProviderAtFault`, one-take)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| fund throwaway provider | [`3a37cdd0…f6e`](https://testnet.cspr.live/transaction/3a37cdd03cba218d921589122dbcf916b9436a49a38b0f6fc8b07c5767f01f6e) | success |
+| `register_skill` | [`10167faf…d19`](https://testnet.cspr.live/transaction/10167faf6f1bcaccf6315c2fdd2c5fbe321536ddd0a32b16dd8cab6ab84fbd19) | success |
+| `create_job` | [`277e7a31…f26`](https://testnet.cspr.live/transaction/277e7a312b408db253d21122cc269580b5bef12b430ea79390136599af21ff26) | success |
+| `deliver_result` | [`d3843b7c…48c`](https://testnet.cspr.live/transaction/d3843b7c33c13cdd4c993b145dbd1094b2bc915b0c7d1e462b33c60731e9f48c) | success |
+| `dispute_result` | [`f40b58a4…a82`](https://testnet.cspr.live/transaction/f40b58a43022e91de85d719ed38cefe9e48bcb15f22810b0056d156ca45c6a82) | success |
+| `respond_to_dispute` | [`d21f7788…19d`](https://testnet.cspr.live/transaction/d21f7788b4a6a7325a16977cd25c304a0c015dcea133a4c3e7865414ba31c19d) | success |
+| `arbitrate(ProviderAtFault)` | [`14f13746…0e9`](https://testnet.cspr.live/transaction/14f137467b597cb0c160aa93778d557ae2a0b2c657640cf08d190f55265930e9) | success |
+
+**Cross-chain-rep governance** (`proposal_id=1`)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `propose_set_cross_chain_rep` | [`c419cac9…77d`](https://testnet.cspr.live/transaction/c419cac985c43568806f36d8b46f6ab13dd0567c763c2ab93695bb6ed346577d) | success |
+| `approve_proposal` | [`6a648b4d…81e`](https://testnet.cspr.live/transaction/6a648b4d03c00dd1905e5342e962cb784e9858a881c919c4e1b73a7dd3d4a81e) | success |
+| `execute_proposal` (too-early attempt) | [`7313fec0…6dc`](https://testnet.cspr.live/transaction/7313fec0a98dc30cfec7dd120c04c0ebf405bc57f288321504095f4bb57fa6dc) | **error, `User error: 42`** — `Error::TimelockNotElapsed`, expected/correct rejection |
+
+**P2-A: on-chain rationale attestation** (`job_id=3` and `job_id=4`)
+
+| Entry point | Tx hash | Status |
+|---|---|---|
+| `create_job` (job_id=3) | [`b873d9e8…3b8`](https://testnet.cspr.live/transaction/b873d9e83ef21f260064034e23e6df7ee544a8d8d325113a4aa7a51c1dfcb3b8) | success |
+| `attest_rationale(3, …)` | [`a6c6c23b…c72`](https://testnet.cspr.live/transaction/a6c6c23ba84a4c9d5af7ba60ca1b2bef43276f23fadaf19d9083bdc24c940c72) | success |
+| `attest_rationale(3, …)` again (double-attest) | [`96ab9e2d…9d`](https://testnet.cspr.live/transaction/96ab9e2d423b2370a8bd0f2c477d549b97b5018cdc65f9455d9e5cb2eab91d9d) | **error, `User error: 54`** — `Error::RationaleAlreadyAttested` |
+| `create_job` (job_id=4) | [`f60d1c95…18`](https://testnet.cspr.live/transaction/f60d1c954882007e21bea94ef848328995fb10ae749004287afbdae725b5dc18) | success |
+| `attest_rationale(4, …)` as non-requester | [`6c4205a1…61`](https://testnet.cspr.live/transaction/6c4205a12ef4b72f8fe6fed9abb9dbbafb25b01780f4f94ce37d1578b3a45b61) | **error, `User error: 13`** — `Error::NotRequester` |
+
+Browse the full activity feed yourself: [testnet.cspr.live/contract-package/42f6945f…](https://testnet.cspr.live/contract-package/42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d).
+
+### Recorded live transactions (2026-07-07, historical — superseded by the attestation-hardened contract above)
 
 Real, already-confirmed calls against the deployed `AgentSkillRegistry`
 ([`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`](https://testnet.cspr.live/contract-package/29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa)),

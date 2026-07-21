@@ -88,7 +88,8 @@
       "ws@<8.21.0": "^8.21.0",
       "@opentelemetry/core@<2.8.0": "^2.8.0",
       "@stellar/stellar-sdk": "16.0.1",
-      "underscore@<=1.13.7": "^1.13.8"
+      "underscore@<=1.13.7": "^1.13.8",
+      "axios@<1.18.0": "^1.18.1"
     }
   }
 }

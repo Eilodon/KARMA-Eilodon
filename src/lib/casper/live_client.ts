@@ -14,6 +14,7 @@ import {
   decodeU32,
   decodeU512,
   decodeComposition,
+  decodeBytesVec,
   type DecodedSkill,
   type DecodedJob,
   type DecodedComposition,
@@ -459,6 +460,38 @@ export class CasperLiveClient {
     const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.crossChainRep, accountAddressToBytes(accountHashHex));
     const bytes = odraStructBytes(clValue);
     return bytes ? decodeU32(bytes) : 0;
+  }
+
+  /** `attest_rationale(job_id: u64, rationale_hash: Bytes)` (P2-A) — requester-only, set-once.
+   *  Commits a hash of the (typically LLM-generated) decision rationale for `jobId` on-chain; see
+   *  `contracts-odra/src/agent_skill_registry.rs::attest_rationale`'s own doc comment for why. */
+  async attestRationale(
+    signer: CasperPrivateKey,
+    jobId: bigint,
+    rationaleHash: Uint8Array,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    if (rationaleHash.length !== 32) {
+      throw new Error(`[casper-live-client] rationale_hash must be 32 bytes, got ${rationaleHash.length}`);
+    }
+    const args = Args.fromMap({
+      job_id: CLValue.newCLUint64(jobId.toString()),
+      rationale_hash: bytesToCLList(rationaleHash),
+    });
+    return this.submit(signer, "attest_rationale", args, paymentMotes);
+  }
+
+  /** Reads `rationale_hash[jobId]` directly from the "state" dictionary (field index 25 — the
+   *  PATH-encoding branch of `odraMappingDictionaryKey`, not the legacy one every other read here
+   *  uses). `undefined` when the requester never called `attestRationale` for this job. */
+  async getRationaleHash(jobId: bigint): Promise<string | undefined> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.rationaleHash, u64ToBytes(jobId));
+    const raw = odraStructBytes(clValue);
+    // `raw` carries `Bytes`'s own bytesrepr framing (u32-LE length prefix + payload) — decodeBytesVec
+    // strips it. Confirmed the hard way against a real deployed contract read (see its own doc
+    // comment): an earlier version returned the length prefix concatenated onto the hash.
+    const bytes = raw ? decodeBytesVec(raw) : undefined;
+    return bytes ? Buffer.from(bytes).toString("hex") : undefined;
   }
 
   /** `propose_set_cross_chain_rep(agent: Address, score: u32, source_chain: String) -> u64` —

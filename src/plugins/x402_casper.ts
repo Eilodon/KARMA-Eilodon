@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import casperSdk from "casper-js-sdk";
 import type { PrivateKey as CasperKeypair, Args as CasperArgs } from "casper-js-sdk";
 import {
@@ -25,7 +26,7 @@ import type {
   PaymentReceipt,
   PaymentRequest,
 } from "../lib/payment/plugin.js";
-const { PublicKey, Args, CLValue, CLTypeUInt8, Key } = casperSdk;
+const { PublicKey, Args, CLValue, CLTypeUInt8, Key, HttpHandler, RpcClient, ContractCallBuilder } = casperSdk;
 
 /**
  * x402Plugin/Casper (T11) — IPaymentPlugin implementation for Casper's x402 fast lane.
@@ -195,6 +196,31 @@ export function makeNonce(rng: () => Uint8Array = () => {
   return Buffer.from(rng()).toString("hex");
 }
 
+/** P2-A (fast-lane variant): a deterministic 32-byte nonce derived from an LLM/agent's decision
+ *  rationale, for when a payment has no `AgentSkillRegistry` job to hang `attest_rationale` off
+ *  (this plugin's payWithEnvelope IS the whole transaction — there's no job id). Repurposes
+ *  CEP-3009's `nonce` field — already an arbitrary 32 bytes from the contract's perspective, and
+ *  already recorded verbatim in the on-chain transaction args once settled — as a public,
+ *  independently-checkable commitment to WHY the payment was made, with ZERO changes to the
+ *  official CEP-3009 interface (a bespoke extra field would reopen exactly the interop gap RFC
+ *  2026-07-21 closed). `context` folds in the payment's own from/to/value/validAfter alongside
+ *  the rationale text so two byte-identical rationale strings for two DIFFERENT payments still
+ *  produce distinct nonces — the only thing a bare `hash(rationale)` would collide on is the
+ *  exact same rationale, payer, payee, value, and second, which `CEP3009`'s own per-authorizer
+ *  nonce-reuse check (`authorization_state`) would reject as a replay anyway. */
+export function deriveRationaleNonce(
+  rationale: string,
+  context: { from: string; to: string; value: string; validAfter: number },
+): string {
+  return createHash("sha256")
+    .update(rationale)
+    .update(context.from)
+    .update(context.to)
+    .update(context.value)
+    .update(String(context.validAfter))
+    .digest("hex");
+}
+
 export interface CasperX402PluginOptions {
   /** TTL for a built payment payload, in seconds. Defaults to 5 min, the de-facto x402 ceiling. */
   ttlSecs?: number;
@@ -207,6 +233,22 @@ export interface CasperX402PluginOptions {
    *  Falls back to `KARMA_X402_CASPER_SETTLEMENT_TOKEN` env var; required to actually settle
    *  on-chain (signing still works without it — only `settleTransferWithAuthorization` needs it). */
   settlementTokenPackageHash?: string;
+  /** Casper node RPC URL. Falls back to `CASPER_RPC_URL` env var (same var the escrow-rail tools
+   *  use, see `casper.tool.ts`'s `requireCasperEnv`). Unset ⇒ `payWithEnvelope` signs the
+   *  authorization but does NOT submit it on-chain (today's behaviour) — `receipt.txHash` stays
+   *  absent and `receipt.signature` carries the off-chain authorization instead. */
+  rpcUrl?: string;
+  /** CAIP-2 chain name stamped on the settlement transaction. Falls back to `CASPER_CHAIN_NAME`
+   *  env var, then `"casper-test"` — must match the deployed token's own `init(chain_name)`. */
+  chainName?: string;
+  /** Casper `Authorization` header for the RPC node (CSPR.cloud-style gated endpoints). Falls
+   *  back to `CASPER_RPC_API_KEY` env var. */
+  rpcApiKey?: string;
+  /** Payment (gas) ceiling in motes for the settlement transaction itself — distinct from the
+   *  `value` being transferred. Default matches the value proven against the live deployed
+   *  contract in `demo_casper_x402_settlement_live.ts` (5 CSPR; `transfer_with_authorization`'s
+   *  real cost is far lower, this is a ceiling, unused gas is refunded). */
+  settlementPaymentMotes?: string;
 }
 
 export class CasperX402Plugin implements IPaymentPlugin {
@@ -218,6 +260,10 @@ export class CasperX402Plugin implements IPaymentPlugin {
   private readonly nonce: () => string;
   private readonly nowSecs: () => number;
   private readonly settlementTokenPackageHash?: string;
+  private readonly rpcUrl?: string;
+  private readonly chainName: string;
+  private readonly rpcApiKey?: string;
+  private readonly settlementPaymentMotes: string;
 
   constructor(
     private readonly facilitatorUrl: string,
@@ -230,6 +276,10 @@ export class CasperX402Plugin implements IPaymentPlugin {
     this.nowSecs = opts.nowSecs ?? (() => Math.floor(Date.now() / 1000));
     this.settlementTokenPackageHash =
       opts.settlementTokenPackageHash ?? process.env.KARMA_X402_CASPER_SETTLEMENT_TOKEN;
+    this.rpcUrl = opts.rpcUrl ?? process.env.CASPER_RPC_URL;
+    this.chainName = opts.chainName ?? process.env.CASPER_CHAIN_NAME ?? "casper-test";
+    this.rpcApiKey = opts.rpcApiKey ?? process.env.CASPER_RPC_API_KEY;
+    this.settlementPaymentMotes = opts.settlementPaymentMotes ?? "5000000000";
   }
 
   async quote(req: PaymentRequest): Promise<PaymentQuote> {
@@ -258,7 +308,16 @@ export class CasperX402Plugin implements IPaymentPlugin {
    */
   async payWithEnvelope(
     req: PaymentRequest,
-    opts: { agentId: string },
+    opts: {
+      agentId: string;
+      /** P2-A: an LLM/agent's plain-English reason for making this payment. When set, the nonce
+       *  is deterministically derived from it (`deriveRationaleNonce`) instead of random — a
+       *  third party holding this same string can independently recompute the nonce and confirm
+       *  it matches what actually got submitted on-chain (see settleOnChain /
+       *  settleTransferWithAuthorization). Purely a KARMA-side commitment scheme; never sent to
+       *  the facilitator or the contract as its own field. */
+      rationale?: string;
+    },
   ): Promise<{ receipt: PaymentReceipt; envelope: CasperX402SignedPayload }> {
     if (!this.networks.includes(req.network)) {
       throw new Error(`[x402-casper] unsupported network ${req.network}`);
@@ -276,7 +335,9 @@ export class CasperX402Plugin implements IPaymentPlugin {
 
     const validAfter = this.nowSecs() - 60; // 60s clock-skew grace, mirrors the official client's -10min (scaled to this plugin's shorter default TTL)
     const validBefore = validAfter + this.ttlSecs;
-    const nonceHex = this.nonce();
+    const nonceHex = opts.rationale
+      ? deriveRationaleNonce(opts.rationale, { from: payer, to: req.payTo, value: amount, validAfter })
+      : this.nonce();
 
     const { digest } = buildTransferAuthorizationDigest({
       settlementTokenPackageHash: this.settlementTokenPackageHash,
@@ -314,12 +375,60 @@ export class CasperX402Plugin implements IPaymentPlugin {
       asset: req.asset || DEFAULT_ASSET,
       network: req.network,
       facilitatorRef: this.facilitatorUrl,
-      // Forward the signature through `txHash` until settled on-chain via
-      // `settleTransferWithAuthorization` — distinct from a real chain hash — callers should not
-      // treat it as one; `payWithEnvelope` carries the full envelope for that.
-      txHash: signedEnvelope.signature,
+      // Off-chain authorization signature — NOT a chain hash. Superseded by a real `txHash`
+      // below when `rpcUrl` is configured and settlement succeeds.
+      signature: signedEnvelope.signature,
     };
+
+    if (this.rpcUrl) {
+      try {
+        receipt.txHash = await this.settleOnChain(keypair, signedEnvelope);
+      } catch (err) {
+        receipt.settlementError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
     return { receipt, envelope: signedEnvelope };
+  }
+
+  /** Builds + signs + broadcasts the real `transfer_with_authorization` call against the
+   *  deployed `X402SettlementToken` — the same call `settleTransferWithAuthorization` (the
+   *  free function below) makes, wired here so `payWithEnvelope` can self-relay without every
+   *  caller having to wire an `RpcClient` + transaction builder by hand. Self-relayed by the
+   *  SAME keypair that signed the authorization (proven safe in
+   *  `demo_casper_x402_settlement_live.ts` — the signature, not the tx's outer signer, is what
+   *  authorizes the transfer, so any account, including the payer's own, may submit it). Returns
+   *  only once the transaction is BROADCAST, not once a block confirms it — mirrors the escrow
+   *  rail's own "pending until confirmed" contract (see `casper_get_x402_settlement_status` to
+   *  poll for the real outcome). */
+  private async settleOnChain(
+    keypair: CasperKeypair,
+    envelope: CasperX402SignedPayload,
+  ): Promise<string> {
+    if (!this.rpcUrl) throw new Error("[x402-casper] settleOnChain called without rpcUrl configured");
+    const handler = new HttpHandler(this.rpcUrl);
+    if (this.rpcApiKey) handler.setCustomHeaders({ Authorization: this.rpcApiKey });
+    const rpc = new RpcClient(handler);
+    const bareTokenHash = bareHash(this.settlementTokenPackageHash!);
+    const chainName = this.chainName;
+    const paymentMotes = this.settlementPaymentMotes;
+    const { txHash } = await settleTransferWithAuthorization(
+      rpc,
+      (args) => {
+        const tx = new ContractCallBuilder()
+          .from(keypair.publicKey)
+          .byPackageHash(bareTokenHash)
+          .entryPoint("transfer_with_authorization")
+          .runtimeArgs(args)
+          .chainName(chainName)
+          .payment(Number(paymentMotes))
+          .build();
+        tx.sign(keypair);
+        return tx;
+      },
+      envelope,
+    );
+    return txHash;
   }
 
   /** Structural self-check only (shared `IPaymentPlugin` contract — receipts from every chain

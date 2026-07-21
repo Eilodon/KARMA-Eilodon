@@ -2147,7 +2147,7 @@ fn p1a_rep_slash_floors_at_rep_floor() {
     // Slash multiple times to drive rep to floor
     for i in 0..10u64 {
         let job_id = open_job(&env, &mut reg, beta, skill_id, &format!("slash-{i}"));
-        let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+        let _bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
         env.set_caller(alpha);
         reg.concede_dispute(job_id);
     }
@@ -2389,4 +2389,93 @@ fn p1a_lower_bps_changes_required_bond() {
 
     let d = reg.get_dispute_info(job_id).unwrap();
     assert_eq!(d.dispute_bond, bond);
+}
+
+// ── P2-A: AI decision rationale attestation ─────────────────────────────────
+fn rationale_hash(label: &str) -> Bytes {
+    // A real caller hashes the plaintext rationale (blake2b/keccak) to 32 bytes; tests just need
+    // *some* fixed 32-byte value, so pad/truncate a label deterministically.
+    let mut buf = [0u8; 32];
+    let bytes = label.as_bytes();
+    let n = bytes.len().min(32);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    Bytes::from(buf.to_vec())
+}
+
+#[test]
+fn attest_rationale_requester_can_attest_and_view() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-1");
+
+    assert_eq!(reg.get_rationale_hash(job_id), None);
+
+    env.set_caller(beta);
+    let h = rationale_hash("chose this skill: highest EV, rep 80");
+    reg.attest_rationale(job_id, h.clone());
+
+    assert_eq!(reg.get_rationale_hash(job_id), Some(h));
+}
+
+#[test]
+#[should_panic]
+fn attest_rationale_rejects_non_requester() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-2");
+
+    env.set_caller(alpha); // provider, not requester
+    reg.attest_rationale(job_id, rationale_hash("not mine to attest"));
+}
+
+#[test]
+#[should_panic]
+fn attest_rationale_rejects_wrong_length_hash() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-3");
+
+    env.set_caller(beta);
+    reg.attest_rationale(job_id, Bytes::from(vec![1u8, 2, 3])); // not 32 bytes
+}
+
+#[test]
+#[should_panic]
+fn attest_rationale_rejects_double_attest() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-4");
+
+    env.set_caller(beta);
+    reg.attest_rationale(job_id, rationale_hash("first"));
+    reg.attest_rationale(job_id, rationale_hash("second")); // rewriting history — must revert
+}
+
+#[test]
+fn attest_rationale_is_independent_of_job_lifecycle() {
+    // Attestation is a record of WHY the requester bought the skill, not a claim about outcome —
+    // it must not interact with settlement, and must remain readable after the job completes.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-5");
+
+    env.set_caller(beta);
+    let h = rationale_hash("attest after delivery+confirm still allowed");
+    reg.attest_rationale(job_id, h.clone());
+
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    env.set_caller(beta);
+    reg.confirm_completion(job_id);
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Completed);
+    assert_eq!(reg.get_rationale_hash(job_id), Some(h));
+}
+
+#[test]
+fn attest_rationale_none_for_jobs_never_attested() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-6");
+    assert_eq!(reg.get_rationale_hash(job_id), None);
 }
