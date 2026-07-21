@@ -1,5 +1,11 @@
 # RFC — x402 Casper: EIP-712 / CEP-18 interop with the official reference
 
+> **Status (2026-07-21):** §5.0 done and deployed for real — `X402SettlementToken` is live on
+> Casper Testnet at `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`
+> (install tx `f9656962176de5034accbaf5ee7e9aca03d792aa93bd67fb05b92ea85ab321db`, block `8574201`,
+> `errorMessage: null`, verified independently via the deployer account's `named_keys`). §5.1-§5.5
+> (the `x402_casper.ts` TypeScript rewrite) still open.
+
 ## 1. Problem
 
 `src/plugins/x402_casper.ts` is a self-contained "exact" payment-scheme implementation, written
@@ -106,8 +112,8 @@ deployable artifact — no new tooling, no new CI step.
 ### 5.1 New dependencies
 - Rust: `odra-modules = "=2.8.2"` (§5.0).
 - TypeScript: `@casper-ecosystem/casper-eip-712` (npm) — typed-data domain separator + `hashTypedData`.
-- The `asset` field points at whatever package hash §5.0's contract gets on deploy — no external
-  token dependency, no "find a test token" problem.
+- The `asset` field: `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310` —
+  live now (§0's status note). No external token dependency, no "find a test token" problem.
 - Either point at a real `make-software/casper-x402` facilitator instance, or implement
   settlement against the same `transfer_with_authorization` entry point using the
   `submit`/`submitPayable` pattern `live_client.ts` already has for every other Odra call.
