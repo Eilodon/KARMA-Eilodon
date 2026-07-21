@@ -95,7 +95,7 @@ describe("CasperLiveClient (T13-live)", () => {
     expect(innerArgs.getByName("amount")).toBeUndefined(); // real signature has no such arg
   });
 
-  it("deliverResult / confirmCompletion / withdraw hit the right entry points", async () => {
+  it("deliverResult / confirmCompletion / claimAfterReview / withdraw hit the right entry points", async () => {
     const rpc = fakeSubmitter();
     const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
 
@@ -105,8 +105,11 @@ describe("CasperLiveClient (T13-live)", () => {
     await client.confirmCompletion(SIGNER, 1n);
     expect(rpc.putTransaction.mock.calls[1][0].entryPoint.customEntryPoint).toBe("confirm_completion");
 
+    await client.claimAfterReview(SIGNER, 1n);
+    expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("claim_after_review");
+
     await client.withdraw(SIGNER);
-    expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("withdraw");
+    expect(rpc.putTransaction.mock.calls[3][0].entryPoint.customEntryPoint).toBe("withdraw");
   });
 
   it("registerComposition signs and submits leaf_skill_ids/weights_bps as List(U64)/List(U32)", async () => {

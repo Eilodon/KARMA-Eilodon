@@ -20,7 +20,7 @@ repo (`src/scripts/demo_casper_full_job_lifecycle.ts`, `demo_casper_courtroom.ts
 Stated up front: KARMA's protocol core (identity/reputation/escrow/dispute spec, the MCP
 runtime) and its Pharos and Stellar implementations predate the Casper track. **Everything
 below — the Odra `AgentSkillRegistry`, the Casper keystore + x402 rail, `live_client.ts`, the
-25-tool `casper.tool.ts` MCP surface, the governance-hardened redeploy, every live transaction on
+26-tool `casper.tool.ts` MCP surface, the governance-hardened redeploy, every live transaction on
 this page, and the LLM-reasoning demo in the next section — was built new for this Buildathon**,
 inside the submission window. A pre-existing base is fine to disclose, not fine to hide.
 

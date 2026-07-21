@@ -67,6 +67,7 @@ export type CasperClientLike = Pick<
   | "createJob"
   | "deliverResult"
   | "confirmCompletion"
+  | "claimAfterReview"
   | "withdraw"
   | "pendingWithdrawalsOf"
   | "agentReputationOf"
@@ -312,6 +313,31 @@ export function createCasperTools(
       const client = makeClient(env);
       const { txHash } = await client.confirmCompletion(signer, BigInt(a.jobId));
       return reply(`[KARMA] casper_confirm_completion broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperClaimAfterReview: ToolDefinition = {
+    name: "casper_claim_after_review",
+    description:
+      "Anti-deadlock path: the provider claims escrow once the review window has elapsed with " +
+      "no casper_confirm_completion or casper_dispute_result from the requester. Reverts " +
+      "ReviewWindowOpen while the window is still open, NotProvider for anyone else.",
+    inputSchema: {
+      agentId: z.string().describe("Provider's keystore agent id."),
+      jobId: z.string().regex(/^[0-9]+$/),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string(), jobId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.claimAfterReview(signer, BigInt(a.jobId));
+      return reply(`[KARMA] casper_claim_after_review broadcast; tx=${txHash}`, { txHash });
     },
   };
 
@@ -829,6 +855,7 @@ export function createCasperTools(
     casperCreateJob,
     casperDeliverResult,
     casperConfirmCompletion,
+    casperClaimAfterReview,
     casperWithdraw,
     casperGetAccountState,
     casperDiscoverSkills,
