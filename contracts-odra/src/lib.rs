@@ -2,6 +2,10 @@
 // The cfg name isn't known to rustc, so the lint fires once per attribute — silenced here at
 // the crate root rather than per-call site.
 #![allow(unexpected_cfgs)]
+// Casper entry points take primitive args directly (no nested-struct params in the ABI), so
+// wider contract methods and the `#[odra::module]`/`delegate!`-generated wrappers around them
+// (e.g. CEP3009's `transfer_with_authorization`) legitimately exceed clippy's default arg count.
+#![allow(clippy::too_many_arguments)]
 // The real Casper deploy target (wasm32-unknown-unknown) has no std runtime — pulling in
 // `odra-casper-wasm-env`'s panic handler alongside `std`'s otherwise collides on the
 // `panic_impl` lang item. `cargo test` (native, non-wasm32) keeps std throughout; only the

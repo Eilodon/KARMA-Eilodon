@@ -2147,7 +2147,7 @@ fn p1a_rep_slash_floors_at_rep_floor() {
     // Slash multiple times to drive rep to floor
     for i in 0..10u64 {
         let job_id = open_job(&env, &mut reg, beta, skill_id, &format!("slash-{i}"));
-        let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+        let _bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
         env.set_caller(alpha);
         reg.concede_dispute(job_id);
     }

@@ -438,7 +438,7 @@ impl AgentSkillRegistry {
         governance_threshold: u32,
         timelock_delay_ms: u64,
     ) {
-        if review_window_ms < MIN_REVIEW_WINDOW || review_window_ms > MAX_REVIEW_WINDOW {
+        if !(MIN_REVIEW_WINDOW..=MAX_REVIEW_WINDOW).contains(&review_window_ms) {
             self.env().revert(Error::BadReviewWindow);
         }
         if governance_signers.is_empty() || governance_signers.len() as u32 > MAX_GOVERNANCE_SIGNERS {
