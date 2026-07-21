@@ -20,7 +20,7 @@ repo (`src/scripts/demo_casper_full_job_lifecycle.ts`, `demo_casper_courtroom.ts
 Stated up front: KARMA's protocol core (identity/reputation/escrow/dispute spec, the MCP
 runtime) and its Pharos and Stellar implementations predate the Casper track. **Everything
 below — the Odra `AgentSkillRegistry`, the Casper keystore + x402 rail, `live_client.ts`, the
-26-tool `casper.tool.ts` MCP surface, the governance-hardened redeploy, every live transaction on
+29-tool `casper.tool.ts` MCP surface, the governance-hardened redeploy, every live transaction on
 this page, and the LLM-reasoning demo in the next section — was built new for this Buildathon**,
 inside the submission window. A pre-existing base is fine to disclose, not fine to hide.
 
@@ -686,18 +686,31 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   with zero chain-specific glue. The wire format IS the integration.
 - **Odra port mirrors audited Solidity invariants.** CEI before
   `transfer_tokens`, pull-payment ledger, self-deal nullification on both
-  completion paths. 120 tests pin the boundary cases — happy path, ghost
+  completion paths. 129 tests pin the boundary cases — happy path, ghost
   requester, dispute window, double-complete, identity policy, duplicate
-  task-hash exactly-once, all 7 Tier-2 bond cases, plus the P0-A evaluator
-  and P0-B governance/timelock mechanics.
-- **No `@x402/casper` npm package yet, so KARMA runs its own verification** —
-  same topology DEMO_STELLAR.md uses for the Stellar rail. T11's plugin builds
-  the "exact" payment payload natively (canonical-JSON + SHA-256 + secp256k1 +
-  DER); `verifyCasperExactPayload` (T13-live) independently re-verifies that
-  signature, the expiry window, and the payee — real cryptography, not a
-  shape check. `demo_casper_x402_live.ts` runs the whole HTTP 402 → sign →
-  verify loop against a real local server today. Aligning the wire-field
-  names to Casper Foundation's official facilitator (once published) is a
-  drop-in swap, not a rewrite.
+  task-hash exactly-once, all 7 Tier-2 bond cases, the P0-A evaluator
+  and P0-B governance/timelock mechanics, the P2-A rationale attestation, and
+  the `X402SettlementToken` CEP-18/CEP-3009 composition below.
+- **x402 now speaks the official wire format, not a bespoke scheme** — see
+  [`docs/rfc/2026-07-21-x402-casper-eip712-interop.md`](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)
+  for the full derivation. Casper's own site names
+  [`make-software/casper-x402`](https://github.com/make-software/casper-x402) "the official
+  reference implementation for the x402 protocol on Casper," backed by
+  [`casper-ecosystem/casper-eip-712`](https://github.com/casper-ecosystem/casper-eip-712) for the
+  typed-data layer. `x402_casper.ts` (T11, rewritten 2026-07-21) now signs a real EIP-712
+  `TransferWithAuthorization` digest — the same hardcoded typehash `CEP3009` computes on-chain,
+  cross-checked byte-for-byte in `src/__tests__/x402_casper.test.ts`, not assumed equal from
+  matching source strings — against a real CEP-18 asset: `X402SettlementToken`
+  (`contracts-odra/src/x402_settlement_token.rs`, composed from `odra-modules`' official
+  `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet at
+  `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`**.
+  `demo_casper_x402_settlement_live.ts` proves the full path for real: deposits CSPR into the
+  token, signs a `transfer_with_authorization` authorization, submits it via
+  `settleTransferWithAuthorization`, and confirms `errorMessage: null` + a real `Transfer` event
+  on-chain — this caught two real bugs a unit test alone could not have (a wire-arg name
+  mismatch, and a wrong typehash from a generic npm preset instead of `CEP3009`'s own hardcoded
+  constant). Proving interop against the *external* hosted `make-software/casper-x402`
+  facilitator (as opposed to this settlement path, which KARMA deploys and controls itself) is
+  the one remaining open, non-blocking step — see the RFC's §7-§9.
 - **Nightly Rust required.** `odra-macros 2.x` uses `#![feature(box_patterns)]`.
   Documented in `contracts-odra/README.md` and the plan's done-state notes.

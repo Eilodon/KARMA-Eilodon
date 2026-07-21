@@ -50,7 +50,7 @@
 > `src/middlewares` — and the Pharos and Stellar implementations were built before the Casper track
 > opened. Everything Casper-specific is new for this submission: the Odra `AgentSkillRegistry`
 > (`contracts-odra/`, 129 Rust tests), the secp256k1 keystore adapter, the `x402_casper.ts` payment
-> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 26-tool
+> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 29-tool
 > `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every transaction recorded in
 > [DEMO_CASPER.md](DEMO_CASPER.md). A pre-existing base is fine to disclose and not fine to hide —
 > so it's disclosed, and the part actually being judged here is original and shipped now.
@@ -105,11 +105,11 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 
 | Final Round judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 129/129 Rust tests (`contracts-odra`), 804 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
+| Technical Execution | 129/129 Rust tests (`contracts-odra`), 804/804 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
-| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 26-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
+| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 29-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
 | Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
@@ -244,7 +244,7 @@ conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full oper
 
 ## Tools
 
-This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 26 Casper
+This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 29 Casper
 Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
 governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
 identity, Casper `AgentSkillRegistry`). The tables below group tools by architecture layer (Layer 1
@@ -369,7 +369,7 @@ funding and signing need a real key, and that key stays with its owner, not in t
 |---|---|---|
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
-| x402 **Casper** rail (CSPR) | `src/plugins/x402_casper.ts` · `src/lib/casper/keypair.ts` · `src/lib/casper/live_client.ts` | real HTTP + ECDSA verify loop today ([demo](src/scripts/demo_casper_x402_live.ts)); on-chain settlement testnet (owner-driven) |
+| x402 **Casper** rail (EIP-712 + CEP-18, wire-compatible with the official [`make-software/casper-x402`](https://github.com/make-software/casper-x402) reference) | `src/plugins/x402_casper.ts` · `contracts-odra/src/x402_settlement_token.rs` · `src/lib/casper/live_client.ts` | **live on Testnet** — `X402SettlementToken` at `hash-b3387d59…`, real `transfer_with_authorization` settlement ([demo](src/scripts/demo_casper_x402_settlement_live.ts), [RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)) |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
 | **ReputationAggregationProof** — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
 | **Cross-chain reputation oracle** — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
@@ -451,7 +451,7 @@ is pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 734 passed, 1 skipped (see Testing section for the 3 known-unrelated failures)
+pnpm test          # 804 passed, 0 failed
 pnpm build
 ```
 
@@ -572,14 +572,13 @@ it stays single-process and restart-volatile until a Redis-backed version lands 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 129/129 Rust tests
-pnpm test          # full Vitest suite — 734 passed, 1 skipped, incl. casper.tool.ts/indexer/codec
+pnpm test          # full Vitest suite — 804/804 passed, 0 failed, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
 Odra/Casper: 129 Rust tests (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the full
-escrow/dispute/evaluator/composition/governance feature set, ms-based time and U512 arithmetic.
-(`pnpm test`'s 3 remaining failures are in `karma_service_integration.test.ts`, a Pharos-only
-local-fixture test confirmed pre-existing and unrelated to Casper.)
+escrow/dispute/evaluator/composition/governance/rationale-attestation feature set, ms-based time
+and U512 arithmetic, plus the `X402SettlementToken` CEP-18/CEP-3009 composition.
 
 **Zero-knowledge proof verification (proven on Stellar):**
 
