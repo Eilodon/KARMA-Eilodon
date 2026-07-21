@@ -1,10 +1,21 @@
 # RFC — x402 Casper: EIP-712 / CEP-18 interop with the official reference
 
-> **Status (2026-07-21):** §5.0 done and deployed for real — `X402SettlementToken` is live on
-> Casper Testnet at `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`
+> **Status (2026-07-21):** §5.0-§5.5 all done and proven for real, end-to-end. `X402SettlementToken`
+> is live on Casper Testnet at `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`
 > (install tx `f9656962176de5034accbaf5ee7e9aca03d792aa93bd67fb05b92ea85ab321db`, block `8574201`,
-> `errorMessage: null`, verified independently via the deployer account's `named_keys`). §5.1-§5.5
-> (the `x402_casper.ts` TypeScript rewrite) still open.
+> `errorMessage: null`, verified independently via the deployer account's `named_keys`). The
+> `x402_casper.ts` TypeScript rewrite (§5.1-§5.5) is done, unit-tested (30/30, including a
+> byte-for-byte cross-check of the ERC-3009 typehash against `CEP3009`'s hardcoded Rust constant),
+> and — critically — proven against the *actual deployed contract*: `demo_casper_x402_settlement_live.ts`
+> deposits real CSPR into `X402SettlementToken`, signs a real EIP-712 `transfer_with_authorization`
+> authorization with `CasperX402Plugin.payWithEnvelope`, and settles it on-chain via
+> `settleTransferWithAuthorization` — `errorMessage: null`, `Transfer` event emitted. This caught
+> two real bugs a unit test alone could not have: (1) `settleTransferWithAuthorization`'s call args
+> used `amount` where the contract's real wire arg is `value` (reverted `MissingArg`, Odra code
+> 64658); (2) the digest itself was built from the npm package's generic `TransferAuthorizationTypes`
+> preset (wrong struct name, wrong field casing, wrong field types) instead of `CEP3009`'s actual
+> hardcoded ERC-3009 typehash (reverted `InvalidSignature`, code 37003). Both are fixed; the digest
+> now mirrors `CEP3009::build_authorization_message` field-for-field. Nothing left open in this RFC.
 
 ## 1. Problem
 
@@ -142,22 +153,42 @@ interface ExactCasperPayload {
 
 ### 5.3 Signing pipeline (replaces `canonicalize` → SHA-256 → `compactToDER`)
 
+As implemented — NOT a generic `hashTypedData(domain, types, primaryType, message)` call. `CEP3009`
+builds its digest from a **hardcoded typehash constant** plus **manually concatenated raw field
+encodings** (`CEP3009::build_authorization_message`), not from a type-definitions object the way a
+generic EIP-712 library derives a typehash from a struct's declared shape. Deriving the typehash
+from a hand-written Casper-side type-definitions object (e.g. the npm package's
+`TransferAuthorizationTypes` preset) produces a *different, wrong* typehash — confirmed the hard
+way, via a live on-chain `InvalidSignature` (37003) revert against the real deployed contract. The
+correct construction:
+
 ```
-domain   = { name, version, chain_name: network, contract_package_hash: asset }
-digest   = hashTypedData(domain, transferWithAuthorizationTypes, "TransferWithAuthorization", message)
+typehash = computeTypeHash(
+  "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+)  // == CEP3009's own hardcoded TRANSFER_WITH_AUTHORIZATION_TYPEHASH — cross-checked byte-for-byte in
+   // src/__tests__/x402_casper.test.ts, not just assumed equal from matching source strings.
+
+encodedStruct = encodeAddress(from) ++ encodeAddress(to) ++ encodeUint256(value)
+             ++ encodeUint64(validAfter) ++ encodeUint64(validBefore) ++ encodeBytes32(nonce)
+
+domain   = { name, version: "1", chain_name: network, contract_package_hash: settlementTokenPackageHash }
+digest    = hashTypedDataRaw(domain, typehash, encodedStruct, { domainTypes: CASPER_DOMAIN_TYPES })
 signature = keypair.signAndAddAlgorithmBytes(digest)   // [1 algo byte | 64 raw bytes]
 ```
 
 `compactToDER` and `canonicalize`'s role in signing both go away; `canonicalize` may still be
 useful internally but is no longer the thing that gets hashed.
 
-### 5.4 Settlement (currently absent entirely)
+### 5.4 Settlement — done, proven on-chain
 
-`verify()`/`verifyCasperExactPayload` today only re-check the signature and expiry — never touch
-chain. A real settlement path means building and submitting an actual
-`transfer_with_authorization` deploy (args per §3's table) the same way `live_client.ts`'s
-`submitPayable` already builds every other signed Odra call, then waiting for finalization like
-the rest of the demo scripts do.
+`settleTransferWithAuthorization()` builds and submits a real `transfer_with_authorization` call
+against the deployed `X402SettlementToken` (args per §3's table — note the wire arg name is
+`value`, not `amount`; a first cut got this wrong and reverted `MissingArg`, Odra code 64658), the
+same `ContractCallBuilder` pattern `live_client.ts` uses for every other signed Odra call.
+`demo_casper_x402_settlement_live.ts` proves the full path for real: deposits CSPR into the token,
+signs a `transfer_with_authorization` authorization via `payWithEnvelope`, submits it via
+`settleTransferWithAuthorization`, and confirms `errorMessage: null` + a `Transfer` event on Casper
+Testnet.
 
 ### 5.5 Wire-level renames
 `X-PAYMENT` → `PAYMENT-SIGNATURE` header; `x402Version: 1` → `2`; network id

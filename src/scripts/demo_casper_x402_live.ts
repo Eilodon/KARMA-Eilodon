@@ -2,12 +2,13 @@
  * KARMA × Casper — live x402 HTTP loop (T13-live).
  *
  * Unlike `demo_casper_e2e.ts` (a fully in-memory state-machine walk), this script runs a REAL
- * local HTTP server and a REAL client `fetch()` against it, carrying a REAL secp256k1-signed
+ * local HTTP server and a REAL client `fetch()` against it, carrying a REAL EIP-712-signed
  * x402 payment envelope — and the provider runs REAL cryptographic verification
- * (`verifyCasperExactPayload`, node:crypto ECDSA/SHA-256 against the DER signature), not a
- * structural stub. The one piece this script does NOT do by default is submit the on-chain
- * `create_job` deploy that actually moves CSPR — that needs a funded Testnet key, so it's gated
- * behind `--live` (see `CasperLiveClient` / `DEMO_CASPER.md`).
+ * (`verifyCasperExactPayload`: rebuilds the `TransferAuthorization` digest and checks the
+ * Casper-native signature against it), not a structural stub. The one piece this script does
+ * NOT do by default is submit the on-chain `create_job` deploy that actually moves CSPR — that
+ * needs a funded Testnet key, so it's gated behind `--live` (see `CasperLiveClient` /
+ * `DEMO_CASPER.md`).
  *
  * Mirrors DEMO_STELLAR.md's provider-stub pattern: KARMA runs its own facilitator-equivalent
  * (verify the signed payload, no external `@x402/casper` package exists yet to depend on).
@@ -19,7 +20,12 @@
 
 import { createServer } from "node:http";
 import { Buffer } from "node:buffer";
-import { CasperX402Plugin, verifyCasperExactPayload, type CasperX402SignedPayload } from "../plugins/x402_casper.js";
+import {
+  CasperX402Plugin,
+  CASPER_TESTNET_CAIP2,
+  verifyCasperExactPayload,
+  type CasperX402SignedPayload,
+} from "../plugins/x402_casper.js";
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
 import { keystoreManager } from "../lib/keystore.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
@@ -27,6 +33,12 @@ import { fetchBtcUsdPrice } from "../lib/casper/rwa_price_feed.js";
 
 const PORT = 8934;
 const PRICE_MOTES = "10000000"; // 0.01 CSPR
+// Real `X402SettlementToken` deployed on Casper Testnet (contracts-odra/src/x402_settlement_token.rs) —
+// see docs/rfc/2026-07-21-x402-casper-eip712-interop.md's Status header for the install tx. Used
+// here to build the real EIP-712 domain; override via env for a different deployment.
+const SETTLEMENT_TOKEN_HASH =
+  process.env.KARMA_X402_CASPER_SETTLEMENT_TOKEN ??
+  "hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310";
 
 function box(label: string, lines: string[]): void {
   const width = Math.max(label.length, ...lines.map((l) => l.length)) + 2;
@@ -46,32 +58,38 @@ async function main(): Promise<void> {
   const providerKp = deriveCasperPrivateKey(new Uint8Array(32).fill(0x11));
   const requesterKp = deriveCasperPrivateKey(new Uint8Array(32).fill(0x22));
   const payee = casperAccountHash(providerKp);
-  const network = "casper:testnet";
+  const network = CASPER_TESTNET_CAIP2;
 
-  const clientPlugin = new CasperX402Plugin("http://localhost:" + PORT, () => requesterKp);
+  const clientPlugin = new CasperX402Plugin("http://localhost:" + PORT, () => requesterKp, {
+    settlementTokenPackageHash: SETTLEMENT_TOKEN_HASH,
+  });
 
   // ── Provider (resource server) ──────────────────────────────────────────────────────────
   const server = createServer(async (req, res) => {
-    const xPayment = req.headers["x-payment"];
-    if (!xPayment || typeof xPayment !== "string") {
+    const paymentSig = req.headers["payment-signature"];
+    if (!paymentSig || typeof paymentSig !== "string") {
       res.writeHead(402, { "Content-Type": "application/json" }).end(
         JSON.stringify({
-          x402Version: 1,
-          accepts: [{ scheme: "exact", network, asset: "CSPR", amount: PRICE_MOTES, payTo: payee }],
+          x402Version: 2,
+          accepts: [{ scheme: "exact", network, asset: "KX402", amount: PRICE_MOTES, payTo: payee }],
         }),
       );
       return;
     }
 
-    console.log("[provider] X-Payment received, verifying (real ECDSA/SHA-256, no facilitator round-trip)...");
-    const envelope = JSON.parse(Buffer.from(xPayment, "base64").toString("utf8")) as CasperX402SignedPayload;
-    const verdict = verifyCasperExactPayload(envelope, { expectedPayee: payee, expectedNetwork: network });
+    console.log("[provider] PAYMENT-SIGNATURE received, verifying (real EIP-712 digest + Casper-native signature)...");
+    const envelope = JSON.parse(Buffer.from(paymentSig, "base64").toString("utf8")) as CasperX402SignedPayload;
+    const verdict = verifyCasperExactPayload(envelope, {
+      expectedPayee: payee,
+      expectedNetwork: network,
+      settlementTokenPackageHash: SETTLEMENT_TOKEN_HASH,
+    });
     if (!verdict.ok) {
       console.log("[provider] REJECTED:", verdict.reason);
       res.writeHead(402, { "Content-Type": "application/json" }).end(JSON.stringify({ error: verdict.reason }));
       return;
     }
-    console.log("[provider] verified OK — payer:", envelope.payload.payer);
+    console.log("[provider] verified OK — payer:", envelope.payload.from);
 
     // Fulfil: a REAL live BTC/USD quote (CoinGecko), signed with the provider's Casper key —
     // falls back to a fixed price (logged, never silent) if the network call fails.
@@ -100,23 +118,23 @@ async function main(): Promise<void> {
     `accepts[0].payTo  = ${paymentRequired.accepts[0].payTo}`,
   ]);
 
-  console.log("[client] step 2: sign a real x402 payment envelope (secp256k1/SHA-256/DER)...");
+  console.log("[client] step 2: sign a real x402 payment envelope (EIP-712 TransferAuthorization digest)...");
   const { envelope, receipt } = await clientPlugin.payWithEnvelope(
-    { skillId: "1", price: PRICE_MOTES, asset: "CSPR", payTo: payee, network },
+    { skillId: "1", price: PRICE_MOTES, asset: "KX402", payTo: payee, network },
     { agentId: "agent-requester" },
   );
-  const xPayment = Buffer.from(JSON.stringify(envelope)).toString("base64");
+  const paymentSig = Buffer.from(JSON.stringify(envelope)).toString("base64");
   box("Step 2 — signed envelope", [
-    `payer     = ${envelope.payload.payer}`,
-    `payee     = ${envelope.payload.payee}`,
-    `amount    = ${envelope.payload.amount} motes`,
+    `payer     = ${envelope.payload.from}`,
+    `payee     = ${envelope.payload.to}`,
+    `value     = ${envelope.payload.value} (settlement-token units)`,
     `signature = ${receipt.txHash?.slice(0, 24)}...`,
   ]);
 
-  console.log("[client] step 3: POST /invoke with X-Payment — one request, real signature verified server-side");
+  console.log("[client] step 3: POST /invoke with PAYMENT-SIGNATURE — one request, real signature verified server-side");
   const final = await fetch(`http://localhost:${PORT}/invoke`, {
     method: "POST",
-    headers: { "X-Payment": xPayment },
+    headers: { "PAYMENT-SIGNATURE": paymentSig },
   });
   const body = (await final.json()) as { feed?: unknown; error?: unknown };
   box("Step 3 — provider response", [
