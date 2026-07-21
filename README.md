@@ -6,34 +6,43 @@
 > and settles the job on an Odra `AgentSkillRegistry` — trust from escrow + cryptography, not a
 > server anyone has to take on faith.
 >
-> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 120/120 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)
+> [![KARMA on Casper — judge walkthrough: real x402 payment verification, 129/129 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)
 >
 > ☝️ **The terminal panels in that page are a real captured run**, not typed-out copy — reproduce
 > them yourself with `pnpm exec tsx src/scripts/demo_casper_x402_live.ts` (real local HTTP 402 →
-> pay → verify loop), `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` (120/120),
-> and `contracts-odra/build-wasm.sh` (a real, `WebAssembly.validate()`-clean ~538KB
-> `karma_odra.wasm`, all 59 entry points exported). **The contract is deployed and verified
-> end-to-end on Testnet** (`hash-29b7daeb…`, governance-hardened redeploy) — see
+> pay → verify loop), `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` (129/129),
+> and `contracts-odra/build-wasm.sh` (a real, `WebAssembly.validate()`-clean ~535KB
+> `karma_odra.wasm`, all entry points exported, including P2-A's `attest_rationale`/
+> `get_rationale_hash`). **The contract is deployed and verified end-to-end on Testnet**
+> (`hash-42f6945f…`, attestation-hardened redeploy, 2026-07-21) — see
 > [DEMO_CASPER.md](DEMO_CASPER.md) for the exact tx-by-tx evidence. Governance is a real 2-of-2
-> multisig with a 48h timelock, confirmed live by decoding the contract's own
-> `GovernanceConfigured` event, not just trusting the deploy args as submitted.
+> multisig with a 48h timelock, confirmed live by directly decoding the contract's own storage
+> (`governance_signers`/`governance_threshold`/`timelock_delay`), not just trusting the deploy args
+> as submitted.
 >
-> **Four more live flows closed out same-day, all real transactions on that contract, all in
+> **On-chain LLM-decision attestation (P2-A), proven live the same day:** a requester commits a
+> hash of their agent's stated reasoning for a job (`attest_rationale`) — read back byte-for-byte
+> (`get_rationale_hash`), a double-attest correctly reverts `RationaleAlreadyAttested`, and a
+> non-requester attesting someone else's job correctly reverts `NotRequester`. Directly answers
+> Casper's own "Verifiable AI outputs" pillar language with a real on-chain anchor, not just an LLM
+> response that vanishes when the MCP session ends.
+>
+> **Four more live flows reproduced fresh on the new contract, all real transactions, all in
 > [DEMO_CASPER.md](DEMO_CASPER.md):** a full job lifecycle (register → bond → escrow → deliver →
 > confirm → withdraw, provider reputation bumped `→ 55` on-chain); the **courtroom pillar run for
 > real** — a requester disputes a delivered result, the provider matches the bond to contest, and a
 > neutral on-chain arbiter (a distinct account from both parties) rules `ProviderAtFault` —
-> reputation *actually slashed* `50 → 40`, escrow *actually refunded*, not a unit test; a real
-> `propose_set_cross_chain_rep` → `approve_proposal` chain for the "reputation travels with the
-> agent, not the chain" story, with `execute_proposal` correctly reverting `TimelockNotElapsed`
-> against the real 48h clock; and, in the spirit of "prove it, don't just claim it," the write-up
-> doesn't hide the two real mistakes hit live (an underfunded throwaway key, a duplicate task
-> hash) — including the exact error codes that caught them.
+> reputation *actually slashed* `50 → 40`, escrow *actually refunded*, not a unit test, completed in
+> one take; a real `propose_set_cross_chain_rep` → `approve_proposal` chain for the "reputation
+> travels with the agent, not the chain" story, with `execute_proposal` correctly reverting
+> `TimelockNotElapsed` against the real 48h clock. 23 real transactions total across the redeploy +
+> all four flows — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions).
 >
-> 🎬 **[Watch the ~2:18 narrated video](docs/media/casper-demo-video.mp4)** — the economic loop,
-> the courtroom ruling live, and the governed cross-chain-rep timelock rejecting an early execute —
-> all captured from real terminal runs against the live contract, all real tx hashes, real
-> `testnet.cspr.live` screenshots, no typed-out copy.
+> 🎬 **[Watch the ~2:18 narrated video](docs/media/casper-demo-video.mp4)** — captured against the
+> prior governance-hardened contract (`hash-29b7daeb…`, superseded by the attestation-hardened
+> redeploy above); the economic loop, the courtroom ruling live, and the governed cross-chain-rep
+> timelock rejecting an early execute — all real terminal runs, all real tx hashes, real
+> `testnet.cspr.live` screenshots, no typed-out copy. Mechanism is identical, re-proven fresh above.
 
 > **Proof this is a protocol, not a single-chain app:** the same identity/reputation/settlement
 > model that's live on Casper above also runs on **Stellar** — a Groth16/BN254 zero-knowledge
@@ -47,7 +56,7 @@
 > MCP runtime under `src/core`, `src/mcp`, `src/middlewares`) and the Pharos and Stellar
 > implementations predate the Casper track. **Everything Casper-specific was built new for this
 > Buildathon and lives entirely in this submission window:** the Odra `AgentSkillRegistry`
-> (`contracts-odra/`, 120 Rust tests), the Casper secp256k1 keystore adapter, the `x402_casper.ts`
+> (`contracts-odra/`, 129 Rust tests), the Casper secp256k1 keystore adapter, the `x402_casper.ts`
 > payment rail, `live_client.ts`'s real `casper-js-sdk` transaction building, the 26-tool
 > `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every live transaction
 > recorded in [DEMO_CASPER.md](DEMO_CASPER.md). The same standard we'd apply to any other
@@ -75,7 +84,7 @@ has to interoperate with.
 
 **On Casper, that implementation is the deepest one we've shipped.** Identity gate, reputation,
 escrow, symmetric-bond dispute arbitration with a neutral on-chain arbiter, multisig+timelock
-governance, and weighted skill composition — all live on Testnet, 120 Rust tests, real
+governance, and weighted skill composition — all live on Testnet, 129 Rust tests, real
 transactions end-to-end (register → bond → escrow → deliver → dispute → arbitrate → withdraw).
 Full story + tx-by-tx evidence: [DEMO_CASPER.md](DEMO_CASPER.md).
 
@@ -104,12 +113,12 @@ governance layers the brief's direction doesn't ask for but a real trust layer n
 
 | Final Round judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 120/120 Rust tests (`contracts-odra`), 782 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
+| Technical Execution | 129/129 Rust tests (`contracts-odra`), 804 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
 | User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 26-tool MCP surface — the UX of a protocol is its interface for agents and for the humans who have to trust it |
-| Working Smart Contracts | `hash-29b7daeb…`, governance-hardened redeploy, 13+ real transactions — [Live deployment](#live-deployment) |
+| Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
 
@@ -219,7 +228,7 @@ port" claim above, not filler:
 
 | Chain | What's live | Spec conformance | Tests |
 |---|---|---|---|
-| **Casper** (`contracts-odra/`) — this submission | Escrow, symmetric dispute-bond arbitration, multisig+timelock governance, skill composition with weighted revenue split. Governance-hardened, deployed and verified end-to-end on Testnet, see [Live deployment](#live-deployment). | `IPaymentPlugin` **v1.0 ✓** | 120 Rust tests |
+| **Casper** (`contracts-odra/`) — this submission | Escrow, symmetric dispute-bond arbitration, multisig+timelock governance, skill composition with weighted revenue split. Governance-hardened, deployed and verified end-to-end on Testnet, see [Live deployment](#live-deployment). | `IPaymentPlugin` **v1.0 ✓** | 129 Rust tests |
 | **Stellar** | Zero-knowledge reputation gating (Groth16/BN254, native host functions), USDC settlement over x402. | `IPaymentPlugin` **v1.0 ✓** | 12 + 19 Rust tests (Soroban) |
 | **Pharos** (`contracts/AgentSkillRegistry.sol`) | Escrow, 3-day review window, dispute/refund, Sybil-resistance bond, evaluator-agent arbitration, multisig+timelock governance. The original chain the spec was extracted from. | `IPaymentPlugin` wrapper pending (v2) | 96 Foundry tests |
 | **Terminal3** (`t3.tool.ts`, `@terminal3/t3n-sdk`) | SIWE/EIP-191 identity gate (`did:t3n:…`), TEE-signed bounded delegation credentials. Verified live against the Terminal3 testnet. | reference `IdentityPolicy` implementation (value `1`/`2` in the [open registry](docs/standards/IdentityPolicy-registry.md)) | — |
@@ -381,14 +390,15 @@ pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop 
 
 ## Live deployment
 
-**Casper Testnet** (Odra, governance-hardened) — this submission's primary deployment; full
+**Casper Testnet** (Odra, attestation-hardened) — this submission's primary deployment; full
 tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md):
 
 | | |
 |---|---|
-| **`AgentSkillRegistry`** | [`hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`](https://testnet.cspr.live/contract-package/29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa) (governance-hardened redeploy) |
-| **Governance** | real 2-of-2 multisig + 48h timelock — confirmed live by decoding the contract's own `GovernanceConfigured` event |
-| **Sample transactions** | 13 real, `testnet.cspr.live`-verified calls (lifecycle, courtroom, governance) — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions) in DEMO_CASPER.md |
+| **`AgentSkillRegistry`** | [`hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`](https://testnet.cspr.live/contract-package/42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d) (attestation-hardened redeploy, 2026-07-21 — supersedes `hash-29b7daeb…`) |
+| **Governance** | real 2-of-2 multisig + 48h timelock — confirmed live by directly decoding the contract's own storage (`governance_signers`, `governance_threshold`, `timelock_delay`) |
+| **P2-A: LLM-decision attestation** | `attest_rationale`/`get_rationale_hash` — a requester's decision rationale, hashed and committed on-chain, read back byte-for-byte; `RationaleAlreadyAttested`/`NotRequester` reverts confirmed live |
+| **Sample transactions** | 23 real, `testnet.cspr.live`-verified calls (redeploy, lifecycle, courtroom, governance, attestation) — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions) in DEMO_CASPER.md |
 
 **Stellar Testnet** (Soroban, native BN254) — the same trust model's zero-knowledge reputation
 gate, proven on a second chain; full tx table + reproduction steps in
@@ -559,12 +569,12 @@ single-process/restart-volatile until a redis-backed parity is added for multi-r
 **Casper (this submission):**
 
 ```bash
-cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 120/120 Rust tests
+cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 129/129 Rust tests
 pnpm test          # full Vitest suite — 734 passed, 1 skipped, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
-Odra/Casper: **120 Rust tests** (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the
+Odra/Casper: **129 Rust tests** (`contracts-odra/src/agent_skill_registry/tests.rs`) covering the
 full escrow/dispute/evaluator/composition/governance feature set, ms-based time and U512
 arithmetic. (`pnpm test`'s 3 remaining failures are in `karma_service_integration.test.ts`, a
 Pharos-only local-fixture test confirmed pre-existing and unrelated to Casper.)

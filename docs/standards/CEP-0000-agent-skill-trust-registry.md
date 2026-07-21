@@ -10,7 +10,7 @@
 | Category | Interface |
 | Created | 2026-07-08 |
 | Requires | — |
-| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1608 LoC, 120/120 tests passing), live on Casper Testnet |
+| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1608 LoC, 129/129 tests passing), live on Casper Testnet |
 
 > This is a project-authored draft, written to the shape of the Casper CEP process, not yet
 > submitted to `casper-network/ceps`. Before submission it needs: (1) a CEP number from the
@@ -426,12 +426,13 @@ this draft resolves.
 ## Reference Implementation
 
 [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs)
-— Odra 2.x, 1608 lines, deployed and verified on Casper Testnet (`hash-29b7daeb…`, governance-
-hardened redeploy — tx-by-tx evidence in [DEMO_CASPER.md](../../DEMO_CASPER.md)). Every entry
-point in §4 is live and has been exercised against the deployed contract, not only in unit tests:
-a full job lifecycle, a contested dispute ruled by a neutral on-chain arbiter (reputation slashed
-`50 → 40`, escrow refunded), and a governance proposal that correctly reverted
-`TimelockNotElapsed` against the real 48-hour clock (see `DEMO_CASPER.md`'s courtroom and
+— Odra 2.x, deployed and verified on Casper Testnet (`hash-42f6945f…`, attestation-hardened
+redeploy — tx-by-tx evidence in [DEMO_CASPER.md](../../DEMO_CASPER.md)). Every entry point in §4
+is live and has been exercised against the deployed contract, not only in unit tests: a full job
+lifecycle, a contested dispute ruled by a neutral on-chain arbiter (reputation slashed
+`50 → 40`, escrow refunded), a governance proposal that correctly reverted
+`TimelockNotElapsed` against the real 48-hour clock, and `attest_rationale`/`get_rationale_hash`
+(P2-A) committing and reading back a decision-rationale hash on-chain (see `DEMO_CASPER.md`'s courtroom and
 cross-chain-rep-governance sections).
 
 Every entry point in this spec is also independently exposed as an MCP tool
@@ -441,7 +442,7 @@ usable from an agent-facing client, not just from a test harness.
 
 ## Test Cases
 
-120/120 passing in
+129/129 passing in
 [`contracts-odra/src/agent_skill_registry/tests.rs`](../../contracts-odra/src/agent_skill_registry/tests.rs)
 (mirror of `test/AgentSkillRegistry.t.sol`), covering per `contracts-odra/README.md`: happy path,
 refund window, ghost-requester / dispute / claim-after-review, double-complete guard, the trust
