@@ -28,3 +28,4 @@
 //!     `MAX_REPUTATION` on the Solidity side.
 
 pub mod agent_skill_registry;
+pub mod x402_settlement_token;
