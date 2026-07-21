@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   buildDomain,
   hashTypedDataRaw,
@@ -39,6 +39,22 @@ function newPlugin(opts: ConstructorParameters<typeof CasperX402Plugin>[2] = {})
     ...opts,
   });
 }
+
+// These tests construct CasperX402Plugin instances that deliberately omit rpcUrl/
+// settlementTokenPackageHash/etc to exercise the "not configured" fallback paths — a real dev
+// .env (CASPER_RPC_URL, KARMA_X402_CASPER_SETTLEMENT_TOKEN, CASPER_RPC_API_KEY, CASPER_CHAIN_NAME,
+// used by the live demo scripts) would otherwise leak in as env-var fallbacks and silently attempt
+// real on-chain settlement mid-test. Same isolation pattern as casper_tool.test.ts.
+const ORIGINAL_ENV = { ...process.env };
+beforeEach(() => {
+  delete process.env.CASPER_RPC_URL;
+  delete process.env.KARMA_X402_CASPER_SETTLEMENT_TOKEN;
+  delete process.env.CASPER_RPC_API_KEY;
+  delete process.env.CASPER_CHAIN_NAME;
+});
+afterEach(() => {
+  process.env = { ...ORIGINAL_ENV };
+});
 
 describe("TransferWithAuthorization typehash (T13-live)", () => {
   it("matches CEP3009's hardcoded TRANSFER_WITH_AUTHORIZATION_TYPEHASH byte-for-byte", () => {

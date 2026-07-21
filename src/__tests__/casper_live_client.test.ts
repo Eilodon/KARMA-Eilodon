@@ -291,6 +291,34 @@ describe("CasperLiveClient reads (T13-live, real dictionary-item derivation)", (
     rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
     expect(await client.getCrossChainRep(account)).toBe(0);
   });
+
+  it("getRationaleHash (P2-A) strips Bytes's own length-prefix framing, undefined when never attested", async () => {
+    // Regression test for a real bug caught live on Casper Testnet: `rationale_hash`'s stored
+    // CLValue carries `Bytes`'s bytesrepr framing (u32-LE length prefix + payload), not just the
+    // raw 32 bytes — an earlier version of getRationaleHash returned the prefix concatenated onto
+    // the hash (e.g. "20000000<hash>" instead of "<hash>").
+    const hashHex = "3aeb6001dd1ab1256e0327b3abaa520cd0e08a7fce5733ab877f2058d6965f74";
+    // `Bytes`'s own bytesrepr encoding (u32-LE length prefix + payload) — NOT `newCLByteArray`,
+    // which is the fixed-size `ByteArray` CLType and carries no length prefix at all (verified
+    // empirically: the two produce different byte strings for the same payload).
+    const rawBytesEncoding = CLValue.newCLList(CLTypeUInt8, Array.from(Buffer.from(hashHex, "hex")).map((b) => CLValue.newCLUint8(b))).bytes();
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(rawBytesEncoding) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getRationaleHash(3n)).toBe(hashHex);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getRationaleHash(999n)).toBeUndefined();
+  });
+
+  it("attestRationale rejects a non-32-byte hash client-side, before ever submitting", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await expect(client.attestRationale(SIGNER, 1n, new Uint8Array(31))).rejects.toThrow(/32 bytes/);
+    expect(rpc.putTransaction).not.toHaveBeenCalled();
+  });
 });
 
 describe("CasperLiveClient.getEventCount / getEvent (CES event log, T13-live)", () => {

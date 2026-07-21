@@ -14,6 +14,7 @@ import {
   decodeU32,
   decodeU512,
   decodeComposition,
+  decodeBytesVec,
   type DecodedSkill,
   type DecodedJob,
   type DecodedComposition,
@@ -485,7 +486,11 @@ export class CasperLiveClient {
    *  uses). `undefined` when the requester never called `attestRationale` for this job. */
   async getRationaleHash(jobId: bigint): Promise<string | undefined> {
     const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.rationaleHash, u64ToBytes(jobId));
-    const bytes = odraStructBytes(clValue);
+    const raw = odraStructBytes(clValue);
+    // `raw` carries `Bytes`'s own bytesrepr framing (u32-LE length prefix + payload) — decodeBytesVec
+    // strips it. Confirmed the hard way against a real deployed contract read (see its own doc
+    // comment): an earlier version returned the length prefix concatenated onto the hash.
+    const bytes = raw ? decodeBytesVec(raw) : undefined;
     return bytes ? Buffer.from(bytes).toString("hex") : undefined;
   }
 

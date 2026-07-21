@@ -218,3 +218,12 @@ export function decodeU32(bytes: Uint8Array): number {
 export function decodeU512(bytes: Uint8Array): bigint {
   return new OdraBytesReader(bytes).u512();
 }
+
+/** Decodes a plain `Bytes` (`casper_types::bytesrepr::Bytes`) `Mapping` value's raw bytes — e.g.
+ *  `rationale_hash[job_id]` (P2-A). Confirmed the hard way against a real deployed contract read:
+ *  the stored value carries `Bytes`'s own bytesrepr framing (u32-LE length prefix + raw bytes),
+ *  NOT just the raw hash — an earlier version of `getRationaleHash` skipped this and returned the
+ *  length prefix concatenated onto the front of every hash. */
+export function decodeBytesVec(bytes: Uint8Array): Uint8Array {
+  return new OdraBytesReader(bytes).bytesVec();
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import casperSdk from "casper-js-sdk";
-import { decodeSkill, decodeJob, decodeComposition } from "../lib/casper/odra_codec.js";
+import { decodeSkill, decodeJob, decodeComposition, decodeBytesVec } from "../lib/casper/odra_codec.js";
 
 const { CLValue } = casperSdk;
 
@@ -191,5 +191,20 @@ describe("decodeComposition", () => {
     const composition = decodeComposition(bytes);
     expect(composition.leafSkillIds).toEqual([42n]);
     expect(composition.weightsBps).toEqual([10_000]);
+  });
+});
+
+describe("decodeBytesVec (P2-A, rationale_hash)", () => {
+  it("strips the u32-LE length prefix, returning just the payload", () => {
+    const hash = Buffer.from("3aeb6001dd1ab1256e0327b3abaa520cd0e08a7fce5733ab877f2058d6965f74", "hex");
+    const bytes = bytesVec(hash);
+    // Regression test for a real bug caught live on Casper Testnet: an earlier version of
+    // getRationaleHash returned this raw bytesrepr framing (length prefix + hash) concatenated
+    // together instead of decoding it — e.g. "200000003aeb60...6965f74" instead of "3aeb60...6965f74".
+    expect(Buffer.from(decodeBytesVec(bytes)).toString("hex")).toBe(hash.toString("hex"));
+  });
+
+  it("round-trips an empty byte string", () => {
+    expect(decodeBytesVec(bytesVec(new Uint8Array(0)))).toHaveLength(0);
   });
 });
