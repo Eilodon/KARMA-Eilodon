@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     `payer     = ${envelope.payload.from}`,
     `payee     = ${envelope.payload.to}`,
     `value     = ${envelope.payload.value} (settlement-token units)`,
-    `signature = ${receipt.txHash?.slice(0, 24)}...`,
+    `signature = ${receipt.signature?.slice(0, 24)}...`,
   ]);
 
   console.log("[client] step 3: POST /invoke with PAYMENT-SIGNATURE — one request, real signature verified server-side");

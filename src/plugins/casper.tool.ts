@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import casperSdk from "casper-js-sdk";
 import type { ToolDefinition, ToolResult } from "../mcp/adapter/tool_registry.js";
 import { jsonSafe } from "../lib/serialize.js";
 import { keystoreManager } from "../lib/keystore.js";
@@ -6,6 +7,8 @@ import { casperAccountHash } from "../lib/casper/keypair.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
 import { isTrustedRuntime } from "../core/runtime_identity.js";
 import { casperSkillIndex, getCasperIndexerHealth } from "../lib/casper_indexer_runtime.js";
+
+const { HttpHandler, RpcClient } = casperSdk;
 
 /**
  * Casper skill-registry plugin (T13-live) — makes the Odra `AgentSkillRegistry` reachable
@@ -88,6 +91,8 @@ export type CasperClientLike = Pick<
   | "approveProposal"
   | "executeProposal"
   | "cancelProposal"
+  | "attestRationale"
+  | "getRationaleHash"
 >;
 
 export function createCasperTools(
@@ -848,6 +853,117 @@ export function createCasperTools(
     },
   };
 
+  const casperAttestRationale: ToolDefinition = {
+    name: "casper_attest_rationale",
+    description:
+      "P2-A: commit a 32-byte hash of the (typically LLM-generated) decision rationale for why " +
+      "this job was created, on-chain — an immutable, independently-checkable anchor without " +
+      "KARMA storing (or paying gas for) the plaintext rationale itself. Requester-only " +
+      "(matching the job's requester), set-once (re-attesting the same job reverts). Callers " +
+      "hash their own rationale text (e.g. blake2b/keccak256) before calling this.",
+    inputSchema: {
+      agentId: z.string().describe("Requester's keystore agent id — must match the job's requester."),
+      jobId: z.string().regex(/^[0-9]+$/).describe("Job id returned by casper_create_job / casper_create_job_with_evaluator."),
+      rationaleHashHex: HEX32.describe("32-byte hash (hex, no 0x prefix) of the plaintext decision rationale."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({
+        agentId: z.string(),
+        jobId: z.string().regex(/^[0-9]+$/),
+        rationaleHashHex: HEX32,
+      }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.attestRationale(signer, BigInt(a.jobId), Buffer.from(a.rationaleHashHex, "hex"));
+      return reply(`[KARMA] casper_attest_rationale broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperGetRationaleHash: ToolDefinition = {
+    name: "casper_get_rationale_hash",
+    description:
+      "Read the attested decision-rationale hash for a job directly from the Odra registry's " +
+      "'state' dictionary. null when the requester never called casper_attest_rationale for it " +
+      "(most jobs — attestation is opt-in, e.g. only agent-reasoning-driven jobs use it).",
+    inputSchema: {
+      jobId: z.string().regex(/^[0-9]+$/).describe("Job id to look up."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ jobId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const rationaleHashHex = await client.getRationaleHash(BigInt(a.jobId));
+      return reply(
+        rationaleHashHex
+          ? `[KARMA] job #${a.jobId} rationale_hash=${rationaleHashHex}`
+          : `[KARMA] job #${a.jobId} has no attested rationale`,
+        { jobId: a.jobId, rationaleHashHex: rationaleHashHex ?? null },
+      );
+    },
+  };
+
+  const casperGetX402SettlementStatus: ToolDefinition = {
+    name: "casper_get_x402_settlement_status",
+    description:
+      "Poll a Casper x402 settlement transaction — the real on-chain txHash create_job returns " +
+      "once CasperX402Plugin actually broadcasts transfer_with_authorization (distinct from the " +
+      "pre-settlement signature it returns when rpcUrl isn't configured) — for its execution " +
+      "result. Casper transactions confirm within a handful of blocks, not instantly; 'pending' " +
+      "means not yet included, not failed.",
+    inputSchema: {
+      txHash: HEX32.describe("Transaction hash, as returned in create_job's x402 receipt.txHash once settled."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ txHash: HEX32 }).parse(args);
+      const rpcUrl = process.env.CASPER_RPC_URL;
+      if (!rpcUrl) {
+        throw new Error("[KARMA] casper_get_x402_settlement_status needs CASPER_RPC_URL set.");
+      }
+      const handler = new HttpHandler(rpcUrl);
+      const apiKey = process.env.CASPER_RPC_API_KEY;
+      if (apiKey) handler.setCustomHeaders({ Authorization: apiKey });
+      const rpc = new RpcClient(handler);
+      const info = await rpc.getTransactionByTransactionHash(a.txHash);
+      const exec = info.executionInfo;
+      if (!exec) {
+        return reply(`[KARMA] tx ${a.txHash} not yet included in a block`, {
+          txHash: a.txHash,
+          status: "pending",
+        });
+      }
+      // `errorMessage` lives under `executionResult`, NOT on `exec` directly — confirmed the hard
+      // way in demo_casper_x402_settlement_live.ts's own waitForExecution() (a first version read
+      // exec.errorMessage, always undefined, silently treating a real on-chain revert as success).
+      const errorMessage = (exec as { executionResult?: { errorMessage?: string | null } }).executionResult
+        ?.errorMessage ?? null;
+      return reply(
+        errorMessage ? `[KARMA] tx ${a.txHash} reverted: ${errorMessage}` : `[KARMA] tx ${a.txHash} succeeded`,
+        {
+          txHash: a.txHash,
+          status: errorMessage ? "reverted" : "confirmed",
+          blockHeight: (exec as { blockHeight?: number }).blockHeight ?? null,
+          errorMessage,
+        },
+      );
+    },
+  };
+
   return [
     casperHealth,
     casperRegisterSkill,
@@ -875,6 +991,9 @@ export function createCasperTools(
     casperApproveProposal,
     casperExecuteProposal,
     casperCancelProposal,
+    casperAttestRationale,
+    casperGetRationaleHash,
+    casperGetX402SettlementStatus,
   ];
 }
 

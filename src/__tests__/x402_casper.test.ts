@@ -17,6 +17,8 @@ import {
   casperX402PaymentOption,
   convertCsprToMotes,
   verifyCasperExactPayload,
+  deriveRationaleNonce,
+  settleTransferWithAuthorization,
   type CasperX402SignedPayload,
 } from "../plugins/x402_casper.js";
 import { deriveCasperPrivateKey } from "../lib/casper/keypair.js";
@@ -147,9 +149,11 @@ describe("CasperX402Plugin.pay (T11)", () => {
     expect(receipt.amount).toBe("10000000");
     expect(receipt.asset).toBe("KX402");
     expect(receipt.facilitatorRef).toBe(FACILITATOR);
-    // The signed envelope's signature is forwarded through `txHash`; not a real chain hash yet
-    // (that's `settleTransferWithAuthorization`'s job). 65 raw bytes ⇒ 130 hex chars.
-    expect(receipt.txHash).toMatch(/^[0-9a-f]{130}$/);
+    // No rpcUrl configured on this plugin ⇒ signed but not settled: txHash absent, the signed
+    // envelope's signature carried in `signature` instead (65 raw bytes ⇒ 130 hex chars) — not a
+    // real chain hash (that's `settleOnChain`/`settleTransferWithAuthorization`'s job).
+    expect(receipt.txHash).toBeUndefined();
+    expect(receipt.signature).toMatch(/^[0-9a-f]{130}$/);
   });
 
   it("requires a settlement token to be configured before it will sign anything", async () => {
@@ -248,6 +252,94 @@ describe("CasperX402Plugin.pay (T11)", () => {
     );
     expect(envelope.payload.validAfter).toBe(NOW - 60);
     expect(envelope.payload.validBefore).toBe(NOW - 60 + 5 * 60);
+  });
+
+  it("P2-A: opts.rationale deterministically derives the nonce instead of using the random generator", async () => {
+    const NOW = 1_750_000_000;
+    let randomNonceCalls = 0;
+    const p = newPlugin({ nowSecs: () => NOW, nonce: () => { randomNonceCalls += 1; return "ff".repeat(32); } });
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: PAYEE, network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-alpha", rationale: "highest EV among eligible, rep 80 > threshold" },
+    );
+    expect(randomNonceCalls).toBe(0); // rationale present ⇒ random generator never called
+    const expected = deriveRationaleNonce("highest EV among eligible, rep 80 > threshold", {
+      from: envelope.payload.from,
+      to: envelope.payload.to,
+      value: envelope.payload.value,
+      validAfter: envelope.payload.validAfter,
+    });
+    expect(envelope.payload.nonce).toBe(expected);
+  });
+
+  it("P2-A: no rationale ⇒ falls back to the random nonce generator (today's behaviour, unchanged)", async () => {
+    const p = newPlugin({ nonce: () => "11".repeat(32) });
+    const { envelope } = await p.payWithEnvelope(
+      { skillId: "1", price: "0.01", asset: "", payTo: PAYEE, network: CASPER_TESTNET_CAIP2 },
+      { agentId: "agent-alpha" },
+    );
+    expect(envelope.payload.nonce).toBe("11".repeat(32));
+  });
+});
+
+describe("deriveRationaleNonce (P2-A)", () => {
+  const CTX = { from: "account-hash-" + "a".repeat(64), to: "account-hash-" + "b".repeat(64), value: "1000000", validAfter: 1_750_000_000 };
+
+  it("is deterministic — same rationale + context always produces the same nonce", () => {
+    expect(deriveRationaleNonce("buy the RWA feed, rep 80", CTX)).toBe(deriveRationaleNonce("buy the RWA feed, rep 80", CTX));
+  });
+
+  it("produces a 32-byte hex string (matches the nonce field's expected size)", () => {
+    const n = deriveRationaleNonce("any rationale", CTX);
+    expect(n).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("differs when the rationale text differs (same context)", () => {
+    expect(deriveRationaleNonce("reason A", CTX)).not.toBe(deriveRationaleNonce("reason B", CTX));
+  });
+
+  it("differs when the context differs (same rationale) — two payments never collide on a repeated rationale string", () => {
+    const a = deriveRationaleNonce("same reason", CTX);
+    const b = deriveRationaleNonce("same reason", { ...CTX, validAfter: CTX.validAfter + 1 });
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("settleTransferWithAuthorization (T13-live)", () => {
+  it("builds transfer_with_authorization args using the contract's real wire arg name (`value`, not `amount`)", async () => {
+    const envelope: CasperX402SignedPayload = {
+      x402Version: 2,
+      scheme: "exact",
+      network: CASPER_TESTNET_CAIP2,
+      payload: {
+        from: "account-hash-" + "a".repeat(64),
+        to: "account-hash-" + "b".repeat(64),
+        value: "5000000",
+        validAfter: 1_750_000_000,
+        validBefore: 1_750_000_300,
+        nonce: "cd".repeat(32),
+      },
+      publicKeyHex: TEST_KEYPAIR.publicKey.toHex(),
+      signature: Buffer.from(TEST_KEYPAIR.sign(new Uint8Array(32))).toString("hex"),
+    };
+    let capturedArgs: Map<string, unknown> | undefined;
+    const fakeSubmitter = {
+      putTransaction: async () => ({ transactionHash: { toHex: () => "ab".repeat(32) } }),
+    };
+    const { txHash } = await settleTransferWithAuthorization(
+      fakeSubmitter,
+      (args) => {
+        capturedArgs = args.args as unknown as Map<string, unknown>;
+        return args;
+      },
+      envelope,
+    );
+    expect(txHash).toBe("ab".repeat(32));
+    expect(capturedArgs).toBeDefined();
+    expect(capturedArgs!.has("value")).toBe(true);
+    expect(capturedArgs!.has("amount")).toBe(false);
+    expect(capturedArgs!.has("valid_after")).toBe(true);
+    expect(capturedArgs!.has("valid_before")).toBe(true);
   });
 });
 

@@ -45,6 +45,8 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     approveProposal: vi.fn(async () => ({ txHash: "tx-approve" })),
     executeProposal: vi.fn(async () => ({ txHash: "tx-execute" })),
     cancelProposal: vi.fn(async () => ({ txHash: "tx-cancel" })),
+    attestRationale: vi.fn(async () => ({ txHash: "tx-attest-rationale" })),
+    getRationaleHash: vi.fn(async () => undefined),
     ...over,
   };
 }
@@ -71,7 +73,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("registers exactly the 26 documented tools", () => {
+  it("registers exactly the 29 documented tools", () => {
     const names = createCasperTools(() => fakeClient()).map((t) => t.name);
     expect(names).toEqual([
       "casper_health",
@@ -100,6 +102,9 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_approve_proposal",
       "casper_execute_proposal",
       "casper_cancel_proposal",
+      "casper_attest_rationale",
+      "casper_get_rationale_hash",
+      "casper_get_x402_settlement_status",
     ]);
   });
 
@@ -429,6 +434,59 @@ describe("createCasperTools (T13-live MCP surface)", () => {
 
       await find(tools, "casper_cancel_proposal").handler({ agentId: "agent-alpha", proposalId: "1" }, {} as never);
       expect(client.cancelProposal).toHaveBeenCalledWith(SIGNER, 1n);
+    });
+
+    it("casper_attest_rationale forwards jobId + rationale hash bytes and returns the real tx hash", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const rationaleHashHex = "ab".repeat(32);
+      const result = await find(tools, "casper_attest_rationale").handler(
+        { agentId: "agent-alpha", jobId: "7", rationaleHashHex },
+        {} as never,
+      );
+      expect(client.attestRationale).toHaveBeenCalledWith(SIGNER, 7n, Buffer.from(rationaleHashHex, "hex"));
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-attest-rationale" });
+    });
+
+    it("casper_attest_rationale rejects a non-32-byte hash before ever calling the client", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await expect(
+        find(tools, "casper_attest_rationale").handler(
+          { agentId: "agent-alpha", jobId: "7", rationaleHashHex: "ab" },
+          {} as never,
+        ),
+      ).rejects.toThrow();
+      expect(client.attestRationale).not.toHaveBeenCalled();
+    });
+
+    it("casper_get_rationale_hash reports null for a job that was never attested", async () => {
+      const client = fakeClient({ getRationaleHash: vi.fn(async () => undefined) });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_rationale_hash").handler({ jobId: "3" }, {} as never);
+      expect(client.getRationaleHash).toHaveBeenCalledWith(3n);
+      expect(result.structuredContent).toMatchObject({ jobId: "3", rationaleHashHex: null });
+    });
+
+    it("casper_get_rationale_hash surfaces the attested hash once set", async () => {
+      const stored = "cd".repeat(32);
+      const client = fakeClient({ getRationaleHash: vi.fn(async () => stored) });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_rationale_hash").handler({ jobId: "3" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ jobId: "3", rationaleHashHex: stored });
+    });
+  });
+
+  describe("casper_get_x402_settlement_status", () => {
+    afterEach(() => {
+      delete process.env.CASPER_RPC_URL;
+    });
+
+    it("throws a clear error when CASPER_RPC_URL isn't set (independent of KARMA_ODRA_REGISTRY)", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      await expect(
+        find(tools, "casper_get_x402_settlement_status").handler({ txHash: "ab".repeat(32) }, {} as never),
+      ).rejects.toThrow(/CASPER_RPC_URL/);
     });
   });
 });

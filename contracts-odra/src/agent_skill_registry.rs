@@ -105,6 +105,9 @@ pub enum Error {
     NotArbiter = 51,
     ProviderNotResponded = 52,
     NotDisputed = 53,
+    // ── P2-A: AI decision rationale attestation ──
+    RationaleAlreadyAttested = 54,
+    InvalidRationaleHash = 55,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -358,6 +361,18 @@ pub struct DisputeBondBpsUpdated {
     pub new_bps: u32,
 }
 
+// ── P2-A: AI decision rationale attestation ──────────────────────────────────
+/// Emitted when a requester commits a hash of their (typically LLM-generated) decision
+/// rationale for creating this job. `rationale_hash` is opaque on-chain — verifiers with the
+/// plaintext rationale re-hash it and compare, giving the decision an immutable, queryable
+/// on-chain anchor without KARMA having to store (or pay gas for) the plaintext itself.
+#[odra::event]
+pub struct RationaleAttested {
+    pub job_id: u64,
+    pub requester: Address,
+    pub rationale_hash: Bytes,
+}
+
 // ── Composition events (T2.1) ────────────────────────────────────────────────
 #[odra::event]
 pub struct CompositionRegistered {
@@ -425,6 +440,10 @@ pub struct AgentSkillRegistry {
     proposal_counter: Var<u64>,
     proposals: Mapping<u64, GovernanceProposal>,
     proposal_approvals: Mapping<u64, Vec<Address>>,
+    // ── P2-A: AI decision rationale attestation ──────────────────────────────────
+    /// Purely additive vs. the `Job` struct already on-chain — keeps the upgrade backward-
+    /// compatible with every job written before this field existed.
+    rationale_hash: Mapping<u64, Bytes>,
 }
 
 #[odra::module]
@@ -1378,6 +1397,35 @@ impl AgentSkillRegistry {
 
     pub fn get_arbiter(&self) -> Address {
         self.arbiter.get().unwrap()
+    }
+
+    // ── P2-A: AI decision rationale attestation ──────────────────────────────────
+    /// Commits a hash of the requester's (typically LLM-generated) decision rationale for
+    /// `job_id`, once. Requester-only (it is their own agent's stated reason for buying this
+    /// skill) and set-once (an attestation that could be silently rewritten after the fact
+    /// would be worthless as an anchor). Callable any time after the job exists — including
+    /// after settlement — since it records WHY a decision was made, not a claim about the
+    /// job's outcome, and doesn't participate in escrow/dispute settlement logic at all.
+    pub fn attest_rationale(&mut self, job_id: u64, rationale_hash: Bytes) {
+        let j = self.require_job(job_id);
+        let caller = self.env().caller();
+        if j.requester != caller {
+            self.env().revert(Error::NotRequester);
+        }
+        if rationale_hash.len() != 32 {
+            self.env().revert(Error::InvalidRationaleHash);
+        }
+        if self.rationale_hash.get(&job_id).is_some() {
+            self.env().revert(Error::RationaleAlreadyAttested);
+        }
+        self.rationale_hash.set(&job_id, rationale_hash.clone());
+        self.env().emit_event(RationaleAttested { job_id, requester: caller, rationale_hash });
+    }
+
+    /// `None` when the requester never attested a rationale for this job (attestation is
+    /// optional — most jobs, e.g. ones a human created directly, will have none).
+    pub fn get_rationale_hash(&self, job_id: u64) -> Option<Bytes> {
+        self.rationale_hash.get(&job_id)
     }
 }
 

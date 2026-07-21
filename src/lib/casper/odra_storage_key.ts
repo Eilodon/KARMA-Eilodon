@@ -10,8 +10,14 @@ const DIGEST_LEN = 32;
  *     (`odra-casper-wasm-env`'s `consts::STATE_KEY`).
  *   - `ContractEnv::current_key()` = `blake2b256(index_bytes ++ mapping_data)`, hex-encoded
  *     (lowercase, 64 chars) — see `contract_env.rs` in the `odra-core` crate.
- *   - `index_bytes`, for a top-level field index ≤ 15 (true for every field this module reads),
- *     is the big-endian `u32` encoding of that index — a 4-byte legacy path encoding.
+ *   - `index_bytes` has TWO encodings, per `ContractEnv::index_bytes()` (read directly from
+ *     `odra-core-2.8.2/src/contract_env.rs`, not guessed) — this module only ever reads
+ *     TOP-LEVEL fields (path length 1, no `SubModule` nesting), so `path = [fieldIndex]` always:
+ *       - **Legacy** (`fieldIndex` ≤ 15): big-endian `u32` of the index — 4 bytes, e.g. index 4 →
+ *         `[0,0,0,4]`. Preserves storage keys from before the path encoding existed.
+ *       - **Path** (`fieldIndex` > 15): `[0xFF, path_len, ...path]` = `[0xFF, 1, fieldIndex]` for
+ *         a top-level field. The `0xFF` prefix can't collide with legacy keys (whose first byte
+ *         never exceeds `0x0F`); `path_len` disambiguates nesting depth from mapping-key bytes.
  *   - `mapping_data` is the mapping key's `bytesrepr` serialization (`ToBytes::to_bytes()`).
  *
  * Field indices are macro-assigned in struct declaration order **starting at 1, not 0**
@@ -20,13 +26,13 @@ const DIGEST_LEN = 32;
  * See `contracts-odra/README.md` for the full verified index table.
  */
 export function odraMappingDictionaryKey(fieldIndex: number, mappingKeyBytes: Uint8Array): string {
-  if (!Number.isInteger(fieldIndex) || fieldIndex < 0 || fieldIndex > 15) {
-    throw new Error(
-      `[odra-storage-key] field index ${fieldIndex} out of the legacy 0-15 encoding range ` +
-      "(path-encoding branch for indices >15 is not implemented here)",
-    );
+  if (!Number.isInteger(fieldIndex) || fieldIndex < 0 || fieldIndex > 255) {
+    throw new Error(`[odra-storage-key] field index ${fieldIndex} must fit in a u8 (0-255)`);
   }
-  const indexBytes = Uint8Array.from([0, 0, 0, fieldIndex]);
+  const indexBytes =
+    fieldIndex <= 15
+      ? Uint8Array.from([0, 0, 0, fieldIndex])
+      : Uint8Array.from([0xff, 1, fieldIndex]); // path encoding, path_len=1 — see doc comment above
   const preimage = new Uint8Array(indexBytes.length + mappingKeyBytes.length);
   preimage.set(indexBytes, 0);
   preimage.set(mappingKeyBytes, indexBytes.length);
@@ -76,4 +82,9 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
   compositions: 14,
   /** `cross_chain_rep: Mapping<Address, u32>` — index 15, confirmed the same way. */
   crossChainRep: 15,
+  /** `rationale_hash: Mapping<u64, Bytes>` (P2-A) — index 25, confirmed via `cargo +nightly
+   *  expand --lib agent_skill_registry` (its `ModuleComponent::instance(env, 25u8)` call is
+   *  printed directly in the expanded output). First field index in this table that needs the
+   *  PATH encoding branch (> 15) — exercises it for real, not just in a synthetic unit test. */
+  rationaleHash: 25,
 } as const;

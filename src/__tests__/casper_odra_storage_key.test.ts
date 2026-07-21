@@ -35,8 +35,34 @@ describe("odraMappingDictionaryKey (T13-live, verified against cargo-expand + an
     expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.skills, keyBytes)).toBe(a);
   });
 
-  it("rejects a field index outside the legacy 0-15 encoding range", () => {
-    expect(() => odraMappingDictionaryKey(16, u64ToBytes(1n))).toThrow(/out of the legacy 0-15/);
+  it("rejects a field index outside the u8 range", () => {
+    expect(() => odraMappingDictionaryKey(256, u64ToBytes(1n))).toThrow(/must fit in a u8/);
+    expect(() => odraMappingDictionaryKey(-1, u64ToBytes(1n))).toThrow(/must fit in a u8/);
+  });
+
+  it("matches an independently computed blake2b256 digest for rationaleHash[job 1] (field index 25 — PATH encoding, > 15)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0xFF, 1, 25]) + (1).to_bytes(8,'little'), digest_size=32).hexdigest())"
+    // [0xFF, path_len=1, field_index=25] per odra-core-2.8.2's ContractEnv::index_bytes()
+    // (contract_env.rs), read directly — not guessed. See the doc comment above
+    // odraMappingDictionaryKey for the full derivation.
+    const key = odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.rationaleHash, u64ToBytes(1n));
+    expect(key).toBe("34514907fcda0f101182c6e5e8f75fac6d30e323abad9fd6ed0da15e566839f1");
+    expect(key).toHaveLength(64);
+  });
+
+  it("PATH encoding is distinct per field index (no collision between 16 and 25 at the same mapping key)", () => {
+    const keyBytes = u64ToBytes(1n);
+    const a = odraMappingDictionaryKey(16, keyBytes);
+    const b = odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.rationaleHash, keyBytes);
+    expect(a).not.toBe(b);
+  });
+
+  it("LEGACY and PATH encodings never collide (index 15 vs 16, same mapping key)", () => {
+    const keyBytes = u64ToBytes(1n);
+    const legacy = odraMappingDictionaryKey(15, keyBytes);
+    const path = odraMappingDictionaryKey(16, keyBytes);
+    expect(legacy).not.toBe(path);
   });
 });
 
