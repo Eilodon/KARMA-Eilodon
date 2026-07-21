@@ -330,7 +330,7 @@ describe("HTTP subscriptions/listen push delivery (DEBT-008 Phase 2)", () => {
     expect(update.method).toBe("notifications/resources/updated");
     expect(update.params.uri).toBe(uri);
 
-    reader.cancel();
+    await reader.cancel();
   });
 
   test("a subscriptions/listen stream does NOT receive an update for a URI it did not subscribe to", async () => {
@@ -360,6 +360,6 @@ describe("HTTP subscriptions/listen push delivery (DEBT-008 Phase 2)", () => {
     expect(update.method).toBe("notifications/resources/updated");
     expect(update.params.uri).toBe("karma://pharos/jobs/42"); // the filtered-out one never arrived first
 
-    reader.cancel();
+    await reader.cancel();
   });
 });

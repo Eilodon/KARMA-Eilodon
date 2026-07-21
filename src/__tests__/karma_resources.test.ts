@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/unbound-method -- svc.* are vi.fn() mocks; `this` binding is irrelevant */
 import { describe, expect, it, vi } from "vitest";
 import { createKarmaResourceTemplates, indexedEventToResourceUris } from "../plugins/karma.resources.js";
 import type { KarmaService } from "../lib/karma_service.js";
