@@ -719,12 +719,12 @@ KARMA keeps residual security/design debt visible instead of hiding it.
 Runtime report tool: `karma_pattern_debt` (reads from `src/core/pattern_debt.ts` at runtime).
 
 Debt registries:
-- `src/core/pattern_debt.ts` — Layer 0 runtime items DEBT-001 to DEBT-007, queried live by `karma_pattern_debt`.
-- `docs/superpowers/pattern-debt.md` — KARMA app-layer items PD-001 to PD-008, tracked separately.
+- `src/core/pattern_debt.ts` — Layer 0 runtime items DEBT-001 to DEBT-008, queried live by `karma_pattern_debt`.
+- KARMA app-layer items PD-001 to PD-008 are tracked in the table below (no standalone `docs/superpowers/pattern-debt.md` file exists in this tree).
 
-### Layer 0 debt (DEBT-001 to DEBT-007)
+### Layer 0 debt (DEBT-001 to DEBT-008)
 
-Authoritative source: `src/core/pattern_debt.ts`. The table below reflects the **codebase state** as of 2026-06-17.
+Authoritative source: `src/core/pattern_debt.ts`. The table below reflects the **codebase state** as of 2026-07-10.
 
 | Debt | Status | Current truth |
 | --- | --- | --- |
@@ -735,10 +735,11 @@ Authoritative source: `src/core/pattern_debt.ts`. The table below reflects the *
 | `DEBT-005-output-firewall-coverage` | **Partially resolved** | Structured redaction implemented with deterministic patterns and limits. No DLP/classifier backend. |
 | `DEBT-006-redis-trauma-registry` | **Implemented** | Redis/memory rate limiters use bounded violation records with severity EMA/backoff. |
 | `DEBT-007-agent-key-erasure-boundary` | **Monitoring** | KARMA agent signing keys (Web3 v3 keystore) are operator-provisioned infrastructure credentials — deliberately outside the `smcp:v4:kms` per-tenant crypto-erasure boundary. `KeystoreManager.unload(agentId)/clear()` drop decrypted viem accounts for agent offboarding / graceful shutdown; `assertOwnedBy` enforces tenant→agent authz before any signing account is handed out. True key-zeroization / tenant self-service offboarding requires an out-of-process signer or HSM (out of scope). |
+| `DEBT-008-native-mcp-resources-prompts` | **Partially resolved** | `resources/list`/`resources/read`/`prompts/list`/`prompts/get` shipped via a dedicated adapter (`src/mcp/adapter/resource_runtime.ts`, `prompt_runtime.ts`), covering Pharos + Casper account/reputation/composition reads (`karma.resources.ts`, `casper.resources.ts`) and the `agent_vetting` prompt. Residual: Casper dispute/governance-proposal state has no resource or subscribe support yet — a contract-layer view-function/event-type gap, not an MCP-layer one; STDIO transport gets no resources/prompts push delivery (stuck negotiating the legacy 2025-era handshake, see DEBT-003). |
 
 ### KARMA app-layer debt (PD-001 to PD-008)
 
-Documented in `docs/superpowers/pattern-debt.md`.
+Tracked here directly (no standalone `docs/superpowers/pattern-debt.md` file exists in this tree).
 
 | Debt | Status | Current truth |
 | --- | --- | --- |

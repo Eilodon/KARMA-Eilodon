@@ -48,7 +48,7 @@
 > implementations predate the Casper track. **Everything Casper-specific was built new for this
 > Buildathon and lives entirely in this submission window:** the Odra `AgentSkillRegistry`
 > (`contracts-odra/`, 120 Rust tests), the Casper secp256k1 keystore adapter, the `x402_casper.ts`
-> payment rail, `live_client.ts`'s real `casper-js-sdk` transaction building, the 25-tool
+> payment rail, `live_client.ts`'s real `casper-js-sdk` transaction building, the 26-tool
 > `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every live transaction
 > recorded in [DEMO_CASPER.md](DEMO_CASPER.md). The same standard we'd apply to any other
 > submission: a pre-existing base is fine to disclose, not fine to hide — the Casper-conformant
@@ -87,6 +87,31 @@ holds up outside Casper too, not just a claim. Details in [DEMO_STELLAR.md](DEMO
 [DEMO.md](DEMO.md) · [docs/RUNTIME.md](docs/RUNTIME.md).
 
 ---
+
+## Fit to the Casper Agentic Buildathon
+
+Casper's own framing for this track: **["Casper is the trust layer for the agent economy"](https://www.casper.network/ai)**
+— the AI Toolkit gives agents a way to *pay* (x402); it doesn't yet give them a way to *trust*:
+identity, reputation, and a real verdict when a counterparty cheats. That's the exact gap KARMA
+fills, wired to Casper's own x402/MCP stack rather than sitting beside it.
+
+KARMA is also close to a literal build of the Buildathon brief's own **"RWA Oracle Agent with
+Verifiable On-Chain Identity" example build direction** ([full text](https://dorahacks.io/hackathon/casper-agentic-buildathon-finals/detail)):
+an agent posts verified off-chain data on-chain via x402, backed by an on-chain identity and a
+reputation score built from historical accuracy — a trust-minimized oracle. `DEMO_CASPER.md`'s
+RWA price-oracle flow is exactly that, plus the courtroom (dispute-bond arbitration) and
+governance layers the brief's direction doesn't ask for but a real trust layer needs.
+
+| Final Round judging criterion | Where in this repo |
+|---|---|
+| Technical Execution | 120/120 Rust tests (`contracts-odra`), 782 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
+| Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
+| Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
+| Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
+| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 26-tool MCP surface — the UX of a protocol is its interface for agents and for the humans who have to trust it |
+| Working Smart Contracts | `hash-29b7daeb…`, governance-hardened redeploy, 13+ real transactions — [Live deployment](#live-deployment) |
+| Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
+| Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
 
 ## What KARMA actually builds
 
@@ -208,7 +233,7 @@ conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full oper
 
 ## Tools
 
-This is a real, full MCP server — 14 skill-economy tools + 8 Terminal3 identity tools + 25 Casper
+This is a real, full MCP server — 14 skill-economy tools + 8 Terminal3 identity tools + 26 Casper
 Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
 governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
 identity, Casper AgentSkillRegistry). The tables below label each tool group by architecture layer
@@ -272,6 +297,7 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 | `casper_create_job` | write | Create + escrow a job against a skill (payable, `amount` = price). |
 | `casper_deliver_result` | write | Provider records a result hash, opens the review window. |
 | `casper_confirm_completion` | write | Requester releases escrow + bumps reputation (arm's-length). |
+| `casper_claim_after_review` | write | Anti-deadlock: provider claims escrow once the review window elapses with no confirm/dispute from the requester. |
 | `casper_withdraw` | write | Pull the caller's released-escrow balance (CEI pull-payment). |
 | `casper_get_account_state` | read | Pending balance + reputation + bonded amount, read live from chain. |
 | `casper_register_composition` | write | Register a composite skill fanning escrow across 1-8 leaf skills by basis-points weight. |
@@ -293,6 +319,28 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 
 </details>
 
+**Composability with the official Casper MCP Server:** every tool above is
+`casper_snake_case` (`casper_health`, `casper_create_job`, ...).
+[`msanlisavas/casper-mcp`](https://github.com/msanlisavas/casper-mcp) — the general-purpose
+Casper chain-data server (87 tools, PascalCase: `GetAccountBalance`, `GetBlock`,
+`BuildTransferTransaction`, wrapping CSPR.Cloud) — uses a completely disjoint naming convention,
+so the two register in the same MCP client with zero tool-name collisions. They also solve
+different problems: casper-mcp reads/writes raw chain data, KARMA is the identity/escrow/dispute
+layer built on top of it. Both run side by side, no code changes on either side:
+
+```json
+{
+  "mcpServers": {
+    "karma":  { "command": "node", "args": ["/path/to/KARMA-Eilodon/dist/index.js"] },
+    "casper": { "command": "casper-mcp", "args": ["--api-key", "YOUR_CSPR_CLOUD_API_KEY"] }
+  }
+}
+```
+
+An agent can call casper-mcp's `GetAccountBalance`/`GetAccountDeploys` to vet a counterparty
+before ever spending a call on KARMA's `casper_create_job` — two citizens of the same MCP
+ecosystem, not competitors.
+
 ---
 
 ## Chain-agnostic settlement & cryptographic primitives
@@ -300,7 +348,7 @@ contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storage_ke
 The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
 `SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
 chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract is
-**deployed and verified end-to-end on Testnet** and reachable through 25 MCP tools
+**deployed and verified end-to-end on Testnet** and reachable through 26 MCP tools
 (`casper.tool.ts`) — skill registry, composition, the full evaluator/dispute/arbitration lifecycle,
 and cross-chain-rep governance are all live-wired, not just modeled offline. A governance-hardening
 redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owner-driven testnet

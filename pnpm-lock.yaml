@@ -20,6 +20,9 @@ importers:
       '@aws-sdk/client-kms':
         specifier: ^3.1068.0
         version: 3.1085.0
+      '@casper-ecosystem/casper-eip-712':
+        specifier: ^1.2.1
+        version: 1.2.1
       '@cfworker/json-schema':
         specifier: ^4.1.1
         version: 4.1.1
@@ -289,6 +292,9 @@ packages:
     resolution: {integrity: sha512-ziWmovyu1jQl9TsKlfC2bwuUZwxVPFHlX4fOqTzxhgS76jITIo45nzODEwPgU+jjmOr8F3YX2V2wAChC5NKujg==}
     engines: {node: '>=16'}
     hasBin: true
+
+  '@casper-ecosystem/casper-eip-712@1.2.1':
+    resolution: {integrity: sha512-qhrpaISByIoOnbELH7hhLMVBinIP1vOc4Z+6ZI5aItcc1O3SrDXNu0fdKm5qRSLLb5p94JxaS+jGegiIAwiKDA==}
 
   '@casperlabs/ts-results@3.3.5':
     resolution: {integrity: sha512-ymSQqqb4mOSet592li02u1Gd28LoOFJUm6R3jkdNQ+nqsnbHvN+izBigtP4aYmNwh6gFyCwDgjYporEJgDT4eA==}
@@ -3472,6 +3478,11 @@ snapshots:
       '@bytecodealliance/wizer-linux-s390x': 10.0.0
       '@bytecodealliance/wizer-linux-x64': 10.0.0
       '@bytecodealliance/wizer-win32-x64': 10.0.0
+
+  '@casper-ecosystem/casper-eip-712@1.2.1':
+    dependencies:
+      '@noble/curves': 1.9.7
+      '@noble/hashes': 1.8.0
 
   '@casperlabs/ts-results@3.3.5':
     dependencies:

@@ -24,6 +24,7 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     createJob: vi.fn(async () => ({ txHash: "tx-createjob" })),
     deliverResult: vi.fn(async () => ({ txHash: "tx-deliver" })),
     confirmCompletion: vi.fn(async () => ({ txHash: "tx-confirm" })),
+    claimAfterReview: vi.fn(async () => ({ txHash: "tx-claim-after-review" })),
     withdraw: vi.fn(async () => ({ txHash: "tx-withdraw" })),
     pendingWithdrawalsOf: vi.fn(async () => "1000000"),
     agentReputationOf: vi.fn(async () => 55),
@@ -70,7 +71,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("registers exactly the 25 documented tools", () => {
+  it("registers exactly the 26 documented tools", () => {
     const names = createCasperTools(() => fakeClient()).map((t) => t.name);
     expect(names).toEqual([
       "casper_health",
@@ -79,6 +80,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_create_job",
       "casper_deliver_result",
       "casper_confirm_completion",
+      "casper_claim_after_review",
       "casper_withdraw",
       "casper_get_account_state",
       "casper_discover_skills",
@@ -358,6 +360,13 @@ describe("createCasperTools (T13-live MCP surface)", () => {
 
       await find(tools, "casper_resolve_default_concede").handler({ callerAgentId: "agent-alpha", jobId: "1" }, {} as never);
       expect(client.resolveDefaultConcede).toHaveBeenCalledWith(SIGNER, 1n);
+    });
+
+    it("casper_claim_after_review hits the right entry point", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_claim_after_review").handler({ agentId: "agent-alpha", jobId: "1" }, {} as never);
+      expect(client.claimAfterReview).toHaveBeenCalledWith(SIGNER, 1n);
     });
 
     it("casper_arbitrate forwards a valid verdict and rejects an invalid one before touching the client", async () => {

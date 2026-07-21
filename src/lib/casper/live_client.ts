@@ -374,6 +374,15 @@ export class CasperLiveClient {
     return this.submit(signer, "confirm_completion", args, paymentMotes);
   }
 
+  /** `claim_after_review(job_id)` — anti-deadlock path: the provider claims escrow once the
+   *  review window has elapsed with no `confirm_completion` or `dispute_result` from the
+   *  requester. Reverts `ReviewWindowOpen` while the window is still open, `NotProvider` for
+   *  anyone else. Mirrors karma.tool.ts's Pharos `claimAfterReview`. */
+  async claimAfterReview(signer: CasperPrivateKey, jobId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submit(signer, "claim_after_review", args, paymentMotes);
+  }
+
   /** `withdraw()` — no args; pulls the caller's full `pending_withdrawals` balance. */
   async withdraw(signer: CasperPrivateKey, paymentMotes?: bigint): Promise<{ txHash: string }> {
     return this.submit(signer, "withdraw", Args.fromMap({}), paymentMotes);
