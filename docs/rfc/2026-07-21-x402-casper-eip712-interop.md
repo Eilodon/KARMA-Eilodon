@@ -49,7 +49,7 @@ as of this commit.
 
 Every row above is independently fixable except one, which sets the actual scope of this RFC.
 
-## 4. The real blocking sub-problem: CEP-18, not cryptography
+## 4. The real blocking sub-problem — solved by composition, not by writing crypto
 
 The signing-scheme and encoding rows in §3 are mechanical — swap SHA-256/DER for
 `casper-eip-712`'s typed-data pipeline, rename fields, switch ms→s. The genuine blocker is
@@ -59,26 +59,55 @@ is required to be a CEP-18 fungible-token contract package hash; settlement is a
 entirely on native CSPR motes (`#[odra(payable)]` entry points, `attached_value()`) — there is no
 CEP-18 token anywhere in `contracts-odra/`.
 
-This is not a KARMA gap to close by "trying harder" — it is Casper's x402 layer and Casper's
-native-asset escrow layer genuinely not sharing an asset model yet. Two ways to scope around it,
-not mutually exclusive:
+The first draft of this RFC scoped two workarounds here (wrap CSPR from scratch, or point at an
+unspecified "neutral test token"). Neither is necessary: **the Odra team already ships the exact
+building blocks, officially, MIT-licensed, version-aligned with what KARMA already depends on.**
 
-- **(a) Wrap CSPR in a CEP-18 token.** Deploy or adopt a CSPR-backed CEP-18 wrapper so x402
-  payments settle in a real fungible token 1:1 redeemable for CSPR. Correct long-term answer,
-  real scope: a new contract, a mint/redemption story, liquidity assumptions — not a 5-day item.
-- **(b) Keep x402 as the discovery fast-lane it already is, on a neutral test token.** KARMA's own
-  architecture already treats x402 as a pre-escrow "fast lane" (per `DEMO_CASPER.md`'s framing),
-  separate from the CSPR escrow that actually settles the job. Point the payload's `asset` at any
-  existing CEP-18 test token on Testnet (or a trivial throwaway one) and get the **client-side wire
-  format** — EIP-712 signing, correct schema, correct header — genuinely interoperable with the
-  official facilitator's *verification* path, without touching `AgentSkillRegistry` or pretending
-  x402 replaces CSPR escrow. Smaller blast radius; matches the architecture that already exists.
+- **`odra-modules`** (crates.io, MIT license, published `2.5.0` through `2.9.0` — `2.8.2` matches
+  KARMA's own `odra = "=2.8.2"` pin exactly) ships a **`CEP3009`** module: "an adaptation of
+  ERC-3009 ('Transfer With Authorization') for the Casper Network" with exactly the entry points
+  the official facilitator calls — `transfer_with_authorization`, `receive_with_authorization`,
+  `cancel_authorization`, `authorization_state` — EIP-712-signed, replay-protected by nonce. It
+  also ships the underlying `cep18_token::Cep18` module and a `wrapped_native::CsprDepositContractRef`
+  helper for native-CSPR deposit/withdraw.
+- **[`odradev/wcspr`](https://github.com/odradev/wcspr)** is the Odra team's own reference
+  composition of those pieces into a real wrapped-CSPR CEP-18 token with gasless transfers —
+  `WCSPRV1` (`Cep18` submodule + `deposit`/`withdraw`/`withdraw_to`, 1:1 backed by real attached
+  CSPR) and `WCSPRV2` (adds a `CEP3009` submodule via Odra's `delegate!` macro for the
+  authorization entry points). Read in full to confirm the pattern — not vendored: the eligibility
+  rule requires original, newly-developed code, and the composition itself is genuinely small
+  (§5.0 below is KARMA's own version of it, independently written against the same two upstream
+  modules).
 
-## 5. Concrete migration mechanism (scoped to §4(b))
+This closes the asset-model gap for real: agents wrap CSPR into a genuine 1:1-backed CEP-18 token
+(no throwaway/meaningless test asset, no separate liquidity story), and that same token already
+speaks the exact `transfer_with_authorization` entry point x402 settlement needs — zero hand-rolled
+cryptography anywhere in the contract layer.
+
+## 5. Concrete migration mechanism
+
+### 5.0 Contract side — a wrapped-CSPR CEP-18 token with CEP-3009, composed not hand-rolled
+
+New file, `contracts-odra/src/x402_settlement_token.rs`, following the shape confirmed by reading
+`odradev/wcspr`'s `wcspr_v1.rs`/`wcspr_v2.rs` in full: an Odra `SubModule<Cep18>` for the CEP-18
+ledger plus `deposit`/`withdraw`/`withdraw_to` against native CSPR (`#[odra(payable)]`,
+`attached_value()`, `raw_mint`/`raw_burn` — the same primitives `AgentSkillRegistry` already uses
+for its own payable entry points), and a second `SubModule<CEP3009>` delegated in via Odra's
+`delegate!` macro for `transfer_with_authorization`/`receive_with_authorization`/
+`cancel_authorization`/`authorization_state`. Registered in `Odra.toml` alongside
+`AgentSkillRegistry`. New dependency: `odra-modules = "=2.8.2"` — matches the existing `odra` pin
+exactly; do not let this drift to `2.9.0` without bumping `odra`/`odra-build`/`odra-test` together,
+per the version-churn warning already in `contracts-odra/Cargo.toml`.
+
+Build/test loop is identical to the existing contract: `cargo +nightly test --manifest-path
+contracts-odra/Cargo.toml` (Odra's mock VM, no live node needed), then `build-wasm.sh` for the
+deployable artifact — no new tooling, no new CI step.
 
 ### 5.1 New dependencies
-- `@casper-ecosystem/casper-eip-712` (npm) — typed-data domain separator + `hashTypedData`.
-- A CEP-18 token package hash on Testnet for the `asset` field. Needs a source — see §9.
+- Rust: `odra-modules = "=2.8.2"` (§5.0).
+- TypeScript: `@casper-ecosystem/casper-eip-712` (npm) — typed-data domain separator + `hashTypedData`.
+- The `asset` field points at whatever package hash §5.0's contract gets on deploy — no external
+  token dependency, no "find a test token" problem.
 - Either point at a real `make-software/casper-x402` facilitator instance, or implement
   settlement against the same `transfer_with_authorization` entry point using the
   `submit`/`submitPayable` pattern `live_client.ts` already has for every other Odra call.
@@ -134,42 +163,41 @@ the rest of the demo scripts do.
 today's scheme (DER length, `X-PAYMENT` framing, ms-based timestamps). A cutover to §5 is a
 rewrite of that suite, not an extension — every fixture's expected bytes change shape.
 
-## 7. Effort & risk estimate
+## 7. Effort & risk estimate (revised — §4's discovery removes the biggest unknown)
 
 | Task | Effort | Risk |
 |---|---|---|
+| §5.0: contract composition (`odra-modules`' `Cep18`+`CEP3009`) | Small–medium | **Low** — no hand-rolled cryptography; Odra mock-VM tests exercise it exactly like `AgentSkillRegistry` |
+| Deploy §5.0's contract to Testnet | Small | Low–medium — mechanical given the existing `deploy_contract.ts`-style pattern; needs a funded deployer key (already required for everything else on this chain) |
 | Add `casper-eip-712`, port domain/typed-data signing | Small–medium | Low — mechanical once the type strings are confirmed against a real test vector |
 | Field/unit renames (§5.2, §5.5) | Small | Low |
-| Source a CEP-18 test token for `asset` (§4(b)) | Small–medium | **Unknown — depends on whether a public Testnet CEP-18 test token already exists to point at, or a throwaway one must be deployed first** |
-| Real settlement call (§5.4) | Medium | Medium — new code path, needs its own tests, first real interaction with a facilitator (self-hosted or real) |
+| Real settlement call (§5.4) against §5.0's own contract | Medium | **Low–medium** — KARMA is settling against a contract it deployed and controls; no dependency on an external facilitator being live |
 | Rewrite `x402_casper.test.ts` | Medium | Low — mechanical given §5 is nailed down |
-| End-to-end proof against the *real* `make-software/casper-x402` facilitator (not just self-consistent) | Medium–large | **Medium-high — depends on that facilitator's live availability/config, outside this repo's control** |
+| End-to-end proof against the *external* `make-software/casper-x402` facilitator specifically (as opposed to KARMA's own settlement call) | Medium–large | Medium — depends on that facilitator's live availability/config, outside this repo's control — **not required** to make a true, honest "speaks the real wire format and settles on-chain" claim |
 
 ## 8. Recommendation for the Buildathon window
 
-Full interop (§5 in full, verified against the *real* official facilitator) is not a safe bet
-inside the ~5 days remaining before the 2026-07-26 deadline — the last row of §7 depends on an
-external service this team doesn't control. Recommended path:
+With §4's discovery, the work that matters most — real EIP-712 signing, a real CEP-18 asset, real
+on-chain `transfer_with_authorization` settlement — no longer depends on anything outside this
+repo's control. Only the very last row of §7 (proving interop against `make-software/casper-x402`'s
+*own hosted* facilitator, not just KARMA's own settlement path) has real external-dependency risk,
+and it is not required for the interop claim to be true and verifiable end-to-end.
 
-1. Ship this RFC now — it is itself Buildathon-relevant evidence for **Long-Term Launch Plans**
-   and **Potential for Long-Term Impact** (a real, scoped, honestly-risk-rated roadmap item, not a
-   vague "we'll look into it").
-2. Disclose the gap plainly in `DEMO_CASPER.md`/README (already partly done — the "Composability"
-   framing can extend to "wire-compatible interop: not yet, see RFC").
-3. If time allows after higher-priority items (see the judge-fit playbook's action docket), take
-   the §4(b)/§5.2–5.3 slice only — EIP-712 signing + correct schema against a throwaway test
-   token, proven self-consistently (KARMA's own `verifyCasperExactPayload` updated to the new
-   scheme) — without the real-facilitator dependency in §7's last row. That alone converts "we use
-   a bespoke scheme" into "we speak the real wire format, settlement integration is the next
-   step," which is a materially stronger and still honest claim.
-4. Full production interop (§5.4's real settlement call, end-to-end against the live facilitator)
-   is a post-Buildathon milestone, not a submission-window one.
+1. Build §5.0–§5.5 in full: contract composition, Testnet deploy, EIP-712 signing pipeline, real
+   settlement against KARMA's own deployed token.
+2. Update this RFC's status to "implemented" with the deployed package hash once live, and update
+   `DEMO_CASPER.md`/README's x402 section from "self-contained scheme" to "real EIP-712 +
+   CEP-18 settlement, wire-compatible with the official `casper-eip-712`/`casper-x402` reference."
+3. Attempting proof against the *external* hosted facilitator is worth a time-boxed try afterward,
+   not a blocking dependency — KARMA's own settlement path is already a true, judge-verifiable
+   on-chain claim without it.
 
 ## 9. Decision request
 
-- Confirm: pursue the §8.3 narrow slice (EIP-712 wire format only, self-verified, no live
-  facilitator dependency) before the deadline, or hold everything here as research-only and ship
-  the RFC alone?
-- If pursuing §8.3: is there a known existing CEP-18 test token on Casper Testnet to point `asset`
-  at, or does one need to be deployed first? (Blocks §5.2 either way — needs an answer before code
-  starts.)
+- Confirmed by the user (2026-07-21): build §5.0–§5.5 in full — real contract composition, real
+  Testnet deploy, real EIP-712 signing, real settlement.
+- No existing CEP-18 test token was available on Testnet — resolved by §4: KARMA deploys its own
+  wrapped-CSPR CEP-18 token (§5.0) instead of sourcing a third-party one.
+- Remaining open call, not blocking: whether to also pursue proof against the *external* hosted
+  `make-software/casper-x402` facilitator (§7's last row) once §5.0–§5.5 are live — time-boxed,
+  attempted only after the self-contained path is verified end-to-end.
