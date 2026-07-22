@@ -142,6 +142,44 @@ describe("odraMappingDictionaryKey — new P0/P1-A/P0-B read-surface field indic
   });
 });
 
+describe("odraMappingDictionaryKey — P4-A panel-arbitration field indices (26-33, all PATH-encoded)", () => {
+  it("matches independently computed digests for the three bare-Var panel fields (arbiterPanel/panelThreshold/panelArbiterFee, indices 26/27/28)", () => {
+    // Expected values cross-checked with: python3 -c "import hashlib;
+    //   [print(hashlib.blake2b(bytes([0xFF, 1, i]), digest_size=32).hexdigest()) for i in (26, 27, 28)]"
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.arbiterPanel, new Uint8Array(0))).toBe(
+      "c5cc4d4f43bf73e577e5b8defe5cd20f65c50284fbd3a543742dac01097edefc",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.panelThreshold, new Uint8Array(0))).toBe(
+      "ebe3b6cddf4de00ec0d7bd268a67aca51bb0d76eadacc7675e993e6b50e2eb62",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.panelArbiterFee, new Uint8Array(0))).toBe(
+      "8ff0124e9441620a3c166673d2dc2e3af9c093c6384faa990210c9743c7237c0",
+    );
+  });
+
+  it("matches independently computed digests for the five job-keyed panel Mapping fields (indices 29-33) at job 1", () => {
+    // Expected values cross-checked with: python3 -c "import hashlib;
+    //   job1 = (1).to_bytes(8,'little')
+    //   [print(hashlib.blake2b(bytes([0xFF, 1, i]) + job1, digest_size=32).hexdigest()) for i in (29,30,31,32,33)]"
+    const job1 = u64ToBytes(1n);
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.disputeArbitrationMode, job1)).toBe(
+      "b9d3e9a15639c55669184e8099ebf09870253bf6371873a9ba9acda1ed94f0d4",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.jobPanelSnapshot, job1)).toBe(
+      "5b3d4945e04d6524c9628e5b20106550544d5c7a60e0fa9dc2baca0bb03b13e0",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.jobPanelThresholdSnapshot, job1)).toBe(
+      "7cb7bcea82aba4ab29ca4cd5c23d5fc8100a5a1258aa6ec78592844c58a2b003",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.panelArbiterFeeCollected, job1)).toBe(
+      "97a3c0d9062bd2f17981c13ac91ddb20bbd0b3c030b4a069a45d5adc6d5b49e1",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.panelVotes, job1)).toBe(
+      "1f6461771ae57bf421776f3705fe56ddc53207f157aaf95e834d49b347b906bc",
+    );
+  });
+});
+
 describe("u64ToBytes", () => {
   it("encodes little-endian, 8 bytes", () => {
     expect(Buffer.from(u64ToBytes(1n)).toString("hex")).toBe("0100000000000000");

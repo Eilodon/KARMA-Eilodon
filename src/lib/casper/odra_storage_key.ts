@@ -132,4 +132,27 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
    *  expand --lib agent_skill_registry` (its `ModuleComponent::instance(env, 25u8)` call is
    *  printed directly in the expanded output). */
   rationaleHash: 25,
+  // P4-A: Panel Arbitration (N-of-M). All 8 fields below were appended directly after
+  // `rationale_hash` with no gap and nothing declared after them (confirmed by reading the
+  // live struct in `agent_skill_registry.rs`, not `cargo expand` — that command is too slow
+  // to complete reliably in this environment, same fallback used for the `agentProviderJobs`-
+  // style indices above). Indices therefore run 26-33 in struct-declaration order, all
+  // path-encoded (>15). Digests cross-checked independently against `python3 -c "import
+  // hashlib; ..."`, same method as every index above.
+  /** `arbiter_panel: Var<Vec<Address>>` — index 26, bare Var. */
+  arbiterPanel: 26,
+  /** `panel_threshold: Var<u32>` — index 27, bare Var. */
+  panelThreshold: 27,
+  /** `panel_arbiter_fee: Var<U512>` — index 28, bare Var. */
+  panelArbiterFee: 28,
+  /** `dispute_arbitration_mode: Mapping<u64, ArbitrationMode>` — index 29, keyed by job_id. */
+  disputeArbitrationMode: 29,
+  /** `job_panel_snapshot: Mapping<u64, Vec<Address>>` — index 30, keyed by job_id. */
+  jobPanelSnapshot: 30,
+  /** `job_panel_threshold_snapshot: Mapping<u64, u32>` — index 31, keyed by job_id. */
+  jobPanelThresholdSnapshot: 31,
+  /** `panel_arbiter_fee_collected: Mapping<u64, U512>` — index 32, keyed by job_id. */
+  panelArbiterFeeCollected: 32,
+  /** `panel_votes: Mapping<u64, Vec<PanelVote>>` — index 33, keyed by job_id. */
+  panelVotes: 33,
 } as const;

@@ -40,6 +40,7 @@ const {
   CLTypeUInt8,
   CLTypeUInt64,
   CLTypeUInt32,
+  CLTypeKey,
   Key,
   ParamDictionaryIdentifier,
   ParamDictionaryIdentifierContractNamedKey,
@@ -423,6 +424,74 @@ export class CasperLiveClient {
     return this.submit(signer, "arbitrate", args, paymentMotes);
   }
 
+  // ── P4-A: Panel Arbitration (N-of-M) ────────────────────────────────────────
+  // `dispute_result_via_panel` is `#[odra(payable)]` (confirmed by reading the Rust source
+  // directly, NOT assumed from `dispute_result`'s shape) — it collects `required_bond +
+  // panel_arbiter_fee` as one combined attached value, so it goes through `submitPayable` like
+  // `disputeResult`/`respondToDispute`, not `submit`. Every other panel entry point below takes
+  // no CSPR and uses `submit`, same as `arbitrate`/`resolveDefaultConcede`.
+
+  /** `propose_set_arbiter_panel(panel: Vec<Address>, threshold: u32) -> u64` — governance-signer
+   *  only. Same propose/approve/execute + timelock lifecycle as `proposeSetArbiter`; the contract
+   *  re-validates panel shape (odd size, `MIN_ARBITER_PANEL_SIZE..=MAX_ARBITER_PANEL_SIZE`,
+   *  `threshold == panel.len() / 2 + 1`, no duplicates) at both propose time and execute time. */
+  async proposeSetArbiterPanel(
+    signer: CasperPrivateKey,
+    panelAccountHashes: string[],
+    threshold: number,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      panel: CLValue.newCLList(CLTypeKey, panelAccountHashes.map((a) => addressKeyArg(a))),
+      threshold: CLValue.newCLUInt32(threshold),
+    });
+    return this.submit(signer, "propose_set_arbiter_panel", args, paymentMotes);
+  }
+
+  /** `propose_set_panel_arbiter_fee(fee: U512) -> u64` — governance-signer only. Flat CSPR amount
+   *  every panel member earns for voting before `PANEL_VOTE_WINDOW` elapses. */
+  async proposeSetPanelArbiterFee(signer: CasperPrivateKey, feeMotes: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ fee: CLValue.newCLUInt512(feeMotes.toString()) });
+    return this.submit(signer, "propose_set_panel_arbiter_fee", args, paymentMotes);
+  }
+
+  /** `#[odra(payable)] dispute_result_via_panel(job_id)` — like `disputeResult`, but flags the
+   *  job for N-of-M panel arbitration and snapshots the panel/threshold/fee onto the job so a
+   *  later governance change can never alter an in-flight dispute's terms. `bondPlusFeeMotes`
+   *  must equal exactly `required_bond + panel_arbiter_fee` (the contract's own
+   *  `required_total` check) — NOT just the bond alone, unlike `disputeResult`'s `bondMotes`.
+   *  Reverts `PanelNotConfigured` if no panel is set, `WrongPanelDisputeAmount` on a mismatch. */
+  async disputeResultViaPanel(
+    signer: CasperPrivateKey,
+    jobId: bigint,
+    bondPlusFeeMotes: bigint,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const innerArgs = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submitPayable(signer, "dispute_result_via_panel", innerArgs, bondPlusFeeMotes, paymentMotes);
+  }
+
+  /** `cast_panel_vote(job_id, verdict: Verdict)` — panel-member only, checked against the
+   *  dispute's own `job_panel_snapshot` (never the live `arbiter_panel`). Settles automatically
+   *  and pays every voter once `job_panel_threshold_snapshot` votes agree on one verdict — no
+   *  separate "execute" call needed. */
+  async castPanelVote(signer: CasperPrivateKey, jobId: bigint, verdict: Verdict, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      job_id: CLValue.newCLUint64(jobId.toString()),
+      verdict: CLValue.newCLUint8(VERDICT_DISCRIMINANT[verdict]),
+    });
+    return this.submit(signer, "cast_panel_vote", args, paymentMotes);
+  }
+
+  /** `resolve_panel_default(job_id)` — anyone may call once `PANEL_VOTE_WINDOW` elapses without
+   *  the panel reaching its threshold; resolves `ProviderAtFault` (same default direction as
+   *  `resolveDefaultConcede`'s single-arbiter equivalent) and still pays whichever arbiters DID
+   *  vote before the window closed. */
+  async resolvePanelDefault(signer: CasperPrivateKey, jobId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submit(signer, "resolve_panel_default", args, paymentMotes);
+  }
+
   /** `deliver_result(job_id, result_hash: Bytes)` */
   async deliverResult(signer: CasperPrivateKey, d: DeliverResultInput, paymentMotes?: bigint): Promise<{ txHash: string }> {
     const args = Args.fromMap({
@@ -657,6 +726,22 @@ export class CasperLiveClient {
     return bytes ? decodeU64(bytes) : 0n;
   }
 
+  /** Reads `arbiter_panel` (`Var<Vec<Address>>`, field index 26, P4-A) — the currently
+   *  governance-set N-of-M panel (mirrors `get_arbiter_panel`). Empty until a `SetArbiterPanel`
+   *  proposal has executed at least once. */
+  async getArbiterPanel(): Promise<CasperAddress[]> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.arbiterPanel, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeAddressList(bytes) : [];
+  }
+
+  /** Reads `panel_threshold` (`Var<u32>`, field index 27, P4-A) — votes-for-one-verdict
+   *  `cast_panel_vote` needs to settle a panel-mode dispute (mirrors `get_panel_threshold`). */
+  async getPanelThreshold(): Promise<number> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.panelThreshold, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU32(bytes) : 0;
+  }
 
   /** Reads `proposals[proposal_id]` (`Mapping<u64, GovernanceProposal>`, field index 23, P0-B) —
    *  a governance proposal's action, proposer, timestamp, and executed/cancelled flags. Mirrors
