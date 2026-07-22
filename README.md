@@ -386,6 +386,7 @@ redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owne
 | Capability | Where | Status |
 |---|---|---|
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
+| **Reputation-scaled pricing** — optional discount ladder a skill owner applies to a base price before calling `quote`/`pay` (Verity-style economics; doesn't touch `IPaymentPlugin` itself, so no conformant implementation is affected) | `src/lib/payment/reputation_pricing.ts` | in-repo, tested — not wired into any default call path |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
 | x402 **Casper** rail (EIP-712 + CEP-18, wire-compatible with the official [`make-software/casper-x402`](https://github.com/make-software/casper-x402) reference) | `src/plugins/x402_casper.ts` · `contracts-odra/src/x402_settlement_token.rs` · `src/lib/casper/live_client.ts` | **live on Testnet** — `X402SettlementToken` at `hash-b3387d59…`, real `transfer_with_authorization` settlement ([demo](src/scripts/demo_casper_x402_settlement_live.ts), [RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)) |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
