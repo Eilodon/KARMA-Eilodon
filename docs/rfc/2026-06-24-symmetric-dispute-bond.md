@@ -205,3 +205,28 @@ competent arbiter — was not re-derived against these exact shipped constants i
 but the live courtroom run (`DEMO_CASPER.md`, re-run 2026-07-21) demonstrates the mechanism working
 as designed on a real contested delivery: bond-matching, adjudication, loser-pays, and reputation
 slashing all fired correctly end-to-end.
+
+## 11. Atomicity vs. quorum — why the "verify-then-act" critique doesn't apply here
+
+A pattern some other trust-layer entries in this buildathon call out (Casproof's `require_quorum`,
+positioned explicitly against "the exact pattern two of the strongest competitors ship") is a
+two-step exploit surface: a contract checks a quorum-attested verdict in one call, then a *separate*
+later call spends it — leaving a window where the attestation can go stale, be replayed, or simply
+never get consumed atomically with the payout.
+
+`arbitrate(job_id, verdict)` (`agent_skill_registry.rs:890-947`) doesn't have that window by
+construction: verdict computation and fund movement are the same function call, in the same
+transaction. `ProviderAtFault` credits `pending_withdrawals`, slashes reputation, and flips job
+status to `Refunded` in one execution; `RequesterAtFault` does the symmetric thing. There is no
+separate "verify" transaction whose result a later, different transaction trusts — every guard
+(`require_job`, dispute-bond presence, provider-bond presence, arbiter identity) is re-evaluated
+fresh, in the same call that moves the money. Same for `dispute_result` (bond lock + status flip,
+one call) and `respond_to_dispute` (provider bond lock + record, one call).
+
+What this does *not* answer: the source of truth for a verdict is one arbiter key, not a k-of-n
+quorum of independently computed verdicts. That's a different axis from atomicity — Casproof's
+guard defends against a forged or stale single attestation being trusted; KARMA's atomic-call
+design defends against a time gap between verifying and acting on one. The first gap is real and
+already tracked, not discovered here for the first time: see [Roadmap & team's "N-of-M
+arbitration"](../../README.md#roadmap--team) — v1 trusts one governed, replaceable arbiter address;
+whether a verdict should require multiple independent rulings is the explicit open v2 question.

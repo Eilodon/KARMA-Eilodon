@@ -107,12 +107,12 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Final Round judging criterion | Where in this repo |
 |---|---|
 | Technical Execution | 131/131 Rust tests (`contracts-odra`, incl. 2 property-based invariant tests), 855/855 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
-| Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
+| Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope; verdict + payout are one atomic call, not a separate verify-then-act step — see [RFC §11](docs/rfc/2026-06-24-symmetric-dispute-bond.md#11-atomicity-vs-quorum--why-the-verify-then-act-critique-doesnt-apply-here) |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
 | User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 41-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
 | Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
-| Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
+| Long-Term Launch Plans | [Roadmap & team](#roadmap--team) — solo builder, real community presence: [X](https://x.com/MathEnemy) · [Telegram](https://t.me/HoaTrungBinh) · Discord `mathenemy` |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
 
 ## What KARMA actually builds
@@ -704,6 +704,21 @@ them early.
 - The keystore is testnet-only. Rotate `KEYSTORE_PASSWORD` (re-encrypt) if it's ever exposed;
   `keystore.json*` and `.env*` are gitignored.
 - Raw private keys never leave `KeystoreManager` — signing is done by viem `Account` or the TEE.
+
+**Found & fixed during governance-hardening** (full writeup: [DEMO_CASPER.md](DEMO_CASPER.md)): a
+code-level review of the originally deployed contract surfaced three real gaps, not zero:
+1. **Governance inconsistency** — `set_arbiter`/`set_dispute_bond_bps` took effect immediately
+   behind a single signer check while `set_cross_chain_rep` already required the full
+   multisig+timelock lifecycle. Fixed in source: both are now `propose_set_arbiter`/
+   `propose_set_dispute_bond_bps`, gated by the same governed proposal flow as everything else.
+2. **Deploy-time config gap** — the code fix alone wasn't sufficient; the actual redeploy needed
+   real `governance_threshold ≥ 2`, ≥2 independent signers, and a non-zero `timelock_delay_ms`, or
+   the fix would have been theater. Caught and corrected before the current live deploy.
+3. **Upgrade-token custody — still open, disclosed, not fixed.** Odra's install deploy writes an
+   `_access_token` to the deploying account; whoever holds it can push a contract upgrade outside
+   the governance gate above. Currently held by governance signer 1's key. Two options on the
+   table (dedicated multisig custody, or `is_upgradable: false` on a final redeploy) — not resolved
+   here.
 
 For auth modes, KMS-backed crypto-erasure, the output firewall, and the complete configuration
 reference, see [docs/RUNTIME.md](docs/RUNTIME.md).
