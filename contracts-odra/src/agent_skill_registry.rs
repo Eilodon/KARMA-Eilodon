@@ -1362,10 +1362,10 @@ pub fn propose_set_panel_arbiter_fee(&mut self, fee: U512) -> u64 {
 /// without going through the validated constructor could ever store a broken panel).
 fn validate_panel_shape(&self, panel: &[Address], threshold: u32) {
     let len = panel.len() as u32;
-    if len < MIN_ARBITER_PANEL_SIZE || len > MAX_ARBITER_PANEL_SIZE {
+    if !(MIN_ARBITER_PANEL_SIZE..=MAX_ARBITER_PANEL_SIZE).contains(&len) {
         self.env().revert(Error::PanelSizeTooSmall);
     }
-    if len % 2 == 0 {
+    if len.is_multiple_of(2) {
         self.env().revert(Error::PanelSizeMustBeOdd);
     }
     if threshold != len / 2 + 1 {
