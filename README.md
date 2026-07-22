@@ -457,7 +457,7 @@ is pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 804 passed, 0 failed
+pnpm test          # 832 passed, 0 failed
 pnpm build
 ```
 
@@ -578,16 +578,17 @@ it stays single-process and restart-volatile until a Redis-backed version lands 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 131/131 Rust tests
-pnpm test          # full Vitest suite — 804/804 passed, 0 failed, incl. casper.tool.ts/indexer/codec
+pnpm test          # full Vitest suite — 832/832 passed, 0 failed, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
-Odra/Casper: 131 Rust tests — 129 example-based (`contracts-odra/src/agent_skill_registry/tests.rs`)
+Odra/Casper: 131 Rust tests — 126 example-based in `contracts-odra/src/agent_skill_registry/tests.rs`
 covering the full escrow/dispute/evaluator/composition/governance/rationale-attestation feature
-set, ms-based time and U512 arithmetic, plus the `X402SettlementToken` CEP-18/CEP-3009 composition
-— and 2 property-based invariant tests (`proptests.rs`: escrow conservation and reputation bounds,
-randomized over 64 cases each, verified to actually catch a regression by deliberately breaking
-each invariant and confirming the test fails before reverting).
+set (ms-based time and U512 arithmetic), 3 more in `contracts-odra/src/x402_settlement_token.rs`
+covering the CEP-18/CEP-3009 `X402SettlementToken` composition, and 2 property-based invariant
+tests (`agent_skill_registry/proptests.rs`: escrow conservation and reputation bounds, randomized
+over 64 cases each, verified to actually catch a regression by deliberately breaking each
+invariant and confirming the test fails before reverting).
 
 **Zero-knowledge proof verification (proven on Stellar):**
 
