@@ -2479,3 +2479,119 @@ fn attest_rationale_none_for_jobs_never_attested() {
     let job_id = open_job(&env, &mut reg, beta, skill_id, "attest-6");
     assert_eq!(reg.get_rationale_hash(job_id), None);
 }
+
+// ── P4-A: Panel Arbitration (N-of-M) ──────────────────────────────────────────
+
+fn seed_panel(env: &HostEnv, reg: &mut AgentSkillRegistryHostRef) -> (Address, Address, Address) {
+    let deployer = env.get_account(0);
+    let arb1 = env.get_account(3);
+    let arb2 = env.get_account(4);
+    let arb3 = env.get_account(5);
+    env.set_caller(deployer);
+    let pid = reg.propose_set_arbiter_panel(vec![arb1, arb2, arb3], 2);
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+    (arb1, arb2, arb3)
+}
+
+#[test]
+fn p1b_propose_set_arbiter_panel_rejects_even_length() {
+    let (env, mut reg, alpha, _beta) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    let panel = vec![alpha, env.get_account(3), env.get_account(4), env.get_account(5)]; // 4, even
+    assert_eq!(
+        reg.try_propose_set_arbiter_panel(panel, 3),
+        Err(Error::PanelSizeMustBeOdd.into()),
+    );
+}
+
+#[test]
+fn p1b_propose_set_arbiter_panel_rejects_below_min_size() {
+    let (env, mut reg, alpha, beta) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    // len=2: both "too small" and "even" apply; too-small is checked first.
+    assert_eq!(
+        reg.try_propose_set_arbiter_panel(vec![alpha, beta], 2),
+        Err(Error::PanelSizeTooSmall.into()),
+    );
+}
+
+#[test]
+fn p1b_propose_set_arbiter_panel_rejects_wrong_threshold() {
+    let (env, mut reg, alpha, beta) = setup();
+    let deployer = env.get_account(0);
+    let gamma = env.get_account(3);
+    env.set_caller(deployer);
+    // len=3, correct threshold is 2 (3/2+1); propose 3 (unanimity) — must reject, only strict-
+    // majority-of-odd is allowed per audit-design's L1 finding.
+    assert_eq!(
+        reg.try_propose_set_arbiter_panel(vec![alpha, beta, gamma], 3),
+        Err(Error::InvalidPanelThreshold.into()),
+    );
+}
+
+#[test]
+fn p1b_propose_set_arbiter_panel_rejects_duplicate_member() {
+    let (env, mut reg, alpha, beta) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    assert_eq!(
+        reg.try_propose_set_arbiter_panel(vec![alpha, alpha, beta], 2),
+        Err(Error::DuplicatePanelMember.into()),
+    );
+}
+
+#[test]
+fn p1b_propose_and_execute_arbiter_panel_full_lifecycle() {
+    let (env, mut reg, alpha, beta) = setup();
+    let deployer = env.get_account(0);
+    let gamma = env.get_account(3);
+    env.set_caller(deployer);
+    let pid = reg.propose_set_arbiter_panel(vec![alpha, beta, gamma], 2);
+    // governance_threshold=1 in `setup()` (single signer), so it's already approved; still
+    // must wait out the timelock like every other proposal.
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+    assert_eq!(reg.get_arbiter_panel(), vec![alpha, beta, gamma]);
+    assert_eq!(reg.get_panel_threshold(), 2);
+    assert!(env.emitted_event(
+        &reg,
+        ArbiterPanelUpdated { old_panel: vec![], new_panel: vec![alpha, beta, gamma], threshold: 2 },
+    ));
+}
+
+#[test]
+fn p1b_propose_set_arbiter_panel_non_signer_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let gamma = env.get_account(3);
+    env.set_caller(alpha); // not a governance signer
+    assert_eq!(
+        reg.try_propose_set_arbiter_panel(vec![alpha, beta, gamma], 2),
+        Err(Error::NotGovernanceSigner.into()),
+    );
+}
+
+#[test]
+fn p1b_propose_and_execute_panel_arbiter_fee() {
+    let (env, mut reg, _alpha, _beta) = setup();
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    let pid = reg.propose_set_panel_arbiter_fee(U512::from(300_000u64));
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(pid);
+    assert!(env.emitted_event(
+        &reg,
+        PanelArbiterFeeUpdated { old_fee: U512::zero(), new_fee: U512::from(300_000u64) },
+    ));
+}
+
+#[test]
+fn p1b_seed_panel_helper_produces_a_working_panel() {
+    // Sanity check on the test helper itself before other p1b tests rely on it.
+    let (env, mut reg, _alpha, _beta) = setup();
+    let (arb1, arb2, arb3) = seed_panel(&env, &mut reg);
+    assert_eq!(reg.get_arbiter_panel(), vec![arb1, arb2, arb3]);
+    assert_eq!(reg.get_panel_threshold(), 2);
+}

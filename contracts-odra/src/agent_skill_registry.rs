@@ -1114,6 +1114,96 @@ impl AgentSkillRegistry {
         proposal_id
     }
 
+/// P4-A: Propose a new N-of-M arbiter panel. Governance-signer only, same proposal
+/// lifecycle as `propose_set_arbiter`. Validates panel shape at propose time so a bad
+/// configuration never even reaches the approval queue.
+pub fn propose_set_arbiter_panel(&mut self, panel: Vec<Address>, threshold: u32) -> u64 {
+    self.require_governance_signer();
+    self.validate_panel_shape(&panel, threshold);
+
+    let caller = self.env().caller();
+    let proposal_id = self.proposal_counter.get_or_default() + 1;
+    self.proposal_counter.set(proposal_id);
+
+    let proposal = GovernanceProposal {
+        action: ProposalAction::SetArbiterPanel { panel, threshold },
+        proposer: caller,
+        proposed_at: self.env().get_block_time(),
+        executed: false,
+        cancelled: false,
+    };
+    self.proposals.set(&proposal_id, proposal);
+    self.proposal_approvals.set(&proposal_id, vec![caller]);
+
+    self.env().emit_event(ProposalCreated { proposal_id, proposer: caller });
+    self.env().emit_event(ProposalApproved {
+        proposal_id,
+        signer: caller,
+        approval_count: 1,
+        threshold: self.governance_threshold.get_or_default(),
+    });
+    proposal_id
+}
+
+/// P4-A: Propose a new flat panel-arbiter participation fee. Same governed lifecycle.
+pub fn propose_set_panel_arbiter_fee(&mut self, fee: U512) -> u64 {
+    self.require_governance_signer();
+    let caller = self.env().caller();
+    let proposal_id = self.proposal_counter.get_or_default() + 1;
+    self.proposal_counter.set(proposal_id);
+
+    let proposal = GovernanceProposal {
+        action: ProposalAction::SetPanelArbiterFee { fee },
+        proposer: caller,
+        proposed_at: self.env().get_block_time(),
+        executed: false,
+        cancelled: false,
+    };
+    self.proposals.set(&proposal_id, proposal);
+    self.proposal_approvals.set(&proposal_id, vec![caller]);
+
+    self.env().emit_event(ProposalCreated { proposal_id, proposer: caller });
+    self.env().emit_event(ProposalApproved {
+        proposal_id,
+        signer: caller,
+        approval_count: 1,
+        threshold: self.governance_threshold.get_or_default(),
+    });
+    proposal_id
+}
+
+/// Shared by `propose_set_arbiter_panel` and `execute_proposal`'s `SetArbiterPanel` arm
+/// (defense-in-depth per specialist-review: validated at propose time AND re-checked at
+/// execute time, so no future code path that could construct a `SetArbiterPanel` action
+/// without going through the validated constructor could ever store a broken panel).
+fn validate_panel_shape(&self, panel: &[Address], threshold: u32) {
+    let len = panel.len() as u32;
+    if len < MIN_ARBITER_PANEL_SIZE || len > MAX_ARBITER_PANEL_SIZE {
+        self.env().revert(Error::PanelSizeTooSmall);
+    }
+    if len % 2 == 0 {
+        self.env().revert(Error::PanelSizeMustBeOdd);
+    }
+    if threshold != len / 2 + 1 {
+        self.env().revert(Error::InvalidPanelThreshold);
+    }
+    for i in 0..panel.len() {
+        for j in (i + 1)..panel.len() {
+            if panel[i] == panel[j] {
+                self.env().revert(Error::DuplicatePanelMember);
+            }
+        }
+    }
+}
+
+pub fn get_arbiter_panel(&self) -> Vec<Address> {
+    self.arbiter_panel.get_or_default()
+}
+
+pub fn get_panel_threshold(&self) -> u32 {
+    self.panel_threshold.get_or_default()
+}
+
     /// Evaluator approves or rejects a delivered result (P0-A). Only callable by the job's
     /// designated evaluator within the review window. The evaluator fee is released regardless.
     pub fn evaluate_result(&mut self, job_id: u64, approved: bool) {
@@ -1394,6 +1484,10 @@ impl AgentSkillRegistry {
                 self.env().emit_event(DisputeBondBpsUpdated { old_bps, new_bps: *bps });
             }
             ProposalAction::SetArbiterPanel { panel, threshold } => {
+                // Defense-in-depth (specialist-review, plan Task 3): re-validate at execute
+                // time too, not just at propose time, so no future code path that could
+                // construct this action differently could ever store a broken panel.
+                self.validate_panel_shape(panel, *threshold);
                 let old_panel = self.arbiter_panel.get_or_default();
                 self.arbiter_panel.set(panel.clone());
                 self.panel_threshold.set(*threshold);
