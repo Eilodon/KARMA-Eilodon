@@ -10,7 +10,7 @@
 | Category | Interface |
 | Created | 2026-07-08 |
 | Requires | — |
-| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1608 LoC, 129/129 tests passing), live on Casper Testnet |
+| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1656 LoC, 131/131 tests passing), live on Casper Testnet |
 
 > This is a project-authored draft, written to the shape of the Casper CEP process, not yet
 > submitted to `casper-network/ceps`. Before submission it needs: (1) a CEP number from the
@@ -442,9 +442,11 @@ usable from an agent-facing client, not just from a test harness.
 
 ## Test Cases
 
-129/129 passing in
+131/131 passing in
 [`contracts-odra/src/agent_skill_registry/tests.rs`](../../contracts-odra/src/agent_skill_registry/tests.rs)
-(mirror of `test/AgentSkillRegistry.t.sol`), covering per `contracts-odra/README.md`: happy path,
+(mirror of `test/AgentSkillRegistry.t.sol`) plus a `proptests.rs` property-based suite (escrow
+conservation and reputation-bounds invariants, randomized over 64 cases each), covering per
+`contracts-odra/README.md`: happy path,
 refund window, ghost-requester / dispute / claim-after-review, double-complete guard, the trust
 gate (`min_reputation_to_invoke`), identity policy enforcement, self-deal nullification, duplicate
 task-hash exactly-once, constructor bounds, all seven Tier-2 bond cases, the evaluator flow, and

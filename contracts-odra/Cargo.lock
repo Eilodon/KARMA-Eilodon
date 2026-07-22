@@ -1156,6 +1156,7 @@ dependencies = [
  "odra-build",
  "odra-modules",
  "odra-test",
+ "proptest",
 ]
 
 [[package]]

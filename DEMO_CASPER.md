@@ -57,7 +57,7 @@ settle micropayments per HTTP request, no human in the loop.
 
 | Layer | Path | Status |
 |---|---|---|
-| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 129/129 |
+| Odra `AgentSkillRegistry` port | [`contracts-odra/`](contracts-odra/) (T9) | `cargo +nightly test` 131/131 |
 | Casper secp256k1 keystore adapter | [`src/lib/casper/keypair.ts`](src/lib/casper/keypair.ts) (T10) | 12/12 tests |
 | x402Plugin/Casper | [`src/plugins/x402_casper.ts`](src/plugins/x402_casper.ts) (T11) | 28/28 tests — `verifyCasperExactPayload` is real ECDSA/SHA-256, not structural |
 | KARMA × Casper composability demo | [`src/scripts/demo_casper_composability.ts`](src/scripts/demo_casper_composability.ts) (T12) | runs end-to-end |
@@ -80,7 +80,7 @@ pnpm install --frozen-lockfile
 # 2. Compile + run the Odra contract tests (proves the port mirrors Solidity v4)
 rustup toolchain install nightly --profile minimal
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml
-# Expected: 129 passed; 0 failed.
+# Expected: 131 passed; 0 failed.
 
 # 3. Run the composability demo — shows the KARMA-MCP × Casper-MCP cross-server flow
 pnpm exec tsx src/scripts/demo_casper_composability.ts
@@ -198,7 +198,7 @@ submitted. Recipe used: `src/scripts/deploy_casper_governance_hardened.ts`.
    check — no multisig threshold, no timelock — while `set_cross_chain_rep` already went through the
    full propose/approve/execute + 48h-timelock lifecycle. Both setters are now `propose_set_arbiter`/
    `propose_set_dispute_bond_bps`, gated by the exact same proposal lifecycle (`agent_skill_registry.rs`,
-   `ProposalAction::SetArbiter`/`SetDisputeBondBps`). Verified: 129/129 Rust tests pass, wasm rebuilt
+   `ProposalAction::SetArbiter`/`SetDisputeBondBps`). Verified: 131/131 Rust tests pass, wasm rebuilt
    (`./build-wasm.sh`) and its exports independently confirmed via `WebAssembly.Module.exports()` —
    `propose_set_arbiter`/`propose_set_dispute_bond_bps` present, the old `set_arbiter`/
    `set_dispute_bond_bps` entry points gone.
@@ -686,11 +686,12 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   with zero chain-specific glue. The wire format IS the integration.
 - **Odra port mirrors audited Solidity invariants.** CEI before
   `transfer_tokens`, pull-payment ledger, self-deal nullification on both
-  completion paths. 129 tests pin the boundary cases — happy path, ghost
+  completion paths. 131 tests pin the boundary cases — happy path, ghost
   requester, dispute window, double-complete, identity policy, duplicate
   task-hash exactly-once, all 7 Tier-2 bond cases, the P0-A evaluator
-  and P0-B governance/timelock mechanics, the P2-A rationale attestation, and
-  the `X402SettlementToken` CEP-18/CEP-3009 composition below.
+  and P0-B governance/timelock mechanics, the P2-A rationale attestation, the
+  `X402SettlementToken` CEP-18/CEP-3009 composition, and 2 property-based
+  invariant tests (escrow conservation, reputation bounds) below.
 - **x402 now speaks the official wire format, not a bespoke scheme** — see
   [`docs/rfc/2026-07-21-x402-casper-eip712-interop.md`](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)
   for the full derivation. Casper's own site names

@@ -29,7 +29,7 @@ import {
 import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair.js";
 import { keystoreManager } from "../lib/keystore.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
-import { fetchBtcUsdPrice } from "../lib/casper/rwa_price_feed.js";
+import { fetchBtcUsdPrice, fetchUsTreasuryYield } from "../lib/casper/rwa_price_feed.js";
 
 const PORT = 8934;
 const PRICE_MOTES = "10000000"; // 0.01 CSPR
@@ -91,16 +91,24 @@ async function main(): Promise<void> {
     }
     console.log("[provider] verified OK — payer:", envelope.payload.from);
 
-    // Fulfil: a REAL live BTC/USD quote (CoinGecko), signed with the provider's Casper key —
-    // falls back to a fixed price (logged, never silent) if the network call fails.
-    const quote = await fetchBtcUsdPrice();
-    const feed = { feed: quote.feed, price: quote.price, timestamp: quote.timestamp };
-    console.log(`[provider] price feed: ${feed.feed} = $${feed.price} (source: ${quote.source})`);
-    const feedCanonical = JSON.stringify(feed);
+    // Fulfil: two REAL live RWA oracle quotes, each signed with the provider's Casper key —
+    // each independently falls back to a fixed value (logged, never silent) if its network
+    // call fails, so a demo run never hard-crashes on a flaky connection.
+    //   1. BTC/USD spot price (CoinGecko).
+    //   2. Average yield on outstanding U.S. Treasury Bills (U.S. Treasury Fiscal Data API) —
+    //      a genuine real-world-asset benchmark rate, not a crypto-native price.
+    const [btcQuote, ustQuote] = await Promise.all([fetchBtcUsdPrice(), fetchUsTreasuryYield()]);
+    const feeds = [
+      { feed: btcQuote.feed, price: btcQuote.price, timestamp: btcQuote.timestamp, source: btcQuote.source },
+      { feed: ustQuote.feed, price: ustQuote.price, timestamp: ustQuote.timestamp, source: ustQuote.source },
+    ];
+    console.log(`[provider] price feed: ${btcQuote.feed} = $${btcQuote.price} (source: ${btcQuote.source})`);
+    console.log(`[provider] price feed: ${ustQuote.feed} = ${ustQuote.price}% (source: ${ustQuote.source})`);
+    const feedCanonical = JSON.stringify(feeds);
     const feedSig = providerKp.sign(new TextEncoder().encode(feedCanonical));
 
     res.writeHead(200, { "Content-Type": "application/json" }).end(
-      JSON.stringify({ feed, signature: Buffer.from(feedSig).toString("hex"), source: quote.source }),
+      JSON.stringify({ feeds, signature: Buffer.from(feedSig).toString("hex") }),
     );
   });
   await new Promise<void>((resolve) => server.listen(PORT, resolve));
@@ -136,10 +144,10 @@ async function main(): Promise<void> {
     method: "POST",
     headers: { "PAYMENT-SIGNATURE": paymentSig },
   });
-  const body = (await final.json()) as { feed?: unknown; error?: unknown };
+  const body = (await final.json()) as { feeds?: unknown; error?: unknown };
   box("Step 3 — provider response", [
     `status = ${final.status}`,
-    `feed   = ${JSON.stringify(body.feed ?? body.error)}`,
+    `feeds  = ${JSON.stringify(body.feeds ?? body.error)}`,
   ]);
   server.close();
   if (!final.ok) process.exit(1);
