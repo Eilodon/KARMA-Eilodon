@@ -12,12 +12,16 @@ import {
   decodeSkill,
   decodeJob,
   decodeU32,
+  decodeU64,
   decodeU512,
   decodeComposition,
   decodeBytesVec,
+  decodeAddress,
+  decodeAddressList,
   type DecodedSkill,
   type DecodedJob,
   type DecodedComposition,
+  type CasperAddress,
 } from "./odra_codec.js";
 import { EVENTS_DICT, EVENTS_LENGTH_KEY, decodeIndexedEvent } from "./odra_events.js";
 import type { IndexedEvent } from "../contract.js";
@@ -72,6 +76,16 @@ const PROXY_CALLER_WASM_PATH = fileURLToPath(new URL("./resources/proxy_caller_w
  * `get_skill` / `get_job` (compound `Skill`/`Job` structs, not a single scalar) decode the raw
  * `CLValue.any` bytes via `odra_codec.ts`, field-by-field per the structs' `bytesrepr` layout —
  * see that module's header for how the byte-level rules were confirmed, not assumed.
+ *
+ * The governance-state getters (`getArbiter`/`getGovernanceSigners`/`getGovernanceThreshold`/
+ * `getTimelockDelayMs`) read bare `Var<T>` fields the same way — a `Var` read is a `Mapping` read
+ * with an empty mapping-key byte string (see `odraMappingDictionaryKey`'s header comment) — and
+ * their field indices (17/19/20/21) all exceed the legacy 0-15 encoding range, exercising
+ * `odraMappingDictionaryKey`'s path-encoding branch (empirically confirmed against a real
+ * `cargo +nightly expand` run, not assumed — see `odra_storage_key.ts`'s header comment).
+ *
+ * `claimRefund` is a seventh write, added alongside the six T13-demo writes above: the
+ * requester's refund path for a job whose provider never delivered before the deadline.
  */
 
 export interface CasperLiveClientOpts {
@@ -139,6 +153,12 @@ const DEFAULT_PAYMENT_MOTES = 5_000_000_000n; // 5 CSPR ceiling — generous def
 // Proxy-caller sessions do more work than a plain entry-point call (create a purse + two native
 // transfers + the entry point itself), so they need a higher ceiling than DEFAULT_PAYMENT_MOTES.
 const PROXY_DEFAULT_PAYMENT_MOTES = 20_000_000_000n; // 20 CSPR ceiling.
+
+/** A bare `Var<T>` read's "mapping key" is the empty byte string (see `odraMappingDictionaryKey`'s
+ *  header comment in `odra_storage_key.ts`) — used by the governance-state getters below, which
+ *  read `Var` fields (`arbiter`, `governance_signers`, `governance_threshold`, `timelock_delay`),
+ *  not `Mapping<K, V>` entries. */
+const EMPTY_VAR_KEY = new Uint8Array(0);
 
 /** casper-client / DEMO_CASPER.md conventionally write contract package hashes as
  *  `hash-<64 hex>` (or `contract-package-wasm<64 hex>`); `ContractCallBuilder.byHash()` wants the
@@ -384,6 +404,17 @@ export class CasperLiveClient {
     return this.submit(signer, "claim_after_review", args, paymentMotes);
   }
 
+  /** `claim_refund(job_id)` — requester-only refund path for a job that was never delivered:
+   *  reclaims the escrow (+ evaluator fee, if the job had one) back into `pending_withdrawals`.
+   *  Reverts `NotRequester` if the caller isn't the job's requester, `NotRefundable` unless
+   *  `status == Open` (a delivered/completed/refunded/disputed job can't be refunded this way —
+   *  see `disputeResult`/`concedeDispute` for the delivered-but-contested path instead), and
+   *  `BeforeDeadline` until `block_time > deadline`. */
+  async claimRefund(signer: CasperPrivateKey, jobId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ job_id: CLValue.newCLUint64(jobId.toString()) });
+    return this.submit(signer, "claim_refund", args, paymentMotes);
+  }
+
   /** `withdraw()` — no args; pulls the caller's full `pending_withdrawals` balance. */
   async withdraw(signer: CasperPrivateKey, paymentMotes?: bigint): Promise<{ txHash: string }> {
     return this.submit(signer, "withdraw", Args.fromMap({}), paymentMotes);
@@ -492,6 +523,50 @@ export class CasperLiveClient {
     // comment): an earlier version returned the length prefix concatenated onto the hash.
     const bytes = raw ? decodeBytesVec(raw) : undefined;
     return bytes ? Buffer.from(bytes).toString("hex") : undefined;
+  }
+
+  // ── P0-B: Governance views ────────────────────────────────────────────────
+  // `arbiter`/`governance_signers`/`governance_threshold`/`timelock_delay` are bare `Var<T>`
+  // fields (not `Mapping<K, V>`) — `readMapping` still applies: a `Var` read is exactly a
+  // `Mapping` read with an empty mapping-key byte string (see `odraMappingDictionaryKey`'s header
+  // comment for why). Field indices 17/19/20/21 all exceed the legacy 0-15 range, so
+  // `odraMappingDictionaryKey` takes its path-encoding branch for every one of these — confirmed
+  // against `odra-core`'s `ContractEnv::index_bytes()` source, not assumed (see that function's
+  // own header comment in `odra_storage_key.ts`).
+
+  /** Reads `arbiter` (`Var<Address>`, field index 17) — the contract's current dispute-
+   *  arbitration authority (mirrors the `get_arbiter` view entry point; governance-settable via
+   *  `proposeSetArbiter`/`approveProposal`/`executeProposal`). `undefined` only if read before
+   *  `init()` ever ran — the constructor always sets it to `governance_signers[0]`. */
+  async getArbiter(): Promise<CasperAddress | undefined> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.arbiter, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeAddress(bytes) : undefined;
+  }
+
+  /** Reads `governance_signers` (`Var<Vec<Address>>`, field index 19) — the full multisig signer
+   *  set (mirrors `get_governance_signers`). Empty only if read before `init()` ever ran. */
+  async getGovernanceSigners(): Promise<CasperAddress[]> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.governanceSigners, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeAddressList(bytes) : [];
+  }
+
+  /** Reads `governance_threshold` (`Var<u32>`, field index 20) — approvals a proposal needs
+   *  before `executeProposal` will accept it (mirrors `get_governance_threshold`). */
+  async getGovernanceThreshold(): Promise<number> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.governanceThreshold, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU32(bytes) : 0;
+  }
+
+  /** Reads `timelock_delay` (`Var<u64>`, field index 21) — milliseconds a proposal must wait,
+   *  after reaching threshold approvals, before `executeProposal` will accept it (mirrors
+   *  `get_timelock_delay`). */
+  async getTimelockDelayMs(): Promise<bigint> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.timelockDelay, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64(bytes) : 0n;
   }
 
   /** `propose_set_cross_chain_rep(agent: Address, score: u32, source_chain: String) -> u64` —

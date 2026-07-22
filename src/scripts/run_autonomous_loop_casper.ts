@@ -141,7 +141,10 @@ async function main(): Promise<void> {
 }
 
 async function makeLiveInvoke(): Promise<LiveInvoke> {
-  const env = requireCasperTestnetEnv(process.env);
+  // Validates CASPER_RPC_URL / KARMA_ODRA_REGISTRY are set and testnet (DP-3) — called for that
+  // guard, not for its return value (the facilitator URL below is a separate service; see the
+  // comment on KARMA_X402_CASPER_FACILITATOR_URL further down for why they're not conflated).
+  requireCasperTestnetEnv(process.env);
   const keystorePath = process.env.KEYSTORE_PATH ?? "./keystore.json";
   const keystorePassword = process.env.KEYSTORE_PASSWORD;
   if (!keystorePassword) throw new Error("[loop] KEYSTORE_PASSWORD not set");
@@ -153,8 +156,8 @@ async function makeLiveInvoke(): Promise<LiveInvoke> {
   await keystoreManager.load(keystorePath, keystorePassword);
 
   // Same env var `src/lib/payment/boot.ts` already uses to register this plugin elsewhere in the
-  // repo — not invented here. `env.rpcUrl` (CASPER_RPC_URL) is a Casper node RPC endpoint, not a
-  // facilitator URL; the two are unrelated services and must not be conflated.
+  // repo — not invented here. CASPER_RPC_URL (validated above) is a Casper node RPC endpoint, not
+  // a facilitator URL; the two are unrelated services and must not be conflated.
   const facilitatorUrl = process.env.KARMA_X402_CASPER_FACILITATOR_URL;
   if (!facilitatorUrl) throw new Error("[loop] KARMA_X402_CASPER_FACILITATOR_URL not set");
   const plugin = new CasperX402Plugin(facilitatorUrl, undefined, {

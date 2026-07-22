@@ -19,20 +19,33 @@ const DIGEST_LEN = 32;
  *         a top-level field. The `0xFF` prefix can't collide with legacy keys (whose first byte
  *         never exceeds `0x0F`); `path_len` disambiguates nesting depth from mapping-key bytes.
  *   - `mapping_data` is the mapping key's `bytesrepr` serialization (`ToBytes::to_bytes()`).
+ *   - For a bare `Var<T>` read (no mapping key), `mapping_data` is the empty byte string — a `Var`
+ *     never calls `ContractEnv::add_to_mapping_data()` (only `Mapping<K, V>` does, with the key's
+ *     own `bytesrepr` serialization) — so `odraMappingDictionaryKey(fieldIndex, new Uint8Array(0))`
+ *     is the correct call for reading a `Var`, not a separate function.
  *
- * Field indices are macro-assigned in struct declaration order **starting at 1, not 0**
- * (verified with `cargo +nightly expand --lib agent_skill_registry` against
- * `contracts-odra/src/agent_skill_registry.rs` — recomputing by hand undercounts by one).
+ * Field indices are macro-assigned in struct declaration order **starting at 1, not 0** — verified
+ * two independent ways for every index below: (1) reading `odra-macros 2.8.2`'s exact pinned source
+ * (the version this workspace's `Cargo.lock` resolves to) — `ir/mod.rs`'s `typed_fields()` does
+ * `idx: idx as u8 + 1` over `struct_typed_fields()`'s `named.named.iter()` (`utils/syn.rs`), which
+ * walks the struct's fields in literal source order, no reordering/filtering (beyond dropping an
+ * `env`-named field, which `AgentSkillRegistry` doesn't have); and (2) actually running
+ * `cargo +nightly expand --lib agent_skill_registry` against this exact source tree and reading the
+ * real generated `AgentSkillRegistry::new()` body, which instantiates each field via
+ * `<FieldType as ModuleComponent>::instance(env, Nu8)` in exactly that order (`skills` → `4u8`,
+ * `arbiter` → `17u8`, `governance_signers` → `19u8`, etc. — matching every index below field-for-field).
  * See `contracts-odra/README.md` for the full verified index table.
  */
 export function odraMappingDictionaryKey(fieldIndex: number, mappingKeyBytes: Uint8Array): string {
   if (!Number.isInteger(fieldIndex) || fieldIndex < 0 || fieldIndex > 255) {
-    throw new Error(`[odra-storage-key] field index ${fieldIndex} must fit in a u8 (0-255)`);
+    throw new Error(
+      `[odra-storage-key] field index ${fieldIndex} out of the u8 path-segment range (0-255)`,
+    );
   }
   const indexBytes =
     fieldIndex <= 15
-      ? Uint8Array.from([0, 0, 0, fieldIndex])
-      : Uint8Array.from([0xff, 1, fieldIndex]); // path encoding, path_len=1 — see doc comment above
+      ? Uint8Array.from([0, 0, 0, fieldIndex]) // legacy: 4-byte big-endian u32
+      : Uint8Array.from([0xff, 1, fieldIndex]); // path: 0xFF, path_len=1, the single segment
   const preimage = new Uint8Array(indexBytes.length + mappingKeyBytes.length);
   preimage.set(indexBytes, 0);
   preimage.set(mappingKeyBytes, indexBytes.length);
@@ -82,9 +95,24 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
   compositions: 14,
   /** `cross_chain_rep: Mapping<Address, u32>` — index 15, confirmed the same way. */
   crossChainRep: 15,
+  // Index 16 (`dispute_bond_bps: Var<u32>`) is skipped — not read by this module yet.
+  /** `arbiter: Var<Address>` — index 17. Path-encoded (>15) — see `odraMappingDictionaryKey`'s
+   *  header comment. Re-confirmed by actually running `cargo +nightly expand --lib
+   *  agent_skill_registry` against this exact source tree: the generated `AgentSkillRegistry::new`
+   *  reads `let arbiter = <Var<Address> as ModuleComponent>::instance(env, 17u8)` verbatim. */
+  arbiter: 17,
+  // Index 18 (`disputes: Mapping<u64, DisputeInfo>`) is skipped — not read by this module yet.
+  /** `governance_signers: Var<Vec<Address>>` — index 19. Path-encoded; `cargo expand` shows
+   *  `<Var<Vec<Address>> as ModuleComponent>::instance(env, 19u8)`, same method as `arbiter`. */
+  governanceSigners: 19,
+  /** `governance_threshold: Var<u32>` — index 20. Path-encoded; `cargo expand`-confirmed the same way. */
+  governanceThreshold: 20,
+  /** `timelock_delay: Var<u64>` — index 21. Path-encoded; `cargo expand`-confirmed the same way. */
+  timelockDelay: 21,
+  // Indices 22-24 (`proposal_counter`, `proposals`, `proposal_approvals`) are skipped — not read
+  // by this module yet (governance proposal browsing is out of scope for the current read surface).
   /** `rationale_hash: Mapping<u64, Bytes>` (P2-A) — index 25, confirmed via `cargo +nightly
    *  expand --lib agent_skill_registry` (its `ModuleComponent::instance(env, 25u8)` call is
-   *  printed directly in the expanded output). First field index in this table that needs the
-   *  PATH encoding branch (> 15) — exercises it for real, not just in a synthetic unit test. */
+   *  printed directly in the expanded output). */
   rationaleHash: 25,
 } as const;

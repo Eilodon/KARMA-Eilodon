@@ -50,7 +50,7 @@
 > `src/middlewares` — and the Pharos and Stellar implementations were built before the Casper track
 > opened. Everything Casper-specific is new for this submission: the Odra `AgentSkillRegistry`
 > (`contracts-odra/`, 131 Rust tests), the secp256k1 keystore adapter, the `x402_casper.ts` payment
-> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 29-tool
+> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 33-tool
 > `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every transaction recorded in
 > [DEMO_CASPER.md](DEMO_CASPER.md). A pre-existing base is fine to disclose and not fine to hide —
 > so it's disclosed, and the part actually being judged here is original and shipped now.
@@ -110,7 +110,7 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
-| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 29-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
+| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 33-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
 | Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
@@ -245,7 +245,7 @@ conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full oper
 
 ## Tools
 
-This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 29 Casper
+This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 33 Casper
 Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
 governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
 identity, Casper `AgentSkillRegistry`). The tables below group tools by architecture layer (Layer 1
@@ -310,8 +310,12 @@ the contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storag
 | `casper_deliver_result` | write | Provider records a result hash, opens the review window. |
 | `casper_confirm_completion` | write | Requester releases escrow + bumps reputation (arm's-length). |
 | `casper_claim_after_review` | write | Anti-deadlock: provider claims escrow once the review window elapses with no confirm/dispute from the requester. |
+| `casper_claim_refund` | write | Requester reclaims escrow (+ evaluator fee) for a job never delivered before the deadline. |
 | `casper_withdraw` | write | Pull the caller's released-escrow balance (CEI pull-payment). |
 | `casper_get_account_state` | read | Pending balance + reputation + bonded amount, read live from chain. |
+| `casper_get_skill` | read | Read a skill's full on-chain record (owner, price, reputation, active, `isComposite`), live from chain. |
+| `casper_get_job` | read | Read a job's full on-chain record (requester/provider, escrow, status, evaluator), live from chain. |
+| `casper_discover_skills` | read | BM25 search over the Casper skill index (separate index from Pharos's), `maxPriceMotes`/`minReputation` filters. |
 | `casper_register_composition` | write | Register a composite skill fanning escrow across 1-8 leaf skills by basis-points weight. |
 | `casper_get_composition` | read | Read a skill's composition manifest (leaf ids + weights), or `isComposite=false` for a primitive. |
 | `casper_create_job_with_evaluator` | write | Create a job with a neutral third-party evaluator instead of direct requester review. |
@@ -322,6 +326,7 @@ the contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storag
 | `casper_resolve_default_concede` | write | Anyone may call once the provider's response window elapses unanswered. |
 | `casper_arbitrate` | write | Arbiter-only: adjudicates a contested (both-sides-bonded) dispute — loser pays. |
 | `casper_get_cross_chain_rep` | read | Read an agent's cross-chain reputation attestation (0-100), live from chain. |
+| `casper_get_governance_state` | read | Signers + threshold + timelock delay + arbiter, in one round trip, live from chain. |
 | `casper_propose_set_cross_chain_rep` | write | Propose a cross-chain rep attestation (governance-signer; propose/approve/execute + timelock). |
 | `casper_propose_set_arbiter` | write | Propose a new arbiter address — same governed lifecycle, no single-signer bypass. |
 | `casper_propose_set_dispute_bond_bps` | write | Propose a new dispute-bond basis-points value — same governed lifecycle. |
@@ -358,13 +363,13 @@ competing for the same job.
 ## Chain-agnostic settlement & cryptographic primitives
 
 The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
-`SettlementRail` (`"x402"` | `"escrow"`) let the same skill/identity/reputation model settle across
-chains. Pharos escrow and both Stellar ZK verifiers are live on-chain; Casper's contract is deployed
-and verified end-to-end on Testnet and reachable through 26 MCP tools (`casper.tool.ts`) — skill
-registry, composition, the full evaluator/dispute/arbitration lifecycle, and cross-chain-rep
-governance are all wired to the live contract, not modeled offline. The governance-hardening
-redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) stays owner-driven testnet —
-funding and signing need a real key, and that key stays with its owner, not in this session.
+`SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
+chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract is
+**deployed and verified end-to-end on Testnet** and reachable through 33 MCP tools
+(`casper.tool.ts`) — skill registry, composition, the full evaluator/dispute/arbitration lifecycle,
+and cross-chain-rep governance are all live-wired, not just modeled offline. A governance-hardening
+redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owner-driven testnet
+(funding + signing needs a real key, which stays with its owner, not in this session).
 
 | Capability | Where | Status |
 |---|---|---|
