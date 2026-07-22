@@ -50,7 +50,7 @@
 > `src/middlewares` — and the Pharos and Stellar implementations were built before the Casper track
 > opened. Everything Casper-specific is new for this submission: the Odra `AgentSkillRegistry`
 > (`contracts-odra/`, 131 Rust tests), the secp256k1 keystore adapter, the `x402_casper.ts` payment
-> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 33-tool
+> rail, `live_client.ts`'s real transaction building against `casper-js-sdk`, the 41-tool
 > `casper.tool.ts` MCP surface, the governance-hardened redeploy, and every transaction recorded in
 > [DEMO_CASPER.md](DEMO_CASPER.md). A pre-existing base is fine to disclose and not fine to hide —
 > so it's disclosed, and the part actually being judged here is original and shipped now.
@@ -106,11 +106,11 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 
 | Final Round judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 131/131 Rust tests (`contracts-odra`, incl. 2 property-based invariant tests), 804/804 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
+| Technical Execution | 131/131 Rust tests (`contracts-odra`, incl. 2 property-based invariant tests), 855/855 TypeScript tests, clean typecheck/lint — [Testing](#testing) |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
-| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 33-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
+| User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 41-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
 | Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
@@ -245,10 +245,11 @@ conformance matrix, all chains) · [docs/RUNTIME.md](docs/RUNTIME.md) (full oper
 
 ## Tools
 
-This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 33 Casper
+This is a real, full MCP server: 14 skill-economy tools, 8 Terminal3 identity tools, and 41 Casper
 Odra registry tools (skill registry, composition, evaluator/dispute/arbitration, cross-chain-rep
-governance), all in-process, all backed by live testnet chains (Pharos escrow, Terminal3 SIWE
-identity, Casper `AgentSkillRegistry`). The tables below group tools by architecture layer (Layer 1
+governance, owner mutators, agent/job/proposal browsing), all in-process, all backed by live
+testnet chains (Pharos escrow, Terminal3 SIWE identity, Casper `AgentSkillRegistry`). The tables
+below group tools by architecture layer (Layer 1
 = skill economy, Layer 3 = identity & delegation; Layer 2 — the BM25 discovery index and the
 `IPaymentPlugin` settlement rails — is infrastructure the tools above call into, not a tool surface
 of its own). Expand for the full list:
@@ -333,6 +334,17 @@ the contract's on-chain "state" dictionary directly (`src/lib/casper/odra_storag
 | `casper_approve_proposal` | write | Approve a pending governance proposal (governance-signer, once each). |
 | `casper_execute_proposal` | write | Execute a proposal once threshold + timelock are satisfied (anyone may call). |
 | `casper_cancel_proposal` | write | Cancel a pending (not yet executed) proposal (governance-signer only). |
+| `casper_attest_rationale` | write | Requester commits a hash of their agent's decision rationale on-chain for a job (P2-A). |
+| `casper_get_rationale_hash` | read | Read back an attested rationale hash byte-for-byte, live from chain. |
+| `casper_get_x402_settlement_status` | read | Check whether a submitted x402 settlement transaction confirmed or reverted. |
+| `casper_deactivate_skill` | write | Skill owner deactivates one of their own skills; existing jobs/history are untouched, new jobs against it are rejected. |
+| `casper_set_min_reputation` | write | Skill owner changes the minimum agent reputation required to invoke one of their own skills. |
+| `casper_set_identity_policy` | write | Skill owner changes the identity-policy id required to invoke one of their own skills. |
+| `casper_get_provider_jobs` | read | List every job id an agent has ever been the provider on, live from chain. |
+| `casper_get_requester_jobs` | read | List every job id an agent has ever been the requester on, live from chain. |
+| `casper_get_agent_skills` | read | List every skill id an agent owns, live from chain. |
+| `casper_get_dispute_info` | read | Read a job's active dispute record (bond amounts + timestamp), live from chain. |
+| `casper_get_proposal` | read | Read a governance proposal's full record (action, proposer, timestamp, executed/cancelled), live from chain. |
 
 </details>
 
@@ -385,7 +397,8 @@ redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owne
 | **Trust-kernel hardening** — dispute-rate + anti-wash guards folded into flow reputation | `src/lib/flow_reputation.ts` | in-repo |
 
 Public specs live in [`docs/standards/`](docs/standards/) (IPaymentPlugin v1, IdentityPolicy registry,
-reference implementations); open design in [`docs/rfc/`](docs/rfc/) (symmetric dispute bond).
+reference implementations); design writeups in [`docs/rfc/`](docs/rfc/) (symmetric dispute bond,
+x402 Casper EIP-712/CEP-18 interop).
 
 ```bash
 pnpm demo:cross-chain     # Pharos rep → ZK proof → Casper RWA (signed-TLS) → settle  (offline)
@@ -639,7 +652,7 @@ src/
     autonomous_loop/ loop core + dashboard + live/dry-run runner
   scripts/       setup_keystore, deploy_contract, demos (cross-chain, self-hosting,
                  stellar/casper), run_autonomous_loop, t3_payroll_smoke
-  __tests__/     Vitest suites (runtime + app layer) — 71 files
+  __tests__/     Vitest suites (runtime + app layer) — 86 files
 circuits/        Circom circuits: agent_credential, reputation_aggregation (+ snarkjs harness)
 contracts/       AgentSkillRegistry.sol + KarmaTimelock.sol (Foundry, Pharos)
 contracts-soroban/   Stellar verifiers: agent_credential, reputation_aggregation (Rust)
