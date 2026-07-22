@@ -1044,6 +1044,37 @@ pub fn dispute_result_via_panel(&mut self, job_id: u64) {
         self.env().emit_event(JobRefunded { job_id, requester, amount: escrow });
     }
 
+/// P4-A: Anyone may call once `PANEL_VOTE_WINDOW` elapses without the panel reaching
+/// majority. Defaults `ProviderAtFault` — the same direction `resolve_default_concede`
+/// already defaults to when a provider goes silent — because under-participation is treated
+/// as the panel-operator side's risk, not the requester's. Requires the provider to have
+/// already responded (bonded); an unresponsive PROVIDER is still `resolve_default_concede`'s
+/// job, unchanged (that function explicitly reverts `AlreadyResponded` once `provider_bond`
+/// is set, so the two functions' preconditions are mutually exclusive by construction).
+pub fn resolve_panel_default(&mut self, job_id: u64) {
+    let j = self.require_job(job_id);
+    if j.status != JobStatus::Disputed {
+        self.env().revert(Error::NotDisputed);
+    }
+    if self.dispute_arbitration_mode.get(&job_id) != Some(ArbitrationMode::Panel) {
+        self.env().revert(Error::WrongArbitrationMode);
+    }
+    let d = self.disputes.get(&job_id)
+        .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+    if d.provider_bond.is_zero() {
+        self.env().revert(Error::ProviderNotResponded);
+    }
+    if self.env().get_block_time() <= d.disputed_at + PANEL_VOTE_WINDOW {
+        self.env().revert(Error::PanelVoteWindowOpen);
+    }
+
+    self.settle_dispute_verdict(job_id, j, d.dispute_bond, d.provider_bond, Verdict::ProviderAtFault);
+    self.env().emit_event(PanelDefaultResolved { job_id });
+
+    let votes = self.panel_votes.get(&job_id).unwrap_or_default();
+    self.distribute_panel_fee(job_id, &votes);
+}
+
     /// P1-A: Arbiter adjudicates a contested dispute (both sides bonded). Loser-pays.
     pub fn arbitrate(&mut self, job_id: u64, verdict: Verdict) {
         let caller = self.env().caller();

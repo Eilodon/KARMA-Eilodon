@@ -2816,3 +2816,123 @@ fn p1b_existing_single_arbiter_flow_is_unaffected_by_the_new_mode_guard() {
     assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
     assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE) + bond + bond);
 }
+
+#[test]
+fn p1b_resolve_panel_default_before_window_elapses_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-default-early");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    assert_eq!(
+        reg.try_resolve_panel_default(job_id),
+        Err(Error::PanelVoteWindowOpen.into()),
+    );
+}
+
+#[test]
+fn p1b_resolve_panel_default_before_provider_responds_reverts() {
+    // Distinguishes from resolve_default_concede's job: that function already handles
+    // "provider never responded at all"; resolve_panel_default is specifically for "provider
+    // DID respond, panel just never reached majority."
+    let (env, mut reg, alpha, beta) = setup();
+    seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-default-no-response");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    // alpha never calls respond_to_dispute.
+    env.advance_block_time(PANEL_VOTE_WINDOW + 1);
+    assert_eq!(
+        reg.try_resolve_panel_default(job_id),
+        Err(Error::ProviderNotResponded.into()),
+    );
+}
+
+#[test]
+fn p1b_resolve_panel_default_after_window_refunds_requester_and_pays_partial_voters() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, _arb2, _arb3) = seed_panel(&env, &mut reg);
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    let fee_pid = reg.propose_set_panel_arbiter_fee(U512::from(300_000u64));
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(fee_pid);
+
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-default-partial");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    let fee = U512::from(300_000u64);
+    env.set_caller(beta);
+    reg.with_tokens(bond + fee).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    // Only 1 of 3 ever votes — never reaches threshold=2.
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault);
+
+    env.advance_block_time(PANEL_VOTE_WINDOW + 1);
+    reg.resolve_panel_default(job_id);
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE) + bond + bond);
+    // Only arb1 voted — gets the whole fee, not a third of it.
+    assert_eq!(reg.pending_withdrawals_of(arb1), fee);
+
+    assert!(env.emitted_event(&reg, PanelDefaultResolved { job_id }));
+}
+
+#[test]
+fn p1b_resolve_panel_default_after_settlement_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, arb2, _arb3) = seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-default-after-settle");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault);
+    env.set_caller(arb2);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault); // settles before the window even matters
+
+    env.advance_block_time(PANEL_VOTE_WINDOW + 1);
+    assert_eq!(
+        reg.try_resolve_panel_default(job_id),
+        Err(Error::NotDisputed.into()),
+    );
+}
+
+#[test]
+fn p1b_resolve_panel_default_on_single_mode_job_reverts() {
+    // Cross-mode guard, the other direction: resolve_panel_default must not be usable to
+    // shortcut a plain Single-mode dispute's own resolve_default_concede path.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "single-mode-default-guard");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    env.advance_block_time(PANEL_VOTE_WINDOW + 1);
+    assert_eq!(
+        reg.try_resolve_panel_default(job_id),
+        Err(Error::WrongArbitrationMode.into()),
+    );
+}
