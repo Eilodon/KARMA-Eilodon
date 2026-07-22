@@ -10,7 +10,7 @@
 | Category | Interface |
 | Created | 2026-07-08 |
 | Requires | — |
-| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1656 LoC, 131/131 tests passing), live on Casper Testnet |
+| Reference implementation | [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs) (Odra 2.x, 1659 LoC, 131/131 tests passing), live on Casper Testnet |
 
 > This is a project-authored draft, written to the shape of the Casper CEP process, not yet
 > submitted to `casper-network/ceps`. Before submission it needs: (1) a CEP number from the

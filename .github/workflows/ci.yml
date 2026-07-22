@@ -123,5 +123,12 @@ jobs:
       - name: Setup Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
+      # forge-std IS a real git submodule dependency (unlike openzeppelin above) but isn't
+      # registered in .gitmodules, and /lib/ is gitignored (see .gitignore) — actions/checkout
+      # can't fetch it, so a fresh runner needs this explicit install, same as
+      # .claude/hooks/session-start.sh does for local dev sessions.
+      - name: Install forge-std
+        run: forge install foundry-rs/forge-std --no-git
+
       - name: Test
         run: pnpm test:contract

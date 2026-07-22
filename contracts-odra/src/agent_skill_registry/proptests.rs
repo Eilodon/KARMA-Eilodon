@@ -140,11 +140,11 @@ proptest! {
             let agent_rep = reg.agent_reputation(alpha);
 
             prop_assert!(
-                skill_rep >= REP_FLOOR && skill_rep <= MAX_REPUTATION,
+                (REP_FLOOR..=MAX_REPUTATION).contains(&skill_rep),
                 "round {i}: skill reputation {skill_rep} left [{REP_FLOOR}, {MAX_REPUTATION}]",
             );
             prop_assert!(
-                agent_rep >= REP_FLOOR && agent_rep <= MAX_REPUTATION,
+                (REP_FLOOR..=MAX_REPUTATION).contains(&agent_rep),
                 "round {i}: agent reputation {agent_rep} left [{REP_FLOOR}, {MAX_REPUTATION}]",
             );
         }

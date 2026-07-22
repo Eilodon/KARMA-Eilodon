@@ -255,3 +255,75 @@ export function decodeAddress(bytes: Uint8Array): CasperAddress {
 export function decodeAddressList(bytes: Uint8Array): CasperAddress[] {
   return new OdraBytesReader(bytes).vecAddress();
 }
+
+
+/** Decodes a `Vec<u64>` `Mapping` value's raw bytes (e.g. `agent_provider_jobs[account]`,
+ *  `agent_requester_jobs[account]`, `agent_skills[account]`) — see `decodeU32`'s note; same
+ *  `List(U8)`-wrapped reasoning applies. */
+export function decodeU64List(bytes: Uint8Array): bigint[] {
+  return new OdraBytesReader(bytes).vecU64();
+}
+
+export interface DecodedDisputeInfo {
+  disputeBondMotes: bigint;
+  providerBondMotes: bigint;
+  disputedAt: bigint;
+}
+
+/** Decodes a `DisputeInfo` struct's raw on-chain bytes (`{ dispute_bond: U512, provider_bond:
+ *  U512, disputed_at: u64 }`, P1-A — see `contracts-odra/src/agent_skill_registry.rs`). Stored
+ *  under the `disputes` mapping (field index 18). */
+export function decodeDisputeInfo(bytes: Uint8Array): DecodedDisputeInfo {
+  const r = new OdraBytesReader(bytes);
+  return { disputeBondMotes: r.u512(), providerBondMotes: r.u512(), disputedAt: r.u64() };
+}
+
+export type DecodedProposalAction =
+  | { kind: "SetCrossChainRep"; agent: CasperAddress; score: number; sourceChain: string }
+  | { kind: "SetArbiter"; newArbiter: CasperAddress }
+  | { kind: "SetDisputeBondBps"; bps: number };
+
+export interface DecodedGovernanceProposal {
+  action: DecodedProposalAction;
+  proposer: CasperAddress;
+  proposedAt: bigint;
+  executed: boolean;
+  cancelled: boolean;
+}
+
+/** Decodes a `GovernanceProposal` struct's raw on-chain bytes (P0-B — see
+ *  `contracts-odra/src/agent_skill_registry.rs`). Stored under the `proposals` mapping (field
+ *  index 23).
+ *
+ *  `action: ProposalAction` is a data-carrying enum; decoded here as a u8 discriminant (variant
+ *  declaration order: 0 = SetCrossChainRep, 1 = SetArbiter, 2 = SetDisputeBondBps) followed by
+ *  that variant's fields in declaration order — the standard `casper_types` derive-macro
+ *  convention for enums (the same shape `Key`/`CLType`/`Transform` use). Unlike every other
+ *  decoder in this file, THIS specific shape has not yet been confirmed against a real deployed
+ *  contract read (no proposal has been read back through this path in this repo so far) — the
+ *  struct fields (`proposer`/`proposed_at`/`executed`/`cancelled`) follow the same
+ *  empirically-confirmed sequential-field convention as `decodeSkill`/`decodeJob`, but the enum
+ *  tag itself is inferred from the derive macro's documented behavior, not independently
+ *  chain-verified. If a live `casper_get_proposal` call ever comes back looking wrong, check here
+ *  first. */
+export function decodeGovernanceProposal(bytes: Uint8Array): DecodedGovernanceProposal {
+  const r = new OdraBytesReader(bytes);
+  const tag = r.u8();
+  let action: DecodedProposalAction;
+  if (tag === 0) {
+    action = { kind: "SetCrossChainRep", agent: r.address(), score: r.u32(), sourceChain: r.string() };
+  } else if (tag === 1) {
+    action = { kind: "SetArbiter", newArbiter: r.address() };
+  } else if (tag === 2) {
+    action = { kind: "SetDisputeBondBps", bps: r.u32() };
+  } else {
+    throw new Error(`[odra-codec] unknown ProposalAction discriminant: ${tag}`);
+  }
+  return {
+    action,
+    proposer: r.address(),
+    proposedAt: r.u64(),
+    executed: r.bool(),
+    cancelled: r.bool(),
+  };
+}
