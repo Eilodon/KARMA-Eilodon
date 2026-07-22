@@ -692,6 +692,7 @@ fn p1b_single_arbiter_arbitrate_rejects_a_panel_mode_job() {
     /// Snapshots the panel + threshold + fee onto the job's own storage at this moment — a
     /// later `propose_set_arbiter_panel`/`propose_set_panel_arbiter_fee` execution must never
     /// change the terms an already-posted dispute is running under (audit-design HIGH #3).
+    #[odra(payable)]
     pub fn dispute_result_via_panel(&mut self, job_id: u64) {
         let mut j = self.require_job(job_id);
         let caller = self.env().caller();
