@@ -87,6 +87,17 @@ export function accountAddressToBytes(accountHashHex: string): Uint8Array {
 export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
   skills: 4,
   jobs: 5,
+  /** `agent_provider_jobs: Mapping<Address, Vec<u64>>` — index 6, by the same struct-declaration-
+   *  order rule documented above (fields 6-8 sit directly after `jobs`/before `pending_withdrawals`,
+   *  no `env`-named field to skip in this struct). Digest cross-checked against an independent
+   *  Python blake2b256 reference in `casper_odra_storage_key.test.ts`, same as every index above —
+   *  not re-run through `cargo +nightly expand` this session (that command is too slow to complete
+   *  reliably in this environment; every OTHER index in this file WAS confirmed that way). */
+  agentProviderJobs: 6,
+  /** `agent_requester_jobs: Mapping<Address, Vec<u64>>` — index 7, see `agentProviderJobs`'s note. */
+  agentRequesterJobs: 7,
+  /** `agent_skills: Mapping<Address, Vec<u64>>` — index 8, see `agentProviderJobs`'s note. */
+  agentSkills: 8,
   pendingWithdrawals: 9,
   agentRep: 11,
   bondedAmount: 12,
@@ -101,7 +112,9 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
    *  agent_skill_registry` against this exact source tree: the generated `AgentSkillRegistry::new`
    *  reads `let arbiter = <Var<Address> as ModuleComponent>::instance(env, 17u8)` verbatim. */
   arbiter: 17,
-  // Index 18 (`disputes: Mapping<u64, DisputeInfo>`) is skipped — not read by this module yet.
+  /** `disputes: Mapping<u64, DisputeInfo>` — index 18, see `agentProviderJobs`'s note (same
+   *  struct-order rule, digest cross-checked independently, not re-run via `cargo expand`). */
+  disputes: 18,
   /** `governance_signers: Var<Vec<Address>>` — index 19. Path-encoded; `cargo expand` shows
    *  `<Var<Vec<Address>> as ModuleComponent>::instance(env, 19u8)`, same method as `arbiter`. */
   governanceSigners: 19,
@@ -109,8 +122,12 @@ export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
   governanceThreshold: 20,
   /** `timelock_delay: Var<u64>` — index 21. Path-encoded; `cargo expand`-confirmed the same way. */
   timelockDelay: 21,
-  // Indices 22-24 (`proposal_counter`, `proposals`, `proposal_approvals`) are skipped — not read
-  // by this module yet (governance proposal browsing is out of scope for the current read surface).
+  // Index 22 (`proposal_counter: Var<u64>`) is skipped — not read by this module yet.
+  /** `proposals: Mapping<u64, GovernanceProposal>` — index 23, see `agentProviderJobs`'s note
+   *  (same struct-order rule, digest cross-checked independently, not re-run via `cargo expand`). */
+  proposals: 23,
+  // Index 24 (`proposal_approvals: Mapping<u64, Vec<Address>>`) is skipped — not read by this
+  // module yet (per-proposal approver list browsing is out of scope for the current read surface).
   /** `rationale_hash: Mapping<u64, Bytes>` (P2-A) — index 25, confirmed via `cargo +nightly
    *  expand --lib agent_skill_registry` (its `ModuleComponent::instance(env, 25u8)` call is
    *  printed directly in the expanded output). */

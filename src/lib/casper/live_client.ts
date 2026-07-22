@@ -18,9 +18,14 @@ import {
   decodeBytesVec,
   decodeAddress,
   decodeAddressList,
+  decodeU64List,
+  decodeDisputeInfo,
+  decodeGovernanceProposal,
   type DecodedSkill,
   type DecodedJob,
   type DecodedComposition,
+  type DecodedDisputeInfo,
+  type DecodedGovernanceProposal,
   type CasperAddress,
 } from "./odra_codec.js";
 import { EVENTS_DICT, EVENTS_LENGTH_KEY, decodeIndexedEvent } from "./odra_events.js";
@@ -264,6 +269,44 @@ export class CasperLiveClient {
     return this.submit(signer, "register_skill", args, paymentMotes);
   }
 
+
+  /** `deactivate_skill(skill_id: u64)` — skill owner only (contract-enforced). Marks the skill
+   *  inactive; `create_job`/`create_job_with_evaluator` reject an inactive skill. */
+  async deactivateSkill(signer: CasperPrivateKey, skillId: bigint, paymentMotes?: bigint): Promise<{ txHash: string }> {
+    const args = Args.fromMap({ skill_id: CLValue.newCLUint64(skillId.toString()) });
+    return this.submit(signer, "deactivate_skill", args, paymentMotes);
+  }
+
+  /** `set_min_reputation(skill_id: u64, min_reputation: u32)` — skill owner only. Raises/lowers
+   *  the agent-reputation floor `create_job` enforces for this skill. */
+  async setMinReputation(
+    signer: CasperPrivateKey,
+    skillId: bigint,
+    minReputation: number,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      skill_id: CLValue.newCLUint64(skillId.toString()),
+      min_reputation: CLValue.newCLUInt32(minReputation),
+    });
+    return this.submit(signer, "set_min_reputation", args, paymentMotes);
+  }
+
+  /** `set_identity_policy(skill_id: u64, policy: u8)` — skill owner only. Same policy-id space
+   *  `register_skill`'s `identity_policy` arg uses (see `docs/standards/IdentityPolicy-registry.md`). */
+  async setIdentityPolicy(
+    signer: CasperPrivateKey,
+    skillId: bigint,
+    policy: number,
+    paymentMotes?: bigint,
+  ): Promise<{ txHash: string }> {
+    const args = Args.fromMap({
+      skill_id: CLValue.newCLUint64(skillId.toString()),
+      policy: CLValue.newCLUint8(policy),
+    });
+    return this.submit(signer, "set_identity_policy", args, paymentMotes);
+  }
+
   /** `register_composition(name, description, mcp_endpoint, price_per_call,
    *  min_reputation_to_invoke, identity_policy, leaf_skill_ids: Vec<u64>, weights_bps: Vec<u32>)
    *  -> u64` — registers the composite as a normal `Skill` entry (same id space as
@@ -453,6 +496,40 @@ export class CasperLiveClient {
     return bytes ? decodeU512(bytes).toString() : "0";
   }
 
+
+  /** Reads `agent_provider_jobs[agent]` (`Mapping<Address, Vec<u64>>`, field index 6) — every
+   *  job id this agent has ever been the provider on (mirrors `get_provider_jobs`). */
+  async getProviderJobs(accountHashHex: string): Promise<bigint[]> {
+    const clValue = await this.readMapping(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentProviderJobs,
+      accountAddressToBytes(accountHashHex),
+    );
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64List(bytes) : [];
+  }
+
+  /** Reads `agent_requester_jobs[agent]` (`Mapping<Address, Vec<u64>>`, field index 7) — every
+   *  job id this agent has ever been the requester on (mirrors `get_requester_jobs`). */
+  async getRequesterJobs(accountHashHex: string): Promise<bigint[]> {
+    const clValue = await this.readMapping(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentRequesterJobs,
+      accountAddressToBytes(accountHashHex),
+    );
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64List(bytes) : [];
+  }
+
+  /** Reads `agent_skills[agent]` (`Mapping<Address, Vec<u64>>`, field index 8) — every skill id
+   *  this agent owns (mirrors `get_agent_skills`). */
+  async getAgentSkills(accountHashHex: string): Promise<bigint[]> {
+    const clValue = await this.readMapping(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentSkills,
+      accountAddressToBytes(accountHashHex),
+    );
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64List(bytes) : [];
+  }
+
   /** Reads `skills[skillId]` — the full `Skill` record — decoding Odra's raw struct bytes.
    *  `undefined` if the ID was never registered. */
   async getSkill(skillId: bigint): Promise<DecodedSkill | undefined> {
@@ -467,6 +544,17 @@ export class CasperLiveClient {
     const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.jobs, u64ToBytes(jobId));
     const bytes = odraStructBytes(clValue);
     return bytes ? decodeJob(bytes) : undefined;
+  }
+
+
+  /** Reads `disputes[job_id]` (`Mapping<u64, DisputeInfo>`, field index 18, P1-A) — the bonded
+   *  amounts + dispute timestamp for a job currently under dispute; `undefined` once resolved
+   *  (the entry is scoped to the active-dispute window, not kept forever). Mirrors
+   *  `get_dispute_info`. */
+  async getDisputeInfo(jobId: bigint): Promise<DecodedDisputeInfo | undefined> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.disputes, u64ToBytes(jobId));
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeDisputeInfo(bytes) : undefined;
   }
 
   /** Reads `compositions[skillId]` — `undefined` if the id is a primitive skill (never composed)
@@ -567,6 +655,17 @@ export class CasperLiveClient {
     const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.timelockDelay, EMPTY_VAR_KEY);
     const bytes = odraStructBytes(clValue);
     return bytes ? decodeU64(bytes) : 0n;
+  }
+
+
+  /** Reads `proposals[proposal_id]` (`Mapping<u64, GovernanceProposal>`, field index 23, P0-B) —
+   *  a governance proposal's action, proposer, timestamp, and executed/cancelled flags. Mirrors
+   *  `get_proposal`. See `decodeGovernanceProposal`'s doc comment: the `action` enum's tag
+   *  encoding is not yet chain-verified, unlike the rest of this struct's fields. */
+  async getProposal(proposalId: bigint): Promise<DecodedGovernanceProposal | undefined> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.proposals, u64ToBytes(proposalId));
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeGovernanceProposal(bytes) : undefined;
   }
 
   /** `propose_set_cross_chain_rep(agent: Address, score: u32, source_chain: String) -> u64` —

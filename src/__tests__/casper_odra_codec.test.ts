@@ -8,6 +8,9 @@ import {
   decodeU64,
   decodeAddress,
   decodeAddressList,
+  decodeU64List,
+  decodeDisputeInfo,
+  decodeGovernanceProposal,
 } from "../lib/casper/odra_codec.js";
 
 const { CLValue } = casperSdk;
@@ -242,5 +245,81 @@ describe("decodeAddressList (governance governance_signers: Var<Vec<Address>>)",
 
   it("decodes an empty signer list", () => {
     expect(decodeAddressList(u32(0))).toEqual([]);
+  });
+});
+
+describe("decodeU64List (agent_provider_jobs/agent_requester_jobs/agent_skills: Mapping<Address, Vec<u64>>)", () => {
+  it("decodes a Vec<u64> in order", () => {
+    expect(decodeU64List(vecU64(["1", "2", "42"]))).toEqual([1n, 2n, 42n]);
+  });
+
+  it("decodes an empty job/skill list", () => {
+    expect(decodeU64List(u32(0))).toEqual([]);
+  });
+});
+
+describe("decodeDisputeInfo (P1-A disputes: Mapping<u64, DisputeInfo>)", () => {
+  it("decodes a full DisputeInfo struct in Rust field order", () => {
+    const bytes = concat(u512("500000"), u512("500000"), u64("1700000000"));
+    expect(decodeDisputeInfo(bytes)).toEqual({
+      disputeBondMotes: 500_000n,
+      providerBondMotes: 500_000n,
+      disputedAt: 1_700_000_000n,
+    });
+  });
+});
+
+describe("decodeGovernanceProposal (P0-B proposals: Mapping<u64, GovernanceProposal>)", () => {
+  it("decodes a SetCrossChainRep proposal (tag 0)", () => {
+    const bytes = concat(
+      u8(0),
+      address("Account", REQUESTER_HASH),
+      u32(85),
+      str("stellar"),
+      address("Account", OWNER_HASH),
+      u64("1700000000"),
+      bool(false),
+      bool(false),
+    );
+    expect(decodeGovernanceProposal(bytes)).toEqual({
+      action: { kind: "SetCrossChainRep", agent: { kind: "Account", hashHex: REQUESTER_HASH }, score: 85, sourceChain: "stellar" },
+      proposer: { kind: "Account", hashHex: OWNER_HASH },
+      proposedAt: 1_700_000_000n,
+      executed: false,
+      cancelled: false,
+    });
+  });
+
+  it("decodes a SetArbiter proposal (tag 1)", () => {
+    const bytes = concat(
+      u8(1),
+      address("Account", EVALUATOR_HASH),
+      address("Account", OWNER_HASH),
+      u64("1700000001"),
+      bool(true),
+      bool(false),
+    );
+    expect(decodeGovernanceProposal(bytes)).toEqual({
+      action: { kind: "SetArbiter", newArbiter: { kind: "Account", hashHex: EVALUATOR_HASH } },
+      proposer: { kind: "Account", hashHex: OWNER_HASH },
+      proposedAt: 1_700_000_001n,
+      executed: true,
+      cancelled: false,
+    });
+  });
+
+  it("decodes a SetDisputeBondBps proposal (tag 2)", () => {
+    const bytes = concat(u8(2), u32(750), address("Account", OWNER_HASH), u64("1700000002"), bool(false), bool(true));
+    expect(decodeGovernanceProposal(bytes)).toEqual({
+      action: { kind: "SetDisputeBondBps", bps: 750 },
+      proposer: { kind: "Account", hashHex: OWNER_HASH },
+      proposedAt: 1_700_000_002n,
+      executed: false,
+      cancelled: true,
+    });
+  });
+
+  it("throws on an unknown ProposalAction discriminant", () => {
+    expect(() => decodeGovernanceProposal(u8(3))).toThrow(/unknown ProposalAction discriminant/);
   });
 });

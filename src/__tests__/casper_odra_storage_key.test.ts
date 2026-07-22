@@ -96,6 +96,52 @@ describe("odraMappingDictionaryKey — path encoding (field index > 15, e.g. gov
   });
 });
 
+describe("odraMappingDictionaryKey — new P0/P1-A/P0-B read-surface field indices (6/7/8 legacy, 18/23 path)", () => {
+  it("matches an independently computed blake2b256 digest for agent_provider_jobs[account 0x11...] (field index 6, Address key)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0,0,0,6]) + bytes([0]) + bytes([0x11]*32), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentProviderJobs,
+      accountAddressToBytes("11".repeat(32)),
+    );
+    expect(key).toBe("5c4a7c314c20ef818b3f8488a647194440df6d51edc0d782bee60944dd561af2");
+  });
+
+  it("matches an independently computed blake2b256 digest for agent_requester_jobs[account 0x11...] (field index 7, Address key)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0,0,0,7]) + bytes([0]) + bytes([0x11]*32), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentRequesterJobs,
+      accountAddressToBytes("11".repeat(32)),
+    );
+    expect(key).toBe("45dc6fb0cda5281c69432620f8ed7abc702415753f624dd70122c16471d17532");
+  });
+
+  it("matches an independently computed blake2b256 digest for agent_skills[account 0x11...] (field index 8, Address key)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0,0,0,8]) + bytes([0]) + bytes([0x11]*32), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(
+      AGENT_SKILL_REGISTRY_FIELD_INDEX.agentSkills,
+      accountAddressToBytes("11".repeat(32)),
+    );
+    expect(key).toBe("42385848026076b14fc232ce61a04e00d8781e8d5a1c50e1a85b93fb27b21687");
+  });
+
+  it("matches an independently computed blake2b256 digest for disputes[job 1] (field index 18 — PATH encoding, > 15)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0xFF, 1, 18]) + (1).to_bytes(8,'little'), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.disputes, u64ToBytes(1n));
+    expect(key).toBe("b11c31085d88e28e343c4b7c1e6c04f82f1e4ea0f60ec7125c996535d56534c6");
+  });
+
+  it("matches an independently computed blake2b256 digest for proposals[1] (field index 23 — PATH encoding, > 15)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0xFF, 1, 23]) + (1).to_bytes(8,'little'), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.proposals, u64ToBytes(1n));
+    expect(key).toBe("612e562559334932e0687a7d2770850a2cbd7144cfce4cb1d8938e7e302d21da");
+  });
+});
+
 describe("u64ToBytes", () => {
   it("encodes little-endian, 8 bytes", () => {
     expect(Buffer.from(u64ToBytes(1n)).toString("hex")).toBe("0100000000000000");

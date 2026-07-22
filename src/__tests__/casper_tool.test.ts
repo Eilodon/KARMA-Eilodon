@@ -55,6 +55,14 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     getGovernanceSigners: vi.fn(async () => [{ kind: "Account" as const, hashHex: "bb".repeat(32) }]),
     getGovernanceThreshold: vi.fn(async () => 1),
     getTimelockDelayMs: vi.fn(async () => 172_800_000n),
+    deactivateSkill: vi.fn(async () => ({ txHash: "tx-deactivate-skill" })),
+    setMinReputation: vi.fn(async () => ({ txHash: "tx-set-min-reputation" })),
+    setIdentityPolicy: vi.fn(async () => ({ txHash: "tx-set-identity-policy" })),
+    getProviderJobs: vi.fn(async () => []),
+    getRequesterJobs: vi.fn(async () => []),
+    getAgentSkills: vi.fn(async () => []),
+    getDisputeInfo: vi.fn(async () => undefined),
+    getProposal: vi.fn(async () => undefined),
     ...over,
   };
 }
@@ -117,6 +125,14 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_attest_rationale",
       "casper_get_rationale_hash",
       "casper_get_x402_settlement_status",
+      "casper_deactivate_skill",
+      "casper_set_min_reputation",
+      "casper_set_identity_policy",
+      "casper_get_provider_jobs",
+      "casper_get_requester_jobs",
+      "casper_get_agent_skills",
+      "casper_get_dispute_info",
+      "casper_get_proposal",
     ]);
   });
 
@@ -661,6 +677,148 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       await expect(
         find(tools, "casper_get_x402_settlement_status").handler({ txHash: "ab".repeat(32) }, {} as never),
       ).rejects.toThrow(/CASPER_RPC_URL/);
+    });
+  });
+
+  describe("casper_deactivate_skill / casper_set_min_reputation / casper_set_identity_policy", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "99".repeat(32);
+    });
+
+    it("casper_deactivate_skill signs with the owner's resolved agent key and returns the real tx hash", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_deactivate_skill").handler({ agentId: "agent-alpha", skillId: "3" }, {} as never);
+      expect(client.deactivateSkill).toHaveBeenCalledWith(SIGNER, 3n);
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-deactivate-skill" });
+    });
+
+    it("casper_set_min_reputation forwards skillId + minReputation", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_set_min_reputation").handler(
+        { agentId: "agent-alpha", skillId: "3", minReputation: 60 },
+        {} as never,
+      );
+      expect(client.setMinReputation).toHaveBeenCalledWith(SIGNER, 3n, 60);
+    });
+
+    it("casper_set_identity_policy forwards skillId + policy", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_set_identity_policy").handler(
+        { agentId: "agent-alpha", skillId: "3", policy: 2 },
+        {} as never,
+      );
+      expect(client.setIdentityPolicy).toHaveBeenCalledWith(SIGNER, 3n, 2);
+    });
+  });
+
+  describe("casper_get_provider_jobs / casper_get_requester_jobs / casper_get_agent_skills", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "77".repeat(32);
+    });
+
+    it("casper_get_provider_jobs reads the job list for a raw account hash", async () => {
+      const client = fakeClient({ getProviderJobs: vi.fn(async () => [1n, 2n, 5n]) });
+      const tools = createCasperTools(() => client);
+      const foreignHash = "account-hash-" + "aa".repeat(32);
+      const result = await find(tools, "casper_get_provider_jobs").handler({ accountHash: foreignHash }, {} as never);
+      expect(client.getProviderJobs).toHaveBeenCalledWith(foreignHash);
+      expect(result.structuredContent).toMatchObject({ accountHash: foreignHash, jobIds: ["1", "2", "5"] });
+    });
+
+    it("casper_get_requester_jobs resolves agentId to an account hash", async () => {
+      const client = fakeClient({ getRequesterJobs: vi.fn(async () => [7n]) });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_requester_jobs").handler({ agentId: "agent-alpha" }, {} as never);
+      const expectedHash = casperAccountHash(SIGNER);
+      expect(client.getRequesterJobs).toHaveBeenCalledWith(expectedHash);
+      expect(result.structuredContent).toMatchObject({ accountHash: expectedHash, jobIds: ["7"] });
+    });
+
+    it("casper_get_agent_skills returns an empty list when the agent owns nothing", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const foreignHash = "account-hash-" + "bb".repeat(32);
+      const result = await find(tools, "casper_get_agent_skills").handler({ accountHash: foreignHash }, {} as never);
+      expect(result.structuredContent).toMatchObject({ accountHash: foreignHash, skillIds: [] });
+    });
+
+    it("casper_get_provider_jobs rejects when neither agentId nor accountHash is given", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      await expect(find(tools, "casper_get_provider_jobs").handler({}, {} as never)).rejects.toThrow(
+        /needs agentId or accountHash/,
+      );
+    });
+  });
+
+  describe("casper_get_dispute_info", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "66".repeat(32);
+    });
+
+    it("reports found=false when the job has no active dispute", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_get_dispute_info").handler({ jobId: "4" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ jobId: "4", found: false, dispute: null });
+    });
+
+    it("surfaces bond amounts + timestamp once a dispute is active", async () => {
+      const client = fakeClient({
+        getDisputeInfo: vi.fn(async () => ({
+          disputeBondMotes: 500_000n,
+          providerBondMotes: 500_000n,
+          disputedAt: 1_700_000_000n,
+        })),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_dispute_info").handler({ jobId: "4" }, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        jobId: "4",
+        found: true,
+        dispute: { disputeBondMotes: "500000", providerBondMotes: "500000", disputedAt: "1700000000" },
+      });
+    });
+  });
+
+  describe("casper_get_proposal", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "33".repeat(32);
+    });
+
+    it("reports found=false for a nonexistent proposal id", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_get_proposal").handler({ proposalId: "9" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ proposalId: "9", found: false, proposal: null });
+    });
+
+    it("decodes a SetArbiter proposal and formats the nested address", async () => {
+      const newArbiterHash = "ff".repeat(32);
+      const client = fakeClient({
+        getProposal: vi.fn(async () => ({
+          action: { kind: "SetArbiter" as const, newArbiter: { kind: "Account" as const, hashHex: newArbiterHash } },
+          proposer: { kind: "Account" as const, hashHex: "11".repeat(32) },
+          proposedAt: 1_700_000_000n,
+          executed: false,
+          cancelled: false,
+        })),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_proposal").handler({ proposalId: "2" }, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        proposalId: "2",
+        found: true,
+        proposal: {
+          action: { kind: "SetArbiter", newArbiter: "account-hash-" + newArbiterHash },
+          executed: false,
+          cancelled: false,
+        },
+      });
     });
   });
 });

@@ -365,7 +365,7 @@ competing for the same job.
 The core is settlement-agnostic: a narrow `IPaymentPlugin` (`quote` / `pay` / `verify`) and a
 `SettlementRail` (`"x402"` | `"escrow"`) let the same skill / identity / reputation model settle across
 chains. Pharos escrow and both Stellar ZK verifiers are **live on-chain**; Casper's contract is
-**deployed and verified end-to-end on Testnet** and reachable through 33 MCP tools
+**deployed and verified end-to-end on Testnet** and reachable through 41 MCP tools
 (`casper.tool.ts`) — skill registry, composition, the full evaluator/dispute/arbitration lifecycle,
 and cross-chain-rep governance are all live-wired, not just modeled offline. A governance-hardening
 redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owner-driven testnet
@@ -457,7 +457,7 @@ is pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 832 passed, 0 failed
+pnpm test          # 855 passed, 0 failed
 pnpm build
 ```
 
@@ -578,7 +578,7 @@ it stays single-process and restart-volatile until a Redis-backed version lands 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 131/131 Rust tests
-pnpm test          # full Vitest suite — 832/832 passed, 0 failed, incl. casper.tool.ts/indexer/codec
+pnpm test          # full Vitest suite — 855/855 passed, 0 failed, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 

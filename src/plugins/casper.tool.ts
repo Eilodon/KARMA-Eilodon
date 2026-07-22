@@ -110,6 +110,14 @@ export type CasperClientLike = Pick<
   | "getGovernanceSigners"
   | "getGovernanceThreshold"
   | "getTimelockDelayMs"
+  | "deactivateSkill"
+  | "setMinReputation"
+  | "setIdentityPolicy"
+  | "getProviderJobs"
+  | "getRequesterJobs"
+  | "getAgentSkills"
+  | "getDisputeInfo"
+  | "getProposal"
 >;
 
 export function createCasperTools(
@@ -1131,6 +1139,270 @@ export function createCasperTools(
     },
   };
 
+  const casperDeactivateSkill: ToolDefinition = {
+    name: "casper_deactivate_skill",
+    description:
+      "Skill owner deactivates one of their own skills (deactivate_skill) — a real signed " +
+      "transaction. An inactive skill still exists (get_skill/get_job history is untouched) but " +
+      "create_job/create_job_with_evaluator reject new jobs against it. Reverts if the caller " +
+      "isn't the skill's registered owner.",
+    inputSchema: {
+      agentId: z.string().describe("Skill owner's keystore agent id."),
+      skillId: z.string().regex(/^[0-9]+$/),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string(), skillId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.deactivateSkill(signer, BigInt(a.skillId));
+      return reply(`[KARMA] casper_deactivate_skill broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperSetMinReputation: ToolDefinition = {
+    name: "casper_set_min_reputation",
+    description:
+      "Skill owner changes the minimum agent reputation required to invoke one of their own " +
+      "skills (set_min_reputation) — a real signed transaction. Reverts if the caller isn't the " +
+      "skill's registered owner.",
+    inputSchema: {
+      agentId: z.string().describe("Skill owner's keystore agent id."),
+      skillId: z.string().regex(/^[0-9]+$/),
+      minReputation: z.number().int().min(0).max(100),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z
+        .object({
+          agentId: z.string(),
+          skillId: z.string().regex(/^[0-9]+$/),
+          minReputation: z.number().int().min(0).max(100),
+        })
+        .parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.setMinReputation(signer, BigInt(a.skillId), a.minReputation);
+      return reply(`[KARMA] casper_set_min_reputation broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperSetIdentityPolicy: ToolDefinition = {
+    name: "casper_set_identity_policy",
+    description:
+      "Skill owner changes the identity-policy id required to invoke one of their own skills " +
+      "(set_identity_policy) — a real signed transaction. Same policy-id space as " +
+      "casper_register_skill's identityPolicy arg (see docs/standards/IdentityPolicy-registry.md). " +
+      "Reverts if the caller isn't the skill's registered owner.",
+    inputSchema: {
+      agentId: z.string().describe("Skill owner's keystore agent id."),
+      skillId: z.string().regex(/^[0-9]+$/),
+      policy: z.number().int().min(0).max(255),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z
+        .object({
+          agentId: z.string(),
+          skillId: z.string().regex(/^[0-9]+$/),
+          policy: z.number().int().min(0).max(255),
+        })
+        .parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.setIdentityPolicy(signer, BigInt(a.skillId), a.policy);
+      return reply(`[KARMA] casper_set_identity_policy broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperGetProviderJobs: ToolDefinition = {
+    name: "casper_get_provider_jobs",
+    description:
+      "List every job id an agent has ever been the provider on, read directly from the Odra " +
+      "registry's 'state' dictionary (agent_provider_jobs).",
+    inputSchema: {
+      agentId: z.string().optional().describe("Keystore agent id — resolves its Casper account hash. Provide this OR accountHash."),
+      accountHash: z.string().optional().describe("Raw 'account-hash-...' string, for reading an agent not in this keystore."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string().optional(), accountHash: z.string().optional() }).parse(args);
+      if (!a.agentId && !a.accountHash) throw new Error("[KARMA] casper_get_provider_jobs needs agentId or accountHash");
+      const env = requireCasperEnv();
+      const accountHash = a.accountHash ?? casperAccountHash(requireSigner(a.agentId!));
+      const client = makeClient(env);
+      const jobIds = await client.getProviderJobs(accountHash);
+      return reply(`[KARMA] ${accountHash}: ${jobIds.length} provider job(s)`, {
+        accountHash,
+        jobIds: jobIds.map((id) => id.toString()),
+      });
+    },
+  };
+
+  const casperGetRequesterJobs: ToolDefinition = {
+    name: "casper_get_requester_jobs",
+    description:
+      "List every job id an agent has ever been the requester on, read directly from the Odra " +
+      "registry's 'state' dictionary (agent_requester_jobs).",
+    inputSchema: {
+      agentId: z.string().optional().describe("Keystore agent id — resolves its Casper account hash. Provide this OR accountHash."),
+      accountHash: z.string().optional().describe("Raw 'account-hash-...' string, for reading an agent not in this keystore."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string().optional(), accountHash: z.string().optional() }).parse(args);
+      if (!a.agentId && !a.accountHash) throw new Error("[KARMA] casper_get_requester_jobs needs agentId or accountHash");
+      const env = requireCasperEnv();
+      const accountHash = a.accountHash ?? casperAccountHash(requireSigner(a.agentId!));
+      const client = makeClient(env);
+      const jobIds = await client.getRequesterJobs(accountHash);
+      return reply(`[KARMA] ${accountHash}: ${jobIds.length} requester job(s)`, {
+        accountHash,
+        jobIds: jobIds.map((id) => id.toString()),
+      });
+    },
+  };
+
+  const casperGetAgentSkills: ToolDefinition = {
+    name: "casper_get_agent_skills",
+    description:
+      "List every skill id an agent owns, read directly from the Odra registry's 'state' " +
+      "dictionary (agent_skills).",
+    inputSchema: {
+      agentId: z.string().optional().describe("Keystore agent id — resolves its Casper account hash. Provide this OR accountHash."),
+      accountHash: z.string().optional().describe("Raw 'account-hash-...' string, for reading an agent not in this keystore."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string().optional(), accountHash: z.string().optional() }).parse(args);
+      if (!a.agentId && !a.accountHash) throw new Error("[KARMA] casper_get_agent_skills needs agentId or accountHash");
+      const env = requireCasperEnv();
+      const accountHash = a.accountHash ?? casperAccountHash(requireSigner(a.agentId!));
+      const client = makeClient(env);
+      const skillIds = await client.getAgentSkills(accountHash);
+      return reply(`[KARMA] ${accountHash}: ${skillIds.length} skill(s) owned`, {
+        accountHash,
+        skillIds: skillIds.map((id) => id.toString()),
+      });
+    },
+  };
+
+  const casperGetDisputeInfo: ToolDefinition = {
+    name: "casper_get_dispute_info",
+    description:
+      "Read a job's active dispute record (bond amounts + dispute timestamp) directly from the " +
+      "Odra registry's 'state' dictionary (disputes) — P1-A. Returns found=false once the " +
+      "dispute resolves (concede_dispute/resolve_default_concede/arbitrate); the entry isn't " +
+      "kept forever.",
+    inputSchema: { jobId: z.string().regex(/^[0-9]+$/) },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ jobId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const info = await client.getDisputeInfo(BigInt(a.jobId));
+      if (!info) {
+        return reply(`[KARMA] job ${a.jobId} has no active dispute`, { jobId: a.jobId, found: false, dispute: null });
+      }
+      return reply(
+        `[KARMA] job ${a.jobId} dispute: bond=${info.disputeBondMotes} provider_bond=${info.providerBondMotes} motes`,
+        {
+          jobId: a.jobId,
+          found: true,
+          dispute: {
+            disputeBondMotes: info.disputeBondMotes.toString(),
+            providerBondMotes: info.providerBondMotes.toString(),
+            disputedAt: info.disputedAt.toString(),
+          },
+        },
+      );
+    },
+  };
+
+  const casperGetProposal: ToolDefinition = {
+    name: "casper_get_proposal",
+    description:
+      "Read a governance proposal's full record (action, proposer, timestamp, executed/cancelled " +
+      "flags) directly from the Odra registry's 'state' dictionary (proposals) — P0-B. Pairs with " +
+      "casper_approve_proposal/casper_execute_proposal/casper_cancel_proposal for browsing a " +
+      "proposal before acting on it.",
+    inputSchema: { proposalId: z.string().regex(/^[0-9]+$/) },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ proposalId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const proposal = await client.getProposal(BigInt(a.proposalId));
+      if (!proposal) {
+        return reply(`[KARMA] proposal ${a.proposalId} does not exist`, {
+          proposalId: a.proposalId,
+          found: false,
+          proposal: null,
+        });
+      }
+      const action =
+        proposal.action.kind === "SetCrossChainRep"
+          ? {
+              kind: proposal.action.kind,
+              agent: formatCasperAddress(proposal.action.agent),
+              score: proposal.action.score,
+              sourceChain: proposal.action.sourceChain,
+            }
+          : proposal.action.kind === "SetArbiter"
+            ? { kind: proposal.action.kind, newArbiter: formatCasperAddress(proposal.action.newArbiter) }
+            : { kind: proposal.action.kind, bps: proposal.action.bps };
+      return reply(
+        `[KARMA] proposal ${a.proposalId}: ${proposal.action.kind}, executed=${proposal.executed}, cancelled=${proposal.cancelled}`,
+        {
+          proposalId: a.proposalId,
+          found: true,
+          proposal: {
+            action,
+            proposer: formatCasperAddress(proposal.proposer),
+            proposedAt: proposal.proposedAt.toString(),
+            executed: proposal.executed,
+            cancelled: proposal.cancelled,
+          },
+        },
+      );
+    },
+  };
+
   return [
     casperHealth,
     casperRegisterSkill,
@@ -1165,6 +1437,14 @@ export function createCasperTools(
     casperAttestRationale,
     casperGetRationaleHash,
     casperGetX402SettlementStatus,
+    casperDeactivateSkill,
+    casperSetMinReputation,
+    casperSetIdentityPolicy,
+    casperGetProviderJobs,
+    casperGetRequesterJobs,
+    casperGetAgentSkills,
+    casperGetDisputeInfo,
+    casperGetProposal,
   ];
 }
 
