@@ -2,7 +2,7 @@
 title: Panel Arbitration (N-of-M) — additive mode for Casper dispute resolution
 date: 2026-07-22
 author: Eilodon (design session with Claude)
-SPEC_APPROVED: false
+SPEC_APPROVED: true
 SPEC_ESCALATION: false
 ESCALATION_FINDING: ""
 ---
