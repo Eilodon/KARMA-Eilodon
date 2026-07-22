@@ -154,8 +154,89 @@ Delivered ──┤
   low-stakes parameter — can be governance-tuned later via the same proposal lifecycle, no need
   to get it perfect at launch).
 
-## 6. Risk Assessment (audit-design)
+## Risk Assessment (audit-design)
 <!-- audit-design: DO NOT DUPLICATE — update this section, do not append a second one -->
-<!-- last-run: PENDING | trigger: NORMAL -->
+<!-- last-run: 2026-07-22 | trigger: NORMAL -->
 
-*To be completed by `audit-design` after `SPEC_APPROVED: true` is set.*
+**Tier:** 3 (payments/fund custody — dispute bonds + new arbiter fees on a live governed contract)
+**Date:** 2026-07-22
+
+### Failure Modes
+
+1. **Fee distribution must stay pull-payment, or it's a new custody path** — HIGH — the spec
+   says `cast_panel_vote` "distributes `panel_arbiter_fee[job_id]` evenly" without specifying
+   *how*. The original RFC's G3 goal ("reuse `pendingWithdrawals`... no new value-custody
+   surface") only holds if this credits `pending_withdrawals` for each voting arbiter, exactly
+   like every other payout in the contract — never a push-transfer loop, which would be both the
+   first non-CEI custody path in the contract and a gas-griefing surface (a malicious/broken
+   arbiter address could make the whole settlement call revert for everyone). — mitigation in
+   plan: **NO**, must be made explicit in `writing-plans`.
+2. **Even-split remainder isn't specified** — MEDIUM — integer division of `panel_arbiter_fee`
+   across N voters leaves a remainder for any N that doesn't divide evenly. The codebase already
+   has a proven, tested answer to this exact shape of problem: skill-composition payout
+   (`register_composition`) has the last leaf absorb the rounding remainder so no mote is lost.
+   The same rule should apply here (e.g., lowest-address or last-to-vote arbiter absorbs it) —
+   otherwise this reintroduces a bug class the project already fixed elsewhere. — mitigation in
+   plan: **NO**, must be made explicit in `writing-plans`.
+3. **Mid-dispute governance panel change** — HIGH — nothing in the spec says what happens if
+   `propose_set_arbiter_panel` executes (new panel/threshold) while a job is `Disputed`+`Panel`
+   with votes already cast under the *old* panel. Unlike the single-arbiter path (one atomic
+   verdict call, no accumulated cross-transaction state), panel mode's vote tally accumulates
+   across multiple transactions — a governance change mid-flight could let stale votes count
+   toward a different threshold, or orphan an in-progress dispute. Needs an explicit rule: either
+   (a) snapshot the panel + threshold onto the job record at `dispute_result_via_panel` time so a
+   later governance change never affects an in-flight dispute, or (b) block
+   `propose_set_arbiter_panel` execution while any job is `Disputed`+`Panel`. (a) is simpler and
+   matches how `dispute_bond_bps` is already read at dispute time, not re-read later — recommend
+   (a) in `writing-plans` unless a reason emerges not to. — mitigation in plan: **NO**.
+
+### Layer Signals
+
+- **L1 Logic:** a `panel.len() == 1` technically passes "odd + threshold = len/2+1" validation but
+  is a degenerate one-person "panel" — same trust model as the existing single-arbiter path with
+  extra plumbing and a fee on top, for zero security benefit. Add a minimum panel size (≥3) to
+  the `propose_set_arbiter_panel` validation.
+- **L2 Concurrency:** a vote landing after the job has already settled (two arbiters' votes both
+  "would" reach threshold, only the first-included transaction actually does) is already covered
+  by the existing test-plan line "vote after settlement already executed (reject)" — no new
+  finding, confirming the state-machine precondition (`job must be Disputed + Panel mode`)
+  already handles this correctly by construction.
+- **L6 Observability:** no new events (`PanelVoteCast`, `PanelArbitrated`-equivalent,
+  `PanelDefaultResolved`) are specified for the three new entry points, breaking the pattern
+  every other state transition in this contract follows (`DisputeResponsePosted`,
+  `DisputeArbitrated`, etc. all emit). Flagged as **ASSUMED** — add explicit event list in
+  `writing-plans`.
+- L3 Data, L4 Integration, L5 Security (beyond L1/L2 above), L7 Cross-cutting: no signal beyond
+  what's already addressed in the spec's own §5 preconditions.
+
+### Assumptions to Verify
+
+- **ASSUMED:** "Independently operated panel keys" is an operational precondition, not something
+  code can enforce — already disclosed plainly in §5, not hidden, but still unverified until real
+  key ceremony happens.
+- **ASSUMED:** event emissions will mirror the existing pattern exactly — not yet itemized (see
+  L6 above).
+- **Accepted, not a defect:** a flat participation fee guarantees an arbiter showed up, not that
+  their vote was careful — this is the deliberate tradeoff made in brainstorming to avoid a
+  majority-alignment herding incentive, and there's no on-chain ground truth to condition payment
+  on correctness anyway. Worth one line in the eventual demo narrative so it isn't oversold as
+  "guarantees quality," only "guarantees participation."
+
+### Abductive Hypotheses
+
+1. **Interaction:** removing the herding incentive (flat fee, not majority-conditional) also
+   removes any on-chain incentive for *careful* judgment specifically — an arbiter who votes
+   instantly and arbitrarily still gets paid. Individually-correct design choices (avoid herding;
+   reward participation) compound into "payment tracks presence, not quality" — accepted per
+   above, but worth naming since neither failure mode alone would have surfaced it.
+2. **Adversarial/scale:** if the existing 2-of-2 governance multisig is ever compromised, the
+   attacker could both stack `arbiter_panel` with their own keys **and** wait out the 48h
+   timelock unopposed — this is the same "arbiter capture" residual risk the original RFC already
+   named for the single-arbiter case (§6), now extended to cover panel composition too. Not a new
+   risk category this design introduces — a cross-reference, not a new mitigation, is enough.
+
+### Gate Result
+
+PASS WITH FLAGS — proceed to `writing-plans`; it MUST include explicit mitigation for the two
+HIGH findings (pull-payment fee distribution; mid-dispute governance-change handling) and should
+also close the MEDIUM (remainder handling) and the L1/L6 gaps above before implementation.
