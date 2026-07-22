@@ -43,6 +43,10 @@ pub const REP_SLASH_STEP: u32 = 10;
 pub const REP_FLOOR: u32 = 1;
 pub const MIN_DISPUTE_BOND_MOTES: u64 = 1_000_000_000; // 1 CSPR in motes (mirrors 0.001 ether)
 pub const RESPONSE_WINDOW: u64 = 3 * 24 * 60 * 60 * 1_000; // 3 days in ms
+// ── P4-A: Panel Arbitration (N-of-M) ──
+pub const PANEL_VOTE_WINDOW: u64 = 3 * 24 * 60 * 60 * 1_000; // 3 days in ms, mirrors RESPONSE_WINDOW
+pub const MIN_ARBITER_PANEL_SIZE: u32 = 3;
+pub const MAX_ARBITER_PANEL_SIZE: u32 = 9; // small + bounded, mirrors MAX_COMPOSITION_LEAVES's spirit
 
 // ─── Errors ────────────────────────────────────────────────────────────────
 #[odra::odra_error]
@@ -108,6 +112,17 @@ pub enum Error {
     // ── P2-A: AI decision rationale attestation ──
     RationaleAlreadyAttested = 54,
     InvalidRationaleHash = 55,
+    // ── P4-A: Panel Arbitration (N-of-M) ──
+    PanelSizeTooSmall = 56,
+    PanelSizeMustBeOdd = 57,
+    InvalidPanelThreshold = 58,
+    DuplicatePanelMember = 59,
+    PanelNotConfigured = 60,
+    NotPanelArbiter = 61,
+    AlreadyVotedOnPanel = 62,
+    WrongArbitrationMode = 63,
+    WrongPanelDisputeAmount = 64,
+    PanelVoteWindowOpen = 65,
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -127,6 +142,18 @@ pub enum JobStatus {
 pub enum Verdict {
     ProviderAtFault,
     RequesterAtFault,
+}
+
+#[odra::odra_type]
+pub enum ArbitrationMode {
+    Single,
+    Panel,
+}
+
+#[odra::odra_type]
+pub struct PanelVote {
+    pub arbiter: Address,
+    pub verdict: Verdict,
 }
 
 #[odra::odra_type]
@@ -184,6 +211,13 @@ pub enum ProposalAction {
     },
     SetDisputeBondBps {
         bps: u32,
+    },
+    SetArbiterPanel {
+        panel: Vec<Address>,
+        threshold: u32,
+    },
+    SetPanelArbiterFee {
+        fee: U512,
     },
 }
 
@@ -401,6 +435,53 @@ pub struct Composition {
     pub weights_bps: Vec<u32>,
 }
 
+#[odra::event]
+pub struct ArbiterPanelUpdated {
+    pub old_panel: Vec<Address>,
+    pub new_panel: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[odra::event]
+pub struct PanelArbiterFeeUpdated {
+    pub old_fee: U512,
+    pub new_fee: U512,
+}
+
+#[odra::event]
+pub struct PanelDisputePosted {
+    pub job_id: u64,
+    pub requester: Address,
+    pub panel_fee: U512,
+}
+
+#[odra::event]
+pub struct PanelVoteCast {
+    pub job_id: u64,
+    pub arbiter: Address,
+    pub verdict: Verdict,
+}
+
+#[odra::event]
+pub struct PanelArbitrated {
+    pub job_id: u64,
+    pub verdict: Verdict,
+    pub provider_at_fault_votes: u32,
+    pub requester_at_fault_votes: u32,
+}
+
+#[odra::event]
+pub struct PanelFeeDistributed {
+    pub job_id: u64,
+    pub arbiter: Address,
+    pub amount: U512,
+}
+
+#[odra::event]
+pub struct PanelDefaultResolved {
+    pub job_id: u64,
+}
+
 // ─── Contract ──────────────────────────────────────────────────────────────
 #[odra::module(events = [
     SkillRegistered, SkillDeactivated, JobCreated, ResultDelivered, JobCompleted,
@@ -409,6 +490,8 @@ pub struct Composition {
     ProposalCreated, ProposalApproved, ProposalExecuted, ProposalCancelled, GovernanceConfigured,
     DisputeBondPosted, DisputeResponsePosted, DisputeConceded, DisputeArbitrated,
     ArbiterUpdated, DisputeBondBpsUpdated,
+    ArbiterPanelUpdated, PanelArbiterFeeUpdated, PanelDisputePosted, PanelVoteCast,
+    PanelArbitrated, PanelFeeDistributed, PanelDefaultResolved,
 ])]
 pub struct AgentSkillRegistry {
     review_window: Var<u64>,
@@ -444,6 +527,18 @@ pub struct AgentSkillRegistry {
     /// Purely additive vs. the `Job` struct already on-chain — keeps the upgrade backward-
     /// compatible with every job written before this field existed.
     rationale_hash: Mapping<u64, Bytes>,
+    // P4-A: Panel Arbitration (N-of-M). Governance-managed live fields (arbiter_panel,
+    // panel_threshold, panel_arbiter_fee); a dispute snapshots them at post-time into the
+    // job_panel_* mappings below so a later governance change never affects an in-flight
+    // dispute (audit-design HIGH finding #3 mitigation).
+    arbiter_panel: Var<Vec<Address>>,
+    panel_threshold: Var<u32>,
+    panel_arbiter_fee: Var<U512>,
+    dispute_arbitration_mode: Mapping<u64, ArbitrationMode>,
+    job_panel_snapshot: Mapping<u64, Vec<Address>>,
+    job_panel_threshold_snapshot: Mapping<u64, u32>,
+    panel_arbiter_fee_collected: Mapping<u64, U512>,
+    panel_votes: Mapping<u64, Vec<PanelVote>>,
 }
 
 #[odra::module]
@@ -1281,6 +1376,21 @@ impl AgentSkillRegistry {
                 let old_bps = self.dispute_bond_bps.get_or_default();
                 self.dispute_bond_bps.set(*bps);
                 self.env().emit_event(DisputeBondBpsUpdated { old_bps, new_bps: *bps });
+            }
+            ProposalAction::SetArbiterPanel { panel, threshold } => {
+                let old_panel = self.arbiter_panel.get_or_default();
+                self.arbiter_panel.set(panel.clone());
+                self.panel_threshold.set(*threshold);
+                self.env().emit_event(ArbiterPanelUpdated {
+                    old_panel,
+                    new_panel: panel.clone(),
+                    threshold: *threshold,
+                });
+            }
+            ProposalAction::SetPanelArbiterFee { fee } => {
+                let old_fee = self.panel_arbiter_fee.get_or_default();
+                self.panel_arbiter_fee.set(*fee);
+                self.env().emit_event(PanelArbiterFeeUpdated { old_fee, new_fee: *fee });
             }
         }
 
