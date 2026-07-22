@@ -139,6 +139,7 @@ pub enum JobStatus {
 }
 
 #[odra::odra_type]
+#[derive(Copy)]
 pub enum Verdict {
     ProviderAtFault,
     RequesterAtFault,
@@ -987,7 +988,7 @@ impl AgentSkillRegistry {
         if caller != self.arbiter.get().unwrap() {
             self.env().revert(Error::NotArbiter);
         }
-        let mut j = self.require_job(job_id);
+        let j = self.require_job(job_id);
         if j.status != JobStatus::Disputed {
             self.env().revert(Error::NotDisputed);
         }
@@ -1000,11 +1001,27 @@ impl AgentSkillRegistry {
             self.env().revert(Error::ProviderNotResponded);
         }
 
+        self.settle_dispute_verdict(job_id, j, d.dispute_bond, d.provider_bond, verdict);
+        self.env().emit_event(DisputeArbitrated { job_id, verdict, arbiter: caller });
+    }
+
+    /// Shared by `arbitrate` (single-arbiter) and `cast_panel_vote` (panel, once threshold is
+    /// reached) — exactly one audited fund-movement/reputation code path for a dispute verdict,
+    /// per audit-design goal G6 (plan Task 2). Extracted verbatim from `arbitrate`'s original
+    /// body — no logic changed, only relocated.
+    fn settle_dispute_verdict(
+        &mut self,
+        job_id: u64,
+        mut j: Job,
+        dispute_bond: U512,
+        provider_bond: U512,
+        verdict: Verdict,
+    ) {
         match verdict {
             Verdict::ProviderAtFault => {
                 j.status = JobStatus::Refunded;
                 let credit = self.pending_withdrawals.get(&j.requester).unwrap_or_default()
-                    + j.escrow_amount + d.dispute_bond + d.provider_bond;
+                    + j.escrow_amount + dispute_bond + provider_bond;
                 self.pending_withdrawals.set(&j.requester, credit);
                 self.slash_agent_rep(j.provider);
                 self.slash_skill_rep(j.skill_id);
@@ -1016,7 +1033,7 @@ impl AgentSkillRegistry {
             Verdict::RequesterAtFault => {
                 j.status = JobStatus::Completed;
                 j.completed_at = self.env().get_block_time();
-                let provider_total = j.escrow_amount + d.provider_bond + d.dispute_bond;
+                let provider_total = j.escrow_amount + provider_bond + dispute_bond;
                 let credit = self.pending_withdrawals.get(&j.provider).unwrap_or_default() + provider_total;
                 self.pending_withdrawals.set(&j.provider, credit);
                 let mut s = self.require_skill(j.skill_id);
@@ -1038,7 +1055,6 @@ impl AgentSkillRegistry {
                 });
             }
         }
-        self.env().emit_event(DisputeArbitrated { job_id, verdict, arbiter: caller });
     }
 
     /// P1-A/P0-B: Propose a dispute bond percentage change. 10_000 = 1× escrow (default).
