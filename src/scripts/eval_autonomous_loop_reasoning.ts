@@ -18,7 +18,7 @@ import { buildAnthropicReasoningProvider, type ReasoningProvider } from "../lib/
 import { pickGreedyBest } from "../lib/autonomous_loop/loop.js";
 
 const greedyOnlyProvider: ReasoningProvider = async ({ eligible }) => {
-  const best = pickGreedyBest(eligible)!;
+  const best = pickGreedyBest(eligible);
   return { skillId: best.skillId, rationale: "greedy formula only — no judgment layer" };
 };
 
