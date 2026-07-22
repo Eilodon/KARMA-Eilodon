@@ -1,3 +1,10 @@
+// `#[odra::module(events = [...])]`'s schema-generation codegen chains one iterator per listed
+// event (Chain<Chain<Chain<...>>>) to build the contract schema; past ~30 events (P4-A's panel-
+// arbitration additions pushed AgentSkillRegistry over that) the resulting nested type exceeds
+// rustc's default 128 query-recursion limit during layout computation (test builds only —
+// `cargo check` doesn't hit this path). Raised, not worked around: no code shape avoids this
+// short of removing events, which isn't the goal.
+#![recursion_limit = "256"]
 // Odra's `#[odra::module]` macro emits `#[cfg(odra_module)]` blocks (its WASM-vs-test gate).
 // The cfg name isn't known to rustc, so the lint fires once per attribute — silenced here at
 // the crate root rather than per-call site.

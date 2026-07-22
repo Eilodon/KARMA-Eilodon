@@ -118,6 +118,13 @@ export type CasperClientLike = Pick<
   | "getAgentSkills"
   | "getDisputeInfo"
   | "getProposal"
+  | "proposeSetArbiterPanel"
+  | "proposeSetPanelArbiterFee"
+  | "disputeResultViaPanel"
+  | "castPanelVote"
+  | "resolvePanelDefault"
+  | "getArbiterPanel"
+  | "getPanelThreshold"
 >;
 
 export function createCasperTools(
@@ -825,6 +832,94 @@ export function createCasperTools(
     },
   };
 
+  const casperDisputeResultViaPanel: ToolDefinition = {
+    name: "casper_dispute_result_via_panel",
+    description:
+      "P4-A: like casper_dispute_result, but flags the job for N-of-M panel arbitration instead " +
+      "of the single arbiter — a real payable transaction. bondPlusFeeMotes must equal the " +
+      "required dispute bond PLUS the flat panel-arbiter fee, combined (NOT just the bond alone " +
+      "— the contract attaches both in one transfer). Reverts PanelNotConfigured if governance " +
+      "hasn't set a panel yet, WrongPanelDisputeAmount on a mismatch.",
+    inputSchema: {
+      agentId: z.string().describe("Requester's keystore agent id."),
+      jobId: z.string().regex(/^[0-9]+$/),
+      bondPlusFeeMotes: MOTES.describe("Required dispute bond + panel_arbiter_fee, combined, in motes."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({
+        agentId: z.string(),
+        jobId: z.string().regex(/^[0-9]+$/),
+        bondPlusFeeMotes: MOTES,
+      }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.disputeResultViaPanel(signer, BigInt(a.jobId), BigInt(a.bondPlusFeeMotes));
+      return reply(`[KARMA] casper_dispute_result_via_panel broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperCastPanelVote: ToolDefinition = {
+    name: "casper_cast_panel_vote",
+    description:
+      "P4-A: panel-member only — cast one vote on a panel-mode dispute (membership checked " +
+      "against the dispute's own snapshot, not the live governance panel). Settles automatically " +
+      "and pays every voter once enough votes agree on one verdict — no separate 'execute' call. " +
+      "Reverts NotPanelArbiter, AlreadyVotedOnPanel, or WrongArbitrationMode as appropriate.",
+    inputSchema: {
+      agentId: z.string().describe("Panel arbiter's keystore agent id."),
+      jobId: z.string().regex(/^[0-9]+$/),
+      verdict: z.enum(["ProviderAtFault", "RequesterAtFault"]),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({
+        agentId: z.string(),
+        jobId: z.string().regex(/^[0-9]+$/),
+        verdict: z.enum(["ProviderAtFault", "RequesterAtFault"]),
+      }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.castPanelVote(signer, BigInt(a.jobId), a.verdict);
+      return reply(`[KARMA] casper_cast_panel_vote broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperResolvePanelDefault: ToolDefinition = {
+    name: "casper_resolve_panel_default",
+    description:
+      "P4-A: anyone may call once PANEL_VOTE_WINDOW elapses without the panel reaching its " +
+      "threshold — resolves ProviderAtFault (same default direction as " +
+      "casper_resolve_default_concede) and still pays whichever arbiters DID vote.",
+    inputSchema: {
+      jobId: z.string().regex(/^[0-9]+$/),
+      callerAgentId: z.string().describe("Any keystore agent id — no access control beyond the elapsed window."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ jobId: z.string().regex(/^[0-9]+$/), callerAgentId: z.string() }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.callerAgentId);
+      const client = makeClient(env);
+      const { txHash } = await client.resolvePanelDefault(signer, BigInt(a.jobId));
+      return reply(`[KARMA] casper_resolve_panel_default broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
   const casperGetCrossChainRep: ToolDefinition = {
     name: "casper_get_cross_chain_rep",
     description:
@@ -855,10 +950,11 @@ export function createCasperTools(
     name: "casper_get_governance_state",
     description:
       "Read the Odra registry's full governance configuration in one round trip — multisig " +
-      "signers, approval threshold, timelock delay (ms), and the current dispute arbiter — " +
-      "directly from the 'state' dictionary's four separate Var fields (mirrors " +
-      "get_governance_signers/get_governance_threshold/get_timelock_delay/get_arbiter), instead " +
-      "of four separate casper_* round-trips.",
+      "signers, approval threshold, timelock delay (ms), the current dispute arbiter, and the " +
+      "N-of-M panel (P4-A: arbiterPanel + panelThreshold, empty/0 if governance hasn't set one) " +
+      "— directly from the 'state' dictionary's Var fields (mirrors get_governance_signers/" +
+      "get_governance_threshold/get_timelock_delay/get_arbiter/get_arbiter_panel/" +
+      "get_panel_threshold), instead of six separate casper_* round-trips.",
     inputSchema: {},
     capabilities: ["network"],
     allowedPhases: [...PHASES],
@@ -868,20 +964,25 @@ export function createCasperTools(
       assertInProcess();
       const env = requireCasperEnv();
       const client = makeClient(env);
-      const [signers, threshold, timelockDelayMs, arbiter] = await Promise.all([
+      const [signers, threshold, timelockDelayMs, arbiter, panel, panelThreshold] = await Promise.all([
         client.getGovernanceSigners(),
         client.getGovernanceThreshold(),
         client.getTimelockDelayMs(),
         client.getArbiter(),
+        client.getArbiterPanel(),
+        client.getPanelThreshold(),
       ]);
       return reply(
         `[KARMA] governance: ${signers.length} signer(s), threshold=${threshold}, ` +
-          `timelock=${timelockDelayMs}ms, arbiter=${arbiter ? formatCasperAddress(arbiter) : "unset"}`,
+          `timelock=${timelockDelayMs}ms, arbiter=${arbiter ? formatCasperAddress(arbiter) : "unset"}, ` +
+          `panel=${panel.length} member(s) (threshold=${panelThreshold})`,
         {
           signers: signers.map(formatCasperAddress),
           threshold,
           timelockDelayMs: timelockDelayMs.toString(),
           arbiter: arbiter ? formatCasperAddress(arbiter) : null,
+          panel: panel.map(formatCasperAddress),
+          panelThreshold,
         },
       );
     },
@@ -966,6 +1067,63 @@ export function createCasperTools(
       const client = makeClient(env);
       const { txHash } = await client.proposeSetDisputeBondBps(signer, a.bps);
       return reply(`[KARMA] casper_propose_set_dispute_bond_bps broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperProposeSetArbiterPanel: ToolDefinition = {
+    name: "casper_propose_set_arbiter_panel",
+    description:
+      "P4-A: propose a new N-of-M arbiter panel (odd size, MIN_ARBITER_PANEL_SIZE..=" +
+      "MAX_ARBITER_PANEL_SIZE, threshold must be a strict majority — panel.length / 2 + 1). " +
+      "Governance-signer only; same propose/approve/execute + timelock lifecycle as " +
+      "casper_propose_set_arbiter — no single-signer bypass.",
+    inputSchema: {
+      agentId: z.string().describe("A governance-signer's keystore agent id."),
+      panel: z.array(z.string()).describe("Arbiter 'account-hash-<hex>' addresses — length must be odd, >= 3, no duplicates."),
+      threshold: z.number().int().min(1).describe("Must equal panel.length / 2 + 1 (strict majority)."),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({
+        agentId: z.string(),
+        panel: z.array(z.string()),
+        threshold: z.number().int().min(1),
+      }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.proposeSetArbiterPanel(signer, a.panel, a.threshold);
+      return reply(`[KARMA] casper_propose_set_arbiter_panel broadcast; tx=${txHash}`, { txHash });
+    },
+  };
+
+  const casperProposeSetPanelArbiterFee: ToolDefinition = {
+    name: "casper_propose_set_panel_arbiter_fee",
+    description:
+      "P4-A: propose a new flat panel-arbiter fee (motes) — paid to every panel member who " +
+      "votes on a panel-mode dispute before PANEL_VOTE_WINDOW elapses, on top of the dispute " +
+      "bond. Governance-signer only; same propose/approve/execute + timelock lifecycle as the " +
+      "other propose_* tools.",
+    inputSchema: {
+      agentId: z.string().describe("A governance-signer's keystore agent id."),
+      feeMotes: MOTES,
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string(), feeMotes: MOTES }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.proposeSetPanelArbiterFee(signer, BigInt(a.feeMotes));
+      return reply(`[KARMA] casper_propose_set_panel_arbiter_fee broadcast; tx=${txHash}`, { txHash });
     },
   };
 
@@ -1426,11 +1584,16 @@ export function createCasperTools(
     casperConcedeDispute,
     casperResolveDefaultConcede,
     casperArbitrate,
+    casperDisputeResultViaPanel,
+    casperCastPanelVote,
+    casperResolvePanelDefault,
     casperGetCrossChainRep,
     casperGetGovernanceState,
     casperProposeSetCrossChainRep,
     casperProposeSetArbiter,
     casperProposeSetDisputeBondBps,
+    casperProposeSetArbiterPanel,
+    casperProposeSetPanelArbiterFee,
     casperApproveProposal,
     casperExecuteProposal,
     casperCancelProposal,

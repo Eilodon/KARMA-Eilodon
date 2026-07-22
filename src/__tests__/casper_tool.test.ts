@@ -63,6 +63,13 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     getAgentSkills: vi.fn(async () => []),
     getDisputeInfo: vi.fn(async () => undefined),
     getProposal: vi.fn(async () => undefined),
+    proposeSetArbiterPanel: vi.fn(async () => ({ txHash: "tx-propose-panel" })),
+    proposeSetPanelArbiterFee: vi.fn(async () => ({ txHash: "tx-propose-panel-fee" })),
+    disputeResultViaPanel: vi.fn(async () => ({ txHash: "tx-dispute-panel" })),
+    castPanelVote: vi.fn(async () => ({ txHash: "tx-panel-vote" })),
+    resolvePanelDefault: vi.fn(async () => ({ txHash: "tx-panel-default" })),
+    getArbiterPanel: vi.fn(async () => []),
+    getPanelThreshold: vi.fn(async () => 0),
     ...over,
   };
 }
@@ -89,7 +96,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("registers exactly the 33 documented tools", () => {
+  it("registers exactly the 46 documented tools", () => {
     const names = createCasperTools(() => fakeClient()).map((t) => t.name);
     expect(names).toEqual([
       "casper_health",
@@ -114,11 +121,16 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_concede_dispute",
       "casper_resolve_default_concede",
       "casper_arbitrate",
+      "casper_dispute_result_via_panel",
+      "casper_cast_panel_vote",
+      "casper_resolve_panel_default",
       "casper_get_cross_chain_rep",
       "casper_get_governance_state",
       "casper_propose_set_cross_chain_rep",
       "casper_propose_set_arbiter",
       "casper_propose_set_dispute_bond_bps",
+      "casper_propose_set_arbiter_panel",
+      "casper_propose_set_panel_arbiter_fee",
       "casper_approve_proposal",
       "casper_execute_proposal",
       "casper_cancel_proposal",
@@ -538,6 +550,37 @@ describe("createCasperTools (T13-live MCP surface)", () => {
         find(tools, "casper_arbitrate").handler({ agentId: "agent-alpha", jobId: "1", verdict: "Tie" }, {} as never),
       ).rejects.toThrow();
     });
+
+    it("casper_dispute_result_via_panel forwards the combined bond+fee amount", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_dispute_result_via_panel").handler(
+        { agentId: "agent-alpha", jobId: "1", bondPlusFeeMotes: "5500000" },
+        {} as never,
+      );
+      expect(client.disputeResultViaPanel).toHaveBeenCalledWith(SIGNER, 1n, 5_500_000n);
+    });
+
+    it("casper_cast_panel_vote forwards jobId + verdict and rejects an invalid verdict", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_cast_panel_vote").handler(
+        { agentId: "agent-alpha", jobId: "1", verdict: "ProviderAtFault" },
+        {} as never,
+      );
+      expect(client.castPanelVote).toHaveBeenCalledWith(SIGNER, 1n, "ProviderAtFault");
+
+      await expect(
+        find(tools, "casper_cast_panel_vote").handler({ agentId: "agent-alpha", jobId: "1", verdict: "Tie" }, {} as never),
+      ).rejects.toThrow();
+    });
+
+    it("casper_resolve_panel_default hits the right entry point, no access control beyond the window", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_resolve_panel_default").handler({ callerAgentId: "agent-alpha", jobId: "1" }, {} as never);
+      expect(client.resolvePanelDefault).toHaveBeenCalledWith(SIGNER, 1n);
+    });
   });
 
   describe("casper_get_governance_state", () => {
@@ -546,7 +589,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       process.env.KARMA_ODRA_REGISTRY = "hash-" + "89".repeat(32);
     });
 
-    it("reads signers/threshold/timelock/arbiter in a single call and formats addresses", async () => {
+    it("reads signers/threshold/timelock/arbiter/panel in a single call and formats addresses", async () => {
       const client = fakeClient({
         getGovernanceSigners: vi.fn(async () => [
           { kind: "Account" as const, hashHex: "11".repeat(32) },
@@ -555,6 +598,12 @@ describe("createCasperTools (T13-live MCP surface)", () => {
         getGovernanceThreshold: vi.fn(async () => 2),
         getTimelockDelayMs: vi.fn(async () => 172_800_000n),
         getArbiter: vi.fn(async () => ({ kind: "Account" as const, hashHex: "11".repeat(32) })),
+        getArbiterPanel: vi.fn(async () => [
+          { kind: "Account" as const, hashHex: "33".repeat(32) },
+          { kind: "Account" as const, hashHex: "44".repeat(32) },
+          { kind: "Account" as const, hashHex: "55".repeat(32) },
+        ]),
+        getPanelThreshold: vi.fn(async () => 2),
       });
       const tools = createCasperTools(() => client);
       const result = await find(tools, "casper_get_governance_state").handler({}, {} as never);
@@ -563,6 +612,12 @@ describe("createCasperTools (T13-live MCP surface)", () => {
         threshold: 2,
         timelockDelayMs: "172800000",
         arbiter: "account-hash-" + "11".repeat(32),
+        panel: [
+          "account-hash-" + "33".repeat(32),
+          "account-hash-" + "44".repeat(32),
+          "account-hash-" + "55".repeat(32),
+        ],
+        panelThreshold: 2,
       });
     });
 
@@ -611,6 +666,21 @@ describe("createCasperTools (T13-live MCP surface)", () => {
 
       await find(tools, "casper_propose_set_dispute_bond_bps").handler({ agentId: "agent-alpha", bps: 5000 }, {} as never);
       expect(client.proposeSetDisputeBondBps).toHaveBeenCalledWith(SIGNER, 5000);
+    });
+
+    it("casper_propose_set_arbiter_panel forwards panel + threshold", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const panel = ["account-hash-" + "aa".repeat(32), "account-hash-" + "bb".repeat(32), "account-hash-" + "cc".repeat(32)];
+      await find(tools, "casper_propose_set_arbiter_panel").handler({ agentId: "agent-alpha", panel, threshold: 2 }, {} as never);
+      expect(client.proposeSetArbiterPanel).toHaveBeenCalledWith(SIGNER, panel, 2);
+    });
+
+    it("casper_propose_set_panel_arbiter_fee forwards the fee amount", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      await find(tools, "casper_propose_set_panel_arbiter_fee").handler({ agentId: "agent-alpha", feeMotes: "2500000" }, {} as never);
+      expect(client.proposeSetPanelArbiterFee).toHaveBeenCalledWith(SIGNER, 2_500_000n);
     });
 
     it("casper_approve_proposal / casper_execute_proposal / casper_cancel_proposal forward the proposal id", async () => {

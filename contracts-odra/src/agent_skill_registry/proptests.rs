@@ -149,4 +149,131 @@ proptest! {
             );
         }
     }
+
+    /// Panel-mode mirror of `escrow_is_conserved_across_arbitrated_dispute` — same invariant,
+    /// routed through dispute_result_via_panel + cast_panel_vote (3-arbiter panel, 2-of-3)
+    /// instead of dispute_result + arbitrate. Fee flows are asserted separately (fee is
+    /// additive to the bond math, not a slice of it — audit-design HIGH #1 in practice).
+    #[test]
+    fn escrow_is_conserved_across_panel_arbitrated_dispute(
+        price in 1_000_000u64..10_000_000_000u64,
+        provider_at_fault in proptest::bool::ANY,
+        panel_fee in 0u64..5_000_000u64,
+    ) {
+        let (env, mut reg, alpha, beta) = setup();
+        let deployer = env.get_account(0);
+        let arb1 = env.get_account(3);
+        let arb2 = env.get_account(4);
+        let arb3 = env.get_account(5);
+
+        env.set_caller(deployer);
+        let panel_proposal = reg.propose_set_arbiter_panel(vec![arb1, arb2, arb3], 2);
+        env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+        reg.execute_proposal(panel_proposal);
+        let fee_proposal = reg.propose_set_panel_arbiter_fee(U512::from(panel_fee));
+        env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+        reg.execute_proposal(fee_proposal);
+
+        env.set_caller(alpha);
+        let skill_id = reg.register_skill(
+            "prop-panel".to_string(), "proptest panel skill".to_string(), "mcp://alpha".to_string(),
+            U512::from(price), 0, IDENTITY_POLICY_NONE,
+        );
+        env.set_caller(beta);
+        let job_id = reg.with_tokens(U512::from(price))
+            .create_job(skill_id, Bytes::from(b"proptest-panel-task".to_vec()), 24 * 60 * 60 * 1_000);
+        env.set_caller(alpha);
+        reg.deliver_result(job_id, Bytes::from(b"proptest-panel-result".to_vec()));
+
+        let bond = dispute_bond_for(price);
+        let fee = U512::from(panel_fee);
+        env.set_caller(beta);
+        reg.with_tokens(bond + fee).dispute_result_via_panel(job_id);
+        env.set_caller(alpha);
+        reg.with_tokens(bond).respond_to_dispute(job_id);
+
+        let verdict = if provider_at_fault { Verdict::ProviderAtFault } else { Verdict::RequesterAtFault };
+        env.set_caller(arb1);
+        reg.cast_panel_vote(job_id, verdict);
+        env.set_caller(arb2);
+        reg.cast_panel_vote(job_id, verdict); // 2-of-3 reached, settles
+
+        let expected_bond_payout = U512::from(price) + bond + bond;
+        let (winner, loser) = if provider_at_fault { (beta, alpha) } else { (alpha, beta) };
+
+        prop_assert_eq!(reg.pending_withdrawals_of(winner), expected_bond_payout);
+        prop_assert_eq!(reg.pending_withdrawals_of(loser), U512::zero());
+
+        // Fee conservation, checked separately from bond conservation: exactly `fee` total
+        // credited to arbiters, split across the 2 who voted, arb3 gets zero.
+        let arb_total = reg.pending_withdrawals_of(arb1) + reg.pending_withdrawals_of(arb2);
+        prop_assert_eq!(arb_total, fee);
+        prop_assert_eq!(reg.pending_withdrawals_of(arb3), U512::zero());
+
+        // Global conservation: bond-path payout + fee-path payout together equal exactly what
+        // was attached across all 3 payable calls (escrow + 2×bond + fee), no more, no less.
+        let total_credited = reg.pending_withdrawals_of(winner)
+            + reg.pending_withdrawals_of(loser)
+            + reg.pending_withdrawals_of(arb1)
+            + reg.pending_withdrawals_of(arb2)
+            + reg.pending_withdrawals_of(arb3);
+        prop_assert_eq!(total_credited, expected_bond_payout + fee);
+    }
+
+    /// Panel-mode mirror of `reputation_stays_within_bounds_over_many_rounds` — same invariant,
+    /// routed through the panel path over a random-length sequence of rounds.
+    #[test]
+    fn reputation_stays_within_bounds_over_many_panel_rounds(
+        rounds in proptest::collection::vec(proptest::bool::weighted(0.7), 1..40),
+    ) {
+        let (env, mut reg, alpha, beta) = setup();
+        let deployer = env.get_account(0);
+        let arb1 = env.get_account(3);
+        let arb2 = env.get_account(4);
+        let arb3 = env.get_account(5);
+        env.set_caller(deployer);
+        let panel_proposal = reg.propose_set_arbiter_panel(vec![arb1, arb2, arb3], 2);
+        env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+        reg.execute_proposal(panel_proposal);
+
+        env.set_caller(alpha);
+        let skill_id = reg.register_skill(
+            "prop-panel-rep".to_string(), "proptest panel reputation skill".to_string(),
+            "mcp://alpha".to_string(), U512::from(1_000_000u64), 0, IDENTITY_POLICY_NONE,
+        );
+
+        for (i, provider_at_fault) in rounds.iter().enumerate() {
+            let task_label = format!("prop-panel-rep-round-{i}");
+
+            env.set_caller(beta);
+            let job_id = reg.with_tokens(U512::from(1_000_000u64))
+                .create_job(skill_id, Bytes::from(task_label.clone().into_bytes()), 24 * 60 * 60 * 1_000);
+            env.set_caller(alpha);
+            reg.deliver_result(job_id, Bytes::from(format!("{task_label}-result").into_bytes()));
+
+            let bond = dispute_bond_for(1_000_000);
+            env.set_caller(beta);
+            reg.with_tokens(bond).dispute_result_via_panel(job_id);
+            env.set_caller(alpha);
+            reg.with_tokens(bond).respond_to_dispute(job_id);
+
+            let verdict = if *provider_at_fault { Verdict::ProviderAtFault } else { Verdict::RequesterAtFault };
+            env.set_caller(arb1);
+            reg.cast_panel_vote(job_id, verdict);
+            env.set_caller(arb2);
+            reg.cast_panel_vote(job_id, verdict);
+
+            let skill_rep = reg.get_skill(skill_id).reputation_score;
+            let agent_rep = reg.agent_reputation(alpha);
+
+            prop_assert!(
+                (REP_FLOOR..=MAX_REPUTATION).contains(&skill_rep),
+                "panel round {i}: skill reputation {skill_rep} left [{REP_FLOOR}, {MAX_REPUTATION}]",
+            );
+            prop_assert!(
+                (REP_FLOOR..=MAX_REPUTATION).contains(&agent_rep),
+                "panel round {i}: agent reputation {agent_rep} left [{REP_FLOOR}, {MAX_REPUTATION}]",
+            );
+        }
+    }
 }
