@@ -36,7 +36,11 @@ new, additive entry points alongside (never replacing) the existing
 `dispute_result` / `arbitrate` / `resolve_default_concede` single-arbiter path.
 Both paths share one settlement code path (`settle_dispute_verdict`, extracted
 verbatim from `arbitrate`'s original body — Task 2, the plan's only HIGH-risk
-task) so a fund-movement/reputation bug can't diverge between the two modes.
+task) so a fund-movement/reputation bug can't diverge between the two modes
+[verified 2026-07-22 — re-diffed against the Task 1/2 patch: the extraction
+moves the existing match arms into a new private method unchanged, only
+`d.dispute_bond`/`d.provider_bond` become parameters and the event emit moves
+to the caller].
 Panel composition, threshold, and fee are governance-managed (same
 propose/approve/execute + timelock lifecycle as every other governance action)
 but are **snapshotted onto the job's own storage at dispute-post time**
@@ -46,7 +50,10 @@ live governance state, so a governance change mid-dispute cannot alter an
 already-posted dispute's terms. Panel shape is validated (odd size,
 `MIN_ARBITER_PANEL_SIZE=3..=MAX_ARBITER_PANEL_SIZE=9`, `threshold =
 panel.len()/2 + 1`, no duplicates) at both propose time and execute time
-(defense-in-depth against a race between proposal creation and execution). A
+(defense-in-depth against a race between proposal creation and execution)
+[verified 2026-07-22 — `validate_panel_shape` is called from both
+`propose_set_arbiter_panel` (line 1306) and `execute_proposal`'s
+`SetArbiterPanel` arm (line 1674)]. A
 single arbiter can no longer unilaterally settle a panel-mode dispute (a guard
 added to `arbitrate()` mid-implementation, after writing a test that initially
 tried to document the opposite as acceptable — see Section 10).
@@ -60,7 +67,9 @@ without reaching threshold, it defaults to `ProviderAtFault` (mirroring
 The TypeScript mirror (`live_client.ts` + `casper.tool.ts`) exposes all of this
 as new MCP tools. Two corrections were made against the plan's own draft code
 during implementation, both caught by reading the actual Rust source rather than
-trusting the plan: `dispute_result_via_panel` is `#[odra(payable)]` with
+trusting the plan: `dispute_result_via_panel` is `#[odra(payable)]` [verified
+2026-07-22 — the attribute sits immediately above the `pub fn` in
+`agent_skill_registry.rs`] with
 `attached_value == required_bond + panel_arbiter_fee`, so the client method uses
 `submitPayable` with an explicit combined amount, not `submit`; and
 `proposeSetPanelArbiterFee` was in the plan's `CasperClientLike` Pick-list but had
