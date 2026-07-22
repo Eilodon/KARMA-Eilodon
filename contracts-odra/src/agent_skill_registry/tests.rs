@@ -2595,3 +2595,224 @@ fn p1b_seed_panel_helper_produces_a_working_panel() {
     assert_eq!(reg.get_arbiter_panel(), vec![arb1, arb2, arb3]);
     assert_eq!(reg.get_panel_threshold(), 2);
 }
+
+#[test]
+fn p1b_dispute_via_panel_rejects_when_no_panel_configured() {
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-no-config");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(bond).try_dispute_result_via_panel(job_id),
+        Err(Error::PanelNotConfigured.into()),
+    );
+}
+
+#[test]
+fn p1b_dispute_via_panel_wrong_amount_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-wrong-amt");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE); // no fee added — panel_arbiter_fee defaults to 0, so
+                                         // this actually succeeds; use bond+1 to force a mismatch
+    env.set_caller(beta);
+    assert_eq!(
+        reg.with_tokens(bond + U512::one()).try_dispute_result_via_panel(job_id),
+        Err(Error::WrongPanelDisputeAmount.into()),
+    );
+}
+
+#[test]
+fn p1b_panel_majority_reached_settles_provider_at_fault_and_pays_participating_arbiters() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, arb2, arb3) = seed_panel(&env, &mut reg);
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    let fee_pid = reg.propose_set_panel_arbiter_fee(U512::from(300_000u64));
+    env.advance_block_time(DEFAULT_TIMELOCK_DELAY + 1);
+    reg.execute_proposal(fee_pid);
+
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-majority");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+
+    let bond = dispute_bond_for(PRICE);
+    let fee = U512::from(300_000u64);
+    env.set_caller(beta);
+    reg.with_tokens(bond + fee).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault);
+    // Only 1 of 3 voted so far — not settled yet.
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Disputed);
+
+    env.set_caller(arb2);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault); // 2 of 3 = threshold reached
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE) + bond + bond);
+    // Fee split between the 2 who voted (arb3 never voted, gets nothing).
+    assert_eq!(reg.pending_withdrawals_of(arb1), U512::from(150_000u64));
+    assert_eq!(reg.pending_withdrawals_of(arb2), U512::from(150_000u64));
+    assert_eq!(reg.pending_withdrawals_of(arb3), U512::zero());
+
+    assert!(env.emitted_event(
+        &reg,
+        PanelArbitrated {
+            job_id,
+            verdict: Verdict::ProviderAtFault,
+            provider_at_fault_votes: 2,
+            requester_at_fault_votes: 0,
+        },
+    ));
+}
+
+#[test]
+fn p1b_panel_majority_requester_at_fault_settles_like_completion() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, arb2, _arb3) = seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-req-fault");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::RequesterAtFault);
+    env.set_caller(arb2);
+    reg.cast_panel_vote(job_id, Verdict::RequesterAtFault);
+
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Completed);
+    assert_eq!(reg.pending_withdrawals_of(alpha), U512::from(PRICE) + bond + bond);
+}
+
+#[test]
+fn p1b_panel_vote_after_settlement_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, arb2, arb3) = seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-after-settle");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::RequesterAtFault);
+    env.set_caller(arb2);
+    reg.cast_panel_vote(job_id, Verdict::RequesterAtFault); // settles
+
+    env.set_caller(arb3);
+    assert_eq!(
+        reg.try_cast_panel_vote(job_id, Verdict::ProviderAtFault),
+        Err(Error::NotDisputed.into()),
+    );
+}
+
+#[test]
+fn p1b_double_vote_from_same_arbiter_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    let (arb1, _arb2, _arb3) = seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-double-vote");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+    env.set_caller(arb1);
+    reg.cast_panel_vote(job_id, Verdict::ProviderAtFault);
+    assert_eq!(
+        reg.try_cast_panel_vote(job_id, Verdict::RequesterAtFault),
+        Err(Error::AlreadyVotedOnPanel.into()),
+    );
+}
+
+#[test]
+fn p1b_vote_from_non_panel_address_reverts() {
+    let (env, mut reg, alpha, beta) = setup();
+    seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-outsider");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let outsider = env.get_account(6);
+    env.set_caller(outsider);
+    assert_eq!(
+        reg.try_cast_panel_vote(job_id, Verdict::ProviderAtFault),
+        Err(Error::NotPanelArbiter.into()),
+    );
+}
+
+#[test]
+fn p1b_single_arbiter_arbitrate_rejects_a_panel_mode_job() {
+    // Cross-mode guard, the direction that actually matters for panel-arbitration to mean
+    // anything: if the single arbiter could unilaterally settle a job the requester specifically
+    // routed through (and paid extra for) N-of-M panel review, panel mode would provide zero
+    // additional guarantee over the single-arbiter path — trivially bypassable by the exact
+    // single-key trust it exists to move away from. This must revert.
+    let (env, mut reg, alpha, beta) = setup();
+    seed_panel(&env, &mut reg);
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "panel-cross-mode");
+    env.set_caller(alpha);
+    reg.deliver_result(job_id, task_hash("r"));
+    let bond = dispute_bond_for(PRICE);
+    env.set_caller(beta);
+    reg.with_tokens(bond).dispute_result_via_panel(job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0); // the plain single arbiter
+    env.set_caller(deployer);
+    assert_eq!(
+        reg.try_arbitrate(job_id, Verdict::ProviderAtFault),
+        Err(Error::WrongArbitrationMode.into()),
+    );
+    // Confirm it's genuinely blocked, not just reverted for an unrelated reason — the job is
+    // still Disputed and fully resolvable via the correct panel path.
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Disputed);
+}
+
+#[test]
+fn p1b_existing_single_arbiter_flow_is_unaffected_by_the_new_mode_guard() {
+    // The new guard in `arbitrate()` must only ever reject Panel-mode jobs — every existing
+    // Single-mode (the default, via plain `dispute_result`) flow must behave byte-for-byte as
+    // before. This is the other half of the cross-mode guard's correctness, and the reason it's
+    // additive rather than a regression risk to the already-demoed courtroom flow.
+    let (env, mut reg, alpha, beta) = setup();
+    let skill_id = register_skill(&env, &mut reg, alpha);
+    let job_id = open_job(&env, &mut reg, beta, skill_id, "single-mode-unaffected");
+    let bond = deliver_and_dispute(&env, &mut reg, alpha, beta, job_id);
+    env.set_caller(alpha);
+    reg.with_tokens(bond).respond_to_dispute(job_id);
+
+    let deployer = env.get_account(0);
+    env.set_caller(deployer);
+    reg.arbitrate(job_id, Verdict::ProviderAtFault);
+    assert_eq!(reg.get_job(job_id).status, JobStatus::Refunded);
+    assert_eq!(reg.pending_withdrawals_of(beta), U512::from(PRICE) + bond + bond);
+}

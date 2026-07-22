@@ -886,6 +886,68 @@ impl AgentSkillRegistry {
         self.env().emit_event(ResultDisputed { job_id, requester: caller, amount });
     }
 
+/// P4-A: Like `dispute_result`, but flags the job for panel arbitration and collects an
+/// additional flat participation fee (governance-set) on top of the standard dispute bond.
+/// Snapshots the panel + threshold + fee onto the job's own storage at this moment — a
+/// later `propose_set_arbiter_panel`/`propose_set_panel_arbiter_fee` execution must never
+/// change the terms an already-posted dispute is running under (audit-design HIGH #3).
+#[odra(payable)]
+pub fn dispute_result_via_panel(&mut self, job_id: u64) {
+    let mut j = self.require_job(job_id);
+    let caller = self.env().caller();
+    if j.requester != caller {
+        self.env().revert(Error::NotRequester);
+    }
+    if j.status != JobStatus::Delivered {
+        self.env().revert(Error::JobNotDelivered);
+    }
+    if self.env().get_block_time() > j.deadline {
+        self.env().revert(Error::ReviewWindowClosed);
+    }
+    let panel = self.arbiter_panel.get_or_default();
+    if panel.is_empty() {
+        self.env().revert(Error::PanelNotConfigured);
+    }
+
+    let bps = self.dispute_bond_bps.get_or_default();
+    let mut required_bond = (U512::from(bps) * j.escrow_amount) / U512::from(10_000u32);
+    let min_bond = U512::from(MIN_DISPUTE_BOND_MOTES);
+    if required_bond < min_bond {
+        required_bond = min_bond;
+    }
+    let fee = self.panel_arbiter_fee.get_or_default();
+    let required_total = required_bond + fee;
+    let attached = self.env().attached_value();
+    if attached != required_total {
+        self.env().revert(Error::WrongPanelDisputeAmount);
+    }
+
+    let threshold = self.panel_threshold.get_or_default();
+    self.job_panel_snapshot.set(&job_id, panel);
+    self.job_panel_threshold_snapshot.set(&job_id, threshold);
+    self.panel_arbiter_fee_collected.set(&job_id, fee);
+    self.dispute_arbitration_mode.set(&job_id, ArbitrationMode::Panel);
+
+    j.status = JobStatus::Disputed;
+    let dispute_info = DisputeInfo {
+        dispute_bond: required_bond,
+        provider_bond: U512::zero(),
+        disputed_at: self.env().get_block_time(),
+    };
+    self.disputes.set(&job_id, dispute_info);
+
+    if !j.evaluator_fee.is_zero() {
+        let credit = self.pending_withdrawals.get(&caller).unwrap_or_default() + j.evaluator_fee;
+        self.pending_withdrawals.set(&caller, credit);
+    }
+
+    let amount = j.escrow_amount;
+    self.jobs.set(&job_id, j);
+    self.env().emit_event(DisputeBondPosted { job_id, requester: caller, bond: required_bond });
+    self.env().emit_event(PanelDisputePosted { job_id, requester: caller, panel_fee: fee });
+    self.env().emit_event(ResultDisputed { job_id, requester: caller, amount });
+}
+
     /// P1-A: Provider matches the dispute bond to contest (enter arbitration).
     #[odra(payable)]
     pub fn respond_to_dispute(&mut self, job_id: u64) {
@@ -992,6 +1054,13 @@ impl AgentSkillRegistry {
         if j.status != JobStatus::Disputed {
             self.env().revert(Error::NotDisputed);
         }
+        // P4-A: a job specifically routed through panel arbitration must only ever be settled
+        // by cast_panel_vote reaching its own threshold — never by the single arbiter directly,
+        // or panel mode provides no guarantee beyond the single-arbiter path it exists to
+        // supplement. Pre-existing (Single-mode) jobs have no entry here, so this is additive.
+        if self.dispute_arbitration_mode.get(&job_id) == Some(ArbitrationMode::Panel) {
+            self.env().revert(Error::WrongArbitrationMode);
+        }
         let d = self.disputes.get(&job_id)
             .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
         if d.dispute_bond.is_zero() {
@@ -1056,6 +1125,90 @@ impl AgentSkillRegistry {
             }
         }
     }
+
+/// P4-A: One vote from one panel member. `respond_to_dispute` (provider matching the bond)
+/// is unchanged and still required before a panel dispute can settle — a panel doesn't let
+/// a provider skip responding. Reads panel membership + threshold from the job's OWN
+/// snapshot (`job_panel_snapshot`), never the live `arbiter_panel`, so a governance change
+/// mid-dispute cannot affect this job (audit-design HIGH #3).
+pub fn cast_panel_vote(&mut self, job_id: u64, verdict: Verdict) {
+    let caller = self.env().caller();
+    let j = self.require_job(job_id);
+    if j.status != JobStatus::Disputed {
+        self.env().revert(Error::NotDisputed);
+    }
+    if self.dispute_arbitration_mode.get(&job_id) != Some(ArbitrationMode::Panel) {
+        self.env().revert(Error::WrongArbitrationMode);
+    }
+    let panel = self.job_panel_snapshot.get(&job_id).unwrap_or_default();
+    if !panel.contains(&caller) {
+        self.env().revert(Error::NotPanelArbiter);
+    }
+    let d = self.disputes.get(&job_id)
+        .unwrap_or_else(|| self.env().revert(Error::NotBondedDispute));
+    if d.provider_bond.is_zero() {
+        self.env().revert(Error::ProviderNotResponded);
+    }
+
+    let mut votes = self.panel_votes.get(&job_id).unwrap_or_default();
+    if votes.iter().any(|v| v.arbiter == caller) {
+        self.env().revert(Error::AlreadyVotedOnPanel);
+    }
+    votes.push(PanelVote { arbiter: caller, verdict });
+    self.panel_votes.set(&job_id, votes.clone());
+    self.env().emit_event(PanelVoteCast { job_id, arbiter: caller, verdict });
+
+    let provider_at_fault_votes = votes.iter()
+        .filter(|v| v.verdict == Verdict::ProviderAtFault).count() as u32;
+    let requester_at_fault_votes = votes.iter()
+        .filter(|v| v.verdict == Verdict::RequesterAtFault).count() as u32;
+    let threshold = self.job_panel_threshold_snapshot.get(&job_id).unwrap_or_default();
+
+    let winning_verdict = if provider_at_fault_votes >= threshold {
+        Some(Verdict::ProviderAtFault)
+    } else if requester_at_fault_votes >= threshold {
+        Some(Verdict::RequesterAtFault)
+    } else {
+        None
+    };
+
+    if let Some(final_verdict) = winning_verdict {
+        self.settle_dispute_verdict(job_id, j, d.dispute_bond, d.provider_bond, final_verdict);
+        self.env().emit_event(PanelArbitrated {
+            job_id,
+            verdict: final_verdict,
+            provider_at_fault_votes,
+            requester_at_fault_votes,
+        });
+        self.distribute_panel_fee(job_id, &votes);
+    }
+}
+
+/// P4-A: Flat fee, split evenly across every arbiter who voted (regardless of which side),
+/// pull-payment via `pending_withdrawals` — never a push-transfer, per audit-design HIGH #1
+/// (independently confirmed safe/required by specialist-review of the Task 1+2 groundwork).
+/// Last voter absorbs the rounding remainder, mirroring `settle_completion`'s composite-payout
+/// pattern exactly (audit-design MEDIUM finding).
+fn distribute_panel_fee(&mut self, job_id: u64, votes: &[PanelVote]) {
+    let fee = self.panel_arbiter_fee_collected.get(&job_id).unwrap_or_default();
+    if fee.is_zero() || votes.is_empty() {
+        return;
+    }
+    let n = votes.len();
+    let mut distributed = U512::zero();
+    for (i, v) in votes.iter().enumerate() {
+        let share = if i + 1 == n {
+            fee - distributed
+        } else {
+            let s = fee / U512::from(n as u64);
+            distributed += s;
+            s
+        };
+        let credit = self.pending_withdrawals.get(&v.arbiter).unwrap_or_default() + share;
+        self.pending_withdrawals.set(&v.arbiter, credit);
+        self.env().emit_event(PanelFeeDistributed { job_id, arbiter: v.arbiter, amount: share });
+    }
+}
 
     /// P1-A/P0-B: Propose a dispute bond percentage change. 10_000 = 1× escrow (default).
     /// Governance-signer only; takes effect via the same multisig+timelock proposal lifecycle
