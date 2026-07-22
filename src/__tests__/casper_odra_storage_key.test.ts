@@ -35,9 +35,9 @@ describe("odraMappingDictionaryKey (T13-live, verified against cargo-expand + an
     expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.skills, keyBytes)).toBe(a);
   });
 
-  it("rejects a field index outside the u8 range", () => {
-    expect(() => odraMappingDictionaryKey(256, u64ToBytes(1n))).toThrow(/must fit in a u8/);
-    expect(() => odraMappingDictionaryKey(-1, u64ToBytes(1n))).toThrow(/must fit in a u8/);
+  it("rejects a field index outside the u8 path-segment range", () => {
+    expect(() => odraMappingDictionaryKey(256, u64ToBytes(1n))).toThrow(/out of the u8 path-segment range/);
+    expect(() => odraMappingDictionaryKey(-1, u64ToBytes(1n))).toThrow(/out of the u8 path-segment range/);
   });
 
   it("matches an independently computed blake2b256 digest for rationaleHash[job 1] (field index 25 — PATH encoding, > 15)", () => {
@@ -63,6 +63,36 @@ describe("odraMappingDictionaryKey (T13-live, verified against cargo-expand + an
     const legacy = odraMappingDictionaryKey(15, keyBytes);
     const path = odraMappingDictionaryKey(16, keyBytes);
     expect(legacy).not.toBe(path);
+  });
+});
+
+describe("odraMappingDictionaryKey — path encoding (field index > 15, e.g. governance Var fields)", () => {
+  it("matches an independently computed blake2b256 digest for arbiter (field index 17, bare Var — empty mapping key)", () => {
+    // Expected value cross-checked with: python3 -c "import hashlib;
+    //   print(hashlib.blake2b(bytes([0xFF, 1, 17]), digest_size=32).hexdigest())"
+    const key = odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.arbiter, new Uint8Array(0));
+    expect(key).toBe("e03974949cd5ee7cdb49b3c16b0c9a304d858c494596d78510665cffedbdd21a");
+    expect(key).toHaveLength(64);
+  });
+
+  it("matches independently computed digests for governance_signers/governance_threshold/timelock_delay (field indices 19/20/21, bare Var)", () => {
+    // Expected values cross-checked with: python3 -c "import hashlib;
+    //   [print(hashlib.blake2b(bytes([0xFF, 1, i]), digest_size=32).hexdigest()) for i in (19, 20, 21)]"
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.governanceSigners, new Uint8Array(0))).toBe(
+      "d654a4665a10758bd6e5f072eb18a16842929d141e9feb907c4653055fc86360",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.governanceThreshold, new Uint8Array(0))).toBe(
+      "2a622520fed358fda17491ea1e2fc59c26a30c8d5a4f0974a1818fa125f91249",
+    );
+    expect(odraMappingDictionaryKey(AGENT_SKILL_REGISTRY_FIELD_INDEX.timelockDelay, new Uint8Array(0))).toBe(
+      "fb91768eb3b35051d92f2260fbb6a7162184f4ced25c27a4c63e32d647d8c867",
+    );
+  });
+
+  it("is distinct from a legacy-range key even when the raw index bytes might otherwise look similar", () => {
+    const pathKey = odraMappingDictionaryKey(17, new Uint8Array(0));
+    const legacyKey = odraMappingDictionaryKey(15, new Uint8Array(0));
+    expect(pathKey).not.toBe(legacyKey);
   });
 });
 

@@ -95,7 +95,7 @@ describe("CasperLiveClient (T13-live)", () => {
     expect(innerArgs.getByName("amount")).toBeUndefined(); // real signature has no such arg
   });
 
-  it("deliverResult / confirmCompletion / claimAfterReview / withdraw hit the right entry points", async () => {
+  it("deliverResult / confirmCompletion / claimAfterReview / claimRefund / withdraw hit the right entry points", async () => {
     const rpc = fakeSubmitter();
     const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
 
@@ -108,8 +108,13 @@ describe("CasperLiveClient (T13-live)", () => {
     await client.claimAfterReview(SIGNER, 1n);
     expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("claim_after_review");
 
+    await client.claimRefund(SIGNER, 1n);
+    const claimRefundTx = rpc.putTransaction.mock.calls[3][0];
+    expect(claimRefundTx.entryPoint.customEntryPoint).toBe("claim_refund");
+    expect(claimRefundTx.args.getByName("job_id")?.toString()).toBe("1");
+
     await client.withdraw(SIGNER);
-    expect(rpc.putTransaction.mock.calls[3][0].entryPoint.customEntryPoint).toBe("withdraw");
+    expect(rpc.putTransaction.mock.calls[4][0].entryPoint.customEntryPoint).toBe("withdraw");
   });
 
   it("registerComposition signs and submits leaf_skill_ids/weights_bps as List(U64)/List(U32)", async () => {
@@ -493,5 +498,87 @@ describe("CasperLiveClient.getComposition / isComposite (T13-live, field index 1
 
     expect(await client.getComposition(1n)).toBeUndefined();
     expect(await client.isComposite(1n)).toBe(false);
+  });
+});
+
+describe("CasperLiveClient governance-state getters (P0-B, bare Var<T> fields — field indices 17/19/20/21)", () => {
+  function u32(v: number): Uint8Array {
+    return CLValue.newCLUInt32(v).bytes();
+  }
+  function concat(...parts: Uint8Array[]): Uint8Array {
+    return Buffer.concat(parts.map((p) => Buffer.from(p)));
+  }
+  function address(kind: "Account" | "Contract", hashHex: string): Uint8Array {
+    return concat(Uint8Array.from([kind === "Account" ? 0 : 1]), Buffer.from(hashHex, "hex"));
+  }
+  const SIGNER_A = "11".repeat(32);
+  const SIGNER_B = "22".repeat(32);
+  const ARBITER_HASH = "33".repeat(32);
+
+  it("getArbiter reads the bare Var<Address> at field index 17 via the path-encoding branch", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(address("Account", ARBITER_HASH)) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    const arbiter = await client.getArbiter();
+
+    expect(arbiter).toEqual({ kind: "Account", hashHex: ARBITER_HASH });
+    const [, identifier] = rpc.getDictionaryItemByIdentifier.mock.calls[0];
+    // Field index 17 exceeds the legacy 0-15 range, so this must be a 3-byte path-encoded key
+    // ([0xFF, 1, 17]), not the 4-byte legacy key every other getter above uses — a distinct
+    // dictionary-item-key shape is the whole point of this test, not just "some hex came back".
+    expect(identifier.contractNamedKey.dictionaryItemKey).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("getArbiter returns undefined when the dictionary key has never been written", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getArbiter()).toBeUndefined();
+  });
+
+  it("getGovernanceSigners decodes a Vec<Address> at field index 19", async () => {
+    const rpc = fakeSubmitter();
+    const rawSigners = concat(u32(2), address("Account", SIGNER_A), address("Account", SIGNER_B));
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({ storedValue: { clValue: newCLOdraStructBytes(rawSigners) } });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    expect(await client.getGovernanceSigners()).toEqual([
+      { kind: "Account", hashHex: SIGNER_A },
+      { kind: "Account", hashHex: SIGNER_B },
+    ]);
+  });
+
+  it("getGovernanceSigners defaults to an empty list when never configured", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getGovernanceSigners()).toEqual([]);
+  });
+
+  it("getGovernanceThreshold decodes a plain u32 at field index 20, defaulting to 0", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(u32(2)) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getGovernanceThreshold()).toBe(2);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getGovernanceThreshold()).toBe(0);
+  });
+
+  it("getTimelockDelayMs decodes a plain u64 at field index 21, defaulting to 0n", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(CLValue.newCLUint64("172800000").bytes()) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getTimelockDelayMs()).toBe(172_800_000n);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getTimelockDelayMs()).toBe(0n);
   });
 });

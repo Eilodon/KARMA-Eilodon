@@ -5,6 +5,7 @@ import { jsonSafe } from "../lib/serialize.js";
 import { keystoreManager } from "../lib/keystore.js";
 import { casperAccountHash } from "../lib/casper/keypair.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
+import type { CasperAddress } from "../lib/casper/odra_codec.js";
 import { isTrustedRuntime } from "../core/runtime_identity.js";
 import { casperSkillIndex, getCasperIndexerHealth } from "../lib/casper_indexer_runtime.js";
 
@@ -39,6 +40,14 @@ function reply(text: string, structured: Record<string, unknown>): ToolResult {
   return { content: [{ type: "text", text }], structuredContent: jsonSafe(structured) };
 }
 
+/** Formats a decoded `CasperAddress` (see `odra_codec.ts`) as the same prefixed-string
+ *  convention every other tool here already accepts as input (`"account-hash-<hex>"` for a
+ *  user/agent account, `"hash-<hex>"` for a contract) — round-trips through `accountAddressToBytes`
+ *  and the `"account-hash-..."` / `"hash-..."` args documented across this file. */
+function formatCasperAddress(addr: CasperAddress): string {
+  return addr.kind === "Account" ? `account-hash-${addr.hashHex}` : `hash-${addr.hashHex}`;
+}
+
 /** CASPER_RPC_URL / CASPER_CONTRACT_HASH follow the same direct-process.env convention as
  *  `odra_registry.ts` and `register_rwa_oracle_skill.ts` (not the central `ENV` module — Casper
  *  wiring is opt-in and off by default, unlike Pharos's always-validated env block). */
@@ -71,10 +80,14 @@ export type CasperClientLike = Pick<
   | "deliverResult"
   | "confirmCompletion"
   | "claimAfterReview"
+  | "claimRefund"
   | "withdraw"
   | "pendingWithdrawalsOf"
   | "agentReputationOf"
   | "bondedOf"
+  | "getSkill"
+  | "getJob"
+  | "isComposite"
   | "registerComposition"
   | "getComposition"
   | "createJobWithEvaluator"
@@ -93,6 +106,10 @@ export type CasperClientLike = Pick<
   | "cancelProposal"
   | "attestRationale"
   | "getRationaleHash"
+  | "getArbiter"
+  | "getGovernanceSigners"
+  | "getGovernanceThreshold"
+  | "getTimelockDelayMs"
 >;
 
 export function createCasperTools(
@@ -395,6 +412,120 @@ export function createCasperTools(
         `[KARMA] ${accountHash}: pending=${pendingWithdrawalsMotes} motes rep=${reputation}/100 bonded=${bondedMotes} motes`,
         { accountHash, pendingWithdrawalsMotes, reputation, bondedMotes },
       );
+    },
+  };
+
+  const casperGetSkill: ToolDefinition = {
+    name: "casper_get_skill",
+    description:
+      "Read a skill's full on-chain record directly from the Odra registry's 'state' dictionary " +
+      "(owner, name/description/mcpEndpoint, price, reputation, active flag, registeredAt, trust " +
+      "gates) plus whether it's a composite (has a Composition record) — a real global-state " +
+      "query, not a cached/off-chain estimate.",
+    inputSchema: { skillId: z.string().regex(/^[0-9]+$/).describe("Skill id (u64) from casper_register_skill.") },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ skillId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const skillId = BigInt(a.skillId);
+      const [skill, isComposite] = await Promise.all([client.getSkill(skillId), client.isComposite(skillId)]);
+      if (!skill) {
+        return reply(`[KARMA] skill ${a.skillId} is not registered`, { skillId: a.skillId, found: false, skill: null });
+      }
+      return reply(
+        `[KARMA] skill ${a.skillId}: ${skill.name} (active=${skill.active}, rep=${skill.reputationScore}/100)`,
+        {
+          skillId: a.skillId,
+          found: true,
+          skill: {
+            owner: formatCasperAddress(skill.owner),
+            name: skill.name,
+            description: skill.description,
+            mcpEndpoint: skill.mcpEndpoint,
+            pricePerCallMotes: skill.pricePerCallMotes.toString(),
+            reputationScore: skill.reputationScore,
+            totalInvocations: skill.totalInvocations.toString(),
+            active: skill.active,
+            registeredAt: skill.registeredAt.toString(),
+            minReputationToInvoke: skill.minReputationToInvoke,
+            identityPolicy: skill.identityPolicy,
+            isComposite,
+          },
+        },
+      );
+    },
+  };
+
+  const casperGetJob: ToolDefinition = {
+    name: "casper_get_job",
+    description:
+      "Read a job's full on-chain record directly from the Odra registry's 'state' dictionary " +
+      "(requester/provider, skill id, escrow, deadline/status, result hash, evaluator) — a real " +
+      "global-state query, not a cached/off-chain estimate.",
+    inputSchema: { jobId: z.string().regex(/^[0-9]+$/).describe("Job id (u64) from casper_create_job.") },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ jobId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const job = await client.getJob(BigInt(a.jobId));
+      if (!job) {
+        return reply(`[KARMA] job ${a.jobId} does not exist`, { jobId: a.jobId, found: false, job: null });
+      }
+      return reply(`[KARMA] job ${a.jobId}: status=${job.status} escrow=${job.escrowAmountMotes} motes`, {
+        jobId: a.jobId,
+        found: true,
+        job: {
+          requester: formatCasperAddress(job.requester),
+          provider: formatCasperAddress(job.provider),
+          skillId: job.skillId.toString(),
+          taskHashHex: Buffer.from(job.taskHash).toString("hex"),
+          escrowAmountMotes: job.escrowAmountMotes.toString(),
+          deadline: job.deadline.toString(),
+          status: job.status,
+          resultHashHex: Buffer.from(job.resultHash).toString("hex"),
+          createdAt: job.createdAt.toString(),
+          completedAt: job.completedAt.toString(),
+          evaluator: job.evaluator ? formatCasperAddress(job.evaluator) : null,
+          evaluatorFeeMotes: job.evaluatorFeeMotes.toString(),
+        },
+      });
+    },
+  };
+
+  const casperClaimRefund: ToolDefinition = {
+    name: "casper_claim_refund",
+    description:
+      "Requester reclaims escrow (+ evaluator fee, if the job had one) for a job whose provider " +
+      "never delivered before the deadline (claim_refund) — a real signed transaction. Reverts " +
+      "NotRequester if the caller isn't the job's requester, NotRefundable unless the job is " +
+      "still Open (a delivered/disputed job can't be refunded this way — see " +
+      "casper_dispute_result instead), and BeforeDeadline until the deadline has actually passed.",
+    inputSchema: {
+      agentId: z.string().describe("Requester's keystore agent id."),
+      jobId: z.string().regex(/^[0-9]+$/),
+    },
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: writeAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async (args) => {
+      assertInProcess();
+      const a = z.object({ agentId: z.string(), jobId: z.string().regex(/^[0-9]+$/) }).parse(args);
+      const env = requireCasperEnv();
+      const signer = requireSigner(a.agentId);
+      const client = makeClient(env);
+      const { txHash } = await client.claimRefund(signer, BigInt(a.jobId));
+      return reply(`[KARMA] casper_claim_refund broadcast; tx=${txHash}`, { txHash });
     },
   };
 
@@ -712,6 +843,42 @@ export function createCasperTools(
     },
   };
 
+  const casperGetGovernanceState: ToolDefinition = {
+    name: "casper_get_governance_state",
+    description:
+      "Read the Odra registry's full governance configuration in one round trip — multisig " +
+      "signers, approval threshold, timelock delay (ms), and the current dispute arbiter — " +
+      "directly from the 'state' dictionary's four separate Var fields (mirrors " +
+      "get_governance_signers/get_governance_threshold/get_timelock_delay/get_arbiter), instead " +
+      "of four separate casper_* round-trips.",
+    inputSchema: {},
+    capabilities: ["network"],
+    allowedPhases: [...PHASES],
+    annotations: readAnnotations,
+    execution: { taskSupport: "forbidden" },
+    handler: async () => {
+      assertInProcess();
+      const env = requireCasperEnv();
+      const client = makeClient(env);
+      const [signers, threshold, timelockDelayMs, arbiter] = await Promise.all([
+        client.getGovernanceSigners(),
+        client.getGovernanceThreshold(),
+        client.getTimelockDelayMs(),
+        client.getArbiter(),
+      ]);
+      return reply(
+        `[KARMA] governance: ${signers.length} signer(s), threshold=${threshold}, ` +
+          `timelock=${timelockDelayMs}ms, arbiter=${arbiter ? formatCasperAddress(arbiter) : "unset"}`,
+        {
+          signers: signers.map(formatCasperAddress),
+          threshold,
+          timelockDelayMs: timelockDelayMs.toString(),
+          arbiter: arbiter ? formatCasperAddress(arbiter) : null,
+        },
+      );
+    },
+  };
+
   const casperProposeSetCrossChainRep: ToolDefinition = {
     name: "casper_propose_set_cross_chain_rep",
     description:
@@ -972,8 +1139,11 @@ export function createCasperTools(
     casperDeliverResult,
     casperConfirmCompletion,
     casperClaimAfterReview,
+    casperClaimRefund,
     casperWithdraw,
     casperGetAccountState,
+    casperGetSkill,
+    casperGetJob,
     casperDiscoverSkills,
     casperRegisterComposition,
     casperGetComposition,
@@ -985,6 +1155,7 @@ export function createCasperTools(
     casperResolveDefaultConcede,
     casperArbitrate,
     casperGetCrossChainRep,
+    casperGetGovernanceState,
     casperProposeSetCrossChainRep,
     casperProposeSetArbiter,
     casperProposeSetDisputeBondBps,

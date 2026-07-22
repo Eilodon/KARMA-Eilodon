@@ -23,6 +23,9 @@ odra-build = "=2.8.2"
 
 [dev-dependencies]
 odra-test = "=2.8.2"
+# Property-based invariant tests (escrow conservation, reputation bounds) — dev-only, never
+# compiled into the deployed wasm (see contracts-odra/README.md's wasm-build verification note).
+proptest = "1"
 
 # WASM compilation for Casper deployment: run `./build-wasm.sh`, not `cargo odra build` (the
 # cargo-odra 0.1.7 CLI doesn't match this odra-build API version — see contracts-odra/README.md

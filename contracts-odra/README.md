@@ -20,7 +20,8 @@ contracts-odra/
     ├── lib.rs                          # crate root + invariant overview
     ├── agent_skill_registry.rs         # contract (~1330 LoC)
     └── agent_skill_registry/
-        └── tests.rs                    # 120 tests, mirror of test/AgentSkillRegistry.t.sol
+        ├── tests.rs                    # 129 tests, mirror of test/AgentSkillRegistry.t.sol
+        └── proptests.rs                # 2 property-based invariant tests (escrow conservation, reputation bounds)
 ```
 
 ## Test loop
@@ -32,10 +33,12 @@ rustup toolchain install nightly --profile minimal
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml
 ```
 
-Expected: **120 passed; 0 failed** (happy path, refund window, ghost-requester / dispute /
+Expected: **131 passed; 0 failed** (happy path, refund window, ghost-requester / dispute /
 claim-after-review, double-complete guard, trust gate, identity policy, self-deal nullification,
-duplicate task-hash exactly-once, constructor bounds, the seven Tier-2 bond cases, plus the P0-A
-evaluator and P0-B governance/timelock mechanics).
+duplicate task-hash exactly-once, constructor bounds, the seven Tier-2 bond cases, the P0-A
+evaluator and P0-B governance/timelock mechanics, the P2-A rationale-attestation entry points, the
+`X402SettlementToken` CEP-18/CEP-3009 composition, and 2 property-based invariant tests — escrow
+conservation and reputation-bounds — randomized over 64 cases each, `proptests.rs`).
 
 ## Casper-specific deltas vs Solidity
 
@@ -63,7 +66,9 @@ evaluator and P0-B governance/timelock mechanics).
 Verified output: 533,873 bytes, 59 exports including every entry point (`register_skill`,
 `create_job`, `deliver_result`, `confirm_completion`, `withdraw`, `deposit_bond`, `get_skill`,
 `get_job`, …) plus the Odra dispatcher (`call`) and linear memory. Native `cargo test` stays
-120/120 green throughout — `build-wasm.sh` only affects the wasm32 target.
+131/131 green throughout — `build-wasm.sh` only affects the wasm32 target (verified: the new
+`proptest` dev-dependency does not appear in the release wasm build's dependency list, and export
+count/wasm size are unchanged by it).
 
 ### wasm32 build — how this actually works (not `cargo odra build`)
 

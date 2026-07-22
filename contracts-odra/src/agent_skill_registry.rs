@@ -1654,3 +1654,6 @@ impl AgentSkillRegistry {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod proptests;

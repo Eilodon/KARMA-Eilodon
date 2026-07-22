@@ -143,6 +143,16 @@ class OdraBytesReader {
     return this.u8() === 0 ? undefined : inner();
   }
 
+  /** `Vec<Address>`: u32-LE length prefix + that many `address()`-shaped elements (1-byte tag +
+   *  32-byte hash each) back-to-back — standard bytesrepr `Vec<T>::to_bytes()`, same as
+   *  `vecU64`/`vecU32` above. */
+  vecAddress(): CasperAddress[] {
+    const len = this.u32();
+    const out: CasperAddress[] = [];
+    for (let i = 0; i < len; i += 1) out.push(this.address());
+    return out;
+  }
+
   jobStatus(): DecodedJobStatus {
     const tag = this.u8();
     const status = JOB_STATUS_VARIANTS[tag];
@@ -226,4 +236,22 @@ export function decodeU512(bytes: Uint8Array): bigint {
  *  length prefix concatenated onto the front of every hash. */
 export function decodeBytesVec(bytes: Uint8Array): Uint8Array {
   return new OdraBytesReader(bytes).bytesVec();
+}
+
+/** Decodes a plain `u64` `Mapping`/`Var` value's raw bytes (e.g. `timelock_delay`) — see
+ *  `decodeU32`'s note; same `List(U8)`-wrapped reasoning applies. */
+export function decodeU64(bytes: Uint8Array): bigint {
+  return new OdraBytesReader(bytes).u64();
+}
+
+/** Decodes a plain `Address` `Var` value's raw bytes (e.g. `arbiter`) — see `decodeU32`'s note;
+ *  same `List(U8)`-wrapped reasoning applies. */
+export function decodeAddress(bytes: Uint8Array): CasperAddress {
+  return new OdraBytesReader(bytes).address();
+}
+
+/** Decodes a `Vec<Address>` `Var` value's raw bytes (e.g. `governance_signers`) — see
+ *  `decodeU32`'s note; same `List(U8)`-wrapped reasoning applies. */
+export function decodeAddressList(bytes: Uint8Array): CasperAddress[] {
+  return new OdraBytesReader(bytes).vecAddress();
 }

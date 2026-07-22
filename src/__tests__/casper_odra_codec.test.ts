@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import casperSdk from "casper-js-sdk";
-import { decodeSkill, decodeJob, decodeComposition, decodeBytesVec } from "../lib/casper/odra_codec.js";
+import {
+  decodeSkill,
+  decodeJob,
+  decodeComposition,
+  decodeBytesVec,
+  decodeU64,
+  decodeAddress,
+  decodeAddressList,
+} from "../lib/casper/odra_codec.js";
 
 const { CLValue } = casperSdk;
 
@@ -206,5 +214,33 @@ describe("decodeBytesVec (P2-A, rationale_hash)", () => {
 
   it("round-trips an empty byte string", () => {
     expect(decodeBytesVec(bytesVec(new Uint8Array(0)))).toHaveLength(0);
+  });
+});
+
+describe("decodeU64 (governance timelock_delay: Var<u64>)", () => {
+  it("decodes an 8-byte little-endian u64", () => {
+    expect(decodeU64(u64("259200000"))).toBe(259_200_000n);
+    expect(decodeU64(u64("0"))).toBe(0n);
+  });
+});
+
+describe("decodeAddress (governance arbiter: Var<Address>)", () => {
+  it("decodes a single Address (1-byte tag + 32-byte hash)", () => {
+    expect(decodeAddress(address("Account", OWNER_HASH))).toEqual({ kind: "Account", hashHex: OWNER_HASH });
+    expect(decodeAddress(address("Contract", EVALUATOR_HASH))).toEqual({ kind: "Contract", hashHex: EVALUATOR_HASH });
+  });
+});
+
+describe("decodeAddressList (governance governance_signers: Var<Vec<Address>>)", () => {
+  it("decodes a Vec<Address> in declaration order", () => {
+    const bytes = concat(u32(2), address("Account", OWNER_HASH), address("Account", REQUESTER_HASH));
+    expect(decodeAddressList(bytes)).toEqual([
+      { kind: "Account", hashHex: OWNER_HASH },
+      { kind: "Account", hashHex: REQUESTER_HASH },
+    ]);
+  });
+
+  it("decodes an empty signer list", () => {
+    expect(decodeAddressList(u32(0))).toEqual([]);
   });
 });

@@ -25,10 +25,14 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     deliverResult: vi.fn(async () => ({ txHash: "tx-deliver" })),
     confirmCompletion: vi.fn(async () => ({ txHash: "tx-confirm" })),
     claimAfterReview: vi.fn(async () => ({ txHash: "tx-claim-after-review" })),
+    claimRefund: vi.fn(async () => ({ txHash: "tx-claim-refund" })),
     withdraw: vi.fn(async () => ({ txHash: "tx-withdraw" })),
     pendingWithdrawalsOf: vi.fn(async () => "1000000"),
     agentReputationOf: vi.fn(async () => 55),
     bondedOf: vi.fn(async () => "2000000000"),
+    getSkill: vi.fn(async () => undefined),
+    getJob: vi.fn(async () => undefined),
+    isComposite: vi.fn(async () => false),
     registerComposition: vi.fn(async () => ({ txHash: "tx-composition" })),
     getComposition: vi.fn(async () => undefined),
     createJobWithEvaluator: vi.fn(async () => ({ txHash: "tx-createjob-eval" })),
@@ -47,6 +51,10 @@ function fakeClient(over: Partial<CasperClientLike> = {}): CasperClientLike {
     cancelProposal: vi.fn(async () => ({ txHash: "tx-cancel" })),
     attestRationale: vi.fn(async () => ({ txHash: "tx-attest-rationale" })),
     getRationaleHash: vi.fn(async () => undefined),
+    getArbiter: vi.fn(async () => ({ kind: "Account" as const, hashHex: "aa".repeat(32) })),
+    getGovernanceSigners: vi.fn(async () => [{ kind: "Account" as const, hashHex: "bb".repeat(32) }]),
+    getGovernanceThreshold: vi.fn(async () => 1),
+    getTimelockDelayMs: vi.fn(async () => 172_800_000n),
     ...over,
   };
 }
@@ -73,7 +81,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("registers exactly the 29 documented tools", () => {
+  it("registers exactly the 33 documented tools", () => {
     const names = createCasperTools(() => fakeClient()).map((t) => t.name);
     expect(names).toEqual([
       "casper_health",
@@ -83,8 +91,11 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_deliver_result",
       "casper_confirm_completion",
       "casper_claim_after_review",
+      "casper_claim_refund",
       "casper_withdraw",
       "casper_get_account_state",
+      "casper_get_skill",
+      "casper_get_job",
       "casper_discover_skills",
       "casper_register_composition",
       "casper_get_composition",
@@ -96,6 +107,7 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       "casper_resolve_default_concede",
       "casper_arbitrate",
       "casper_get_cross_chain_rep",
+      "casper_get_governance_state",
       "casper_propose_set_cross_chain_rep",
       "casper_propose_set_arbiter",
       "casper_propose_set_dispute_bond_bps",
@@ -242,6 +254,132 @@ describe("createCasperTools (T13-live MCP surface)", () => {
     });
   });
 
+  describe("casper_get_skill", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "44".repeat(32);
+    });
+
+    it("reports found=false with a null skill for an unregistered id", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_get_skill").handler({ skillId: "999" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ skillId: "999", found: false, skill: null });
+    });
+
+    it("decodes the full skill record plus the isComposite flag from a single round trip", async () => {
+      const client = fakeClient({
+        getSkill: vi.fn(async () => ({
+          owner: { kind: "Account" as const, hashHex: "aa".repeat(32) },
+          name: "rwa_price_oracle",
+          description: "desc",
+          mcpEndpoint: "casper-mcp://providers/rwa_price_oracle",
+          pricePerCallMotes: 10_000_000n,
+          reputationScore: 75,
+          totalInvocations: 42n,
+          active: true,
+          registeredAt: 1_700_000_000n,
+          minReputationToInvoke: 10,
+          identityPolicy: 2,
+        })),
+        isComposite: vi.fn(async () => true),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_skill").handler({ skillId: "3" }, {} as never);
+      expect(client.getSkill).toHaveBeenCalledWith(3n);
+      expect(client.isComposite).toHaveBeenCalledWith(3n);
+      expect(result.structuredContent).toMatchObject({
+        skillId: "3",
+        found: true,
+        skill: {
+          owner: "account-hash-" + "aa".repeat(32),
+          name: "rwa_price_oracle",
+          pricePerCallMotes: "10000000",
+          reputationScore: 75,
+          totalInvocations: "42",
+          active: true,
+          registeredAt: "1700000000",
+          minReputationToInvoke: 10,
+          identityPolicy: 2,
+          isComposite: true,
+        },
+      });
+    });
+  });
+
+  describe("casper_get_job", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "45".repeat(32);
+    });
+
+    it("reports found=false with a null job for an uncreated id", async () => {
+      const tools = createCasperTools(() => fakeClient());
+      const result = await find(tools, "casper_get_job").handler({ jobId: "999" }, {} as never);
+      expect(result.structuredContent).toMatchObject({ jobId: "999", found: false, job: null });
+    });
+
+    it("decodes the full job record, hex-encoding task/result hashes and formatting addresses", async () => {
+      const client = fakeClient({
+        getJob: vi.fn(async () => ({
+          requester: { kind: "Account" as const, hashHex: "11".repeat(32) },
+          provider: { kind: "Account" as const, hashHex: "22".repeat(32) },
+          skillId: 1n,
+          taskHash: Buffer.from("ab".repeat(32), "hex"),
+          escrowAmountMotes: 10_000_000n,
+          deadline: 259_200n,
+          status: "Delivered" as const,
+          resultHash: Buffer.from("cd".repeat(32), "hex"),
+          createdAt: 1_700_000_000n,
+          completedAt: 0n,
+          evaluator: undefined,
+          evaluatorFeeMotes: 0n,
+        })),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_job").handler({ jobId: "1" }, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        jobId: "1",
+        found: true,
+        job: {
+          requester: "account-hash-" + "11".repeat(32),
+          provider: "account-hash-" + "22".repeat(32),
+          skillId: "1",
+          taskHashHex: "ab".repeat(32),
+          escrowAmountMotes: "10000000",
+          deadline: "259200",
+          status: "Delivered",
+          resultHashHex: "cd".repeat(32),
+          evaluator: null,
+          evaluatorFeeMotes: "0",
+        },
+      });
+    });
+  });
+
+  describe("casper_claim_refund", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "46".repeat(32);
+    });
+
+    it("signs with the requester's resolved agent key and returns the real tx hash", async () => {
+      const client = fakeClient();
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_claim_refund").handler({ agentId: "agent-alpha", jobId: "1" }, {} as never);
+      expect(client.claimRefund).toHaveBeenCalledWith(SIGNER, 1n);
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-claim-refund" });
+    });
+
+    it("fails closed when Casper isn't configured", async () => {
+      delete process.env.CASPER_RPC_URL;
+      delete process.env.KARMA_ODRA_REGISTRY;
+      const tools = createCasperTools(() => fakeClient());
+      await expect(
+        find(tools, "casper_claim_refund").handler({ agentId: "agent-alpha", jobId: "1" }, {} as never),
+      ).rejects.toThrow(/Casper not configured/);
+    });
+  });
+
   describe("casper_register_composition", () => {
     beforeEach(() => {
       process.env.CASPER_RPC_URL = "https://node.example";
@@ -383,6 +521,42 @@ describe("createCasperTools (T13-live MCP surface)", () => {
       await expect(
         find(tools, "casper_arbitrate").handler({ agentId: "agent-alpha", jobId: "1", verdict: "Tie" }, {} as never),
       ).rejects.toThrow();
+    });
+  });
+
+  describe("casper_get_governance_state", () => {
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "89".repeat(32);
+    });
+
+    it("reads signers/threshold/timelock/arbiter in a single call and formats addresses", async () => {
+      const client = fakeClient({
+        getGovernanceSigners: vi.fn(async () => [
+          { kind: "Account" as const, hashHex: "11".repeat(32) },
+          { kind: "Account" as const, hashHex: "22".repeat(32) },
+        ]),
+        getGovernanceThreshold: vi.fn(async () => 2),
+        getTimelockDelayMs: vi.fn(async () => 172_800_000n),
+        getArbiter: vi.fn(async () => ({ kind: "Account" as const, hashHex: "11".repeat(32) })),
+      });
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_get_governance_state").handler({}, {} as never);
+      expect(result.structuredContent).toMatchObject({
+        signers: ["account-hash-" + "11".repeat(32), "account-hash-" + "22".repeat(32)],
+        threshold: 2,
+        timelockDelayMs: "172800000",
+        arbiter: "account-hash-" + "11".repeat(32),
+      });
+    });
+
+    it("fails closed when Casper isn't configured", async () => {
+      delete process.env.CASPER_RPC_URL;
+      delete process.env.KARMA_ODRA_REGISTRY;
+      const tools = createCasperTools(() => fakeClient());
+      await expect(find(tools, "casper_get_governance_state").handler({}, {} as never)).rejects.toThrow(
+        /Casper not configured/,
+      );
     });
   });
 
