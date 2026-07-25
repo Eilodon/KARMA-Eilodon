@@ -16,6 +16,12 @@ declare -A SEG=(
   [lifecycle]="240|pnpm exec tsx src/scripts/demo_casper_full_job_lifecycle.ts"
   [courtroom]="360|pnpm exec tsx src/scripts/demo_casper_courtroom.ts"
   [governance]="180|pnpm exec tsx src/scripts/demo_casper_cross_chain_rep_governance.ts"
+  # 2026-07-25: custody-hardening + panel-activation redeploy (is_upgradable:false,
+  # allow_key_override:true, 30-min timelock) — see docs/super-skills/adrs/
+  # 2026-07-25-casper-custody-hardening-and-panel-activation.md. Real install deploys, real gas,
+  # one-way (Locked, no future upgrade) — captured live once, not re-run for the recording.
+  [redeploy-registry]="300|pnpm exec tsx src/scripts/deploy_casper_governance_hardened.ts"
+  [redeploy-token]="300|pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts"
 )
 ORDER=(lifecycle courtroom governance)
 SEGMENTS=("$@"); [ ${#SEGMENTS[@]} -eq 0 ] && SEGMENTS=("${ORDER[@]}")
