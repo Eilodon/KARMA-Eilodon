@@ -138,6 +138,22 @@ landing this update).
   proc-macro-generated bootstrap code itself. If a future Odra version changes this wiring, this
   ADR's Locked-status claim should be re-verified against the new version before being relied on
   again. [status: OPEN, introduced by this change]
+- **PATTERN-DEBT-dead-code-pct-false-positive** — `fitness_report`'s `dead_code_pct` check fails at
+  24.4% (max 10%), and `live_client.ts` (this ADR's own hotspot file) is the top offender.
+  Re-audited with real evidence rather than assumed: `callers(symbol: "registerSkill", path:
+  "live_client.ts")` shows 7 real call sites across plugins/scripts/tests, all classified
+  `edge_confidence: "ambiguous"` (0 counted as `direct`) — CALM's resolver can't prove the
+  receiver's static type through this codebase's `new CasperLiveClient(...)` → passed-around-value
+  calling style, so it undercounts real callers as dead. Stronger proof outside this file:
+  `KeystoreManager::load` is flagged `dead_code_confidence: "high"` (0 callers) by
+  `test_gap_hotspots`, yet `grep` finds 20+ real call sites (`keystoreManager.load(...)` in a dozen
+  scripts, `km.load(...)` in `keystore.test.ts`). Conclusion: `dead_code_pct` in this repo is
+  dominated by structural-typing/singleton-instance false positives, not actual unused code — a
+  refactor to make call sites more statically resolvable (e.g. always naming the class type at
+  every call site) would only serve the metric, not users, days before the Buildathon deadline.
+  [status: CLOSED — investigated, not a real defect, no code change made. Re-open only if a
+  concrete unused-code cleanup is separately proposed with per-symbol evidence, not this aggregate
+  metric.]
 
 ## 9. Next Cycle Trigger — FIRED, same day (2026-07-25)
 
