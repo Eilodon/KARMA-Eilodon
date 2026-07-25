@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-07-25T20:24:57.585Z",
+  "contractHash": "hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384",
+  "network": "casper-test",
+  "lockStatus": "Locked",
+  "governance": {
+    "signerCount": 2,
+    "threshold": 2,
+    "timelockDelayMs": "1800000"
+  },
+  "arbiter": "Account-0daa27a36e5d07afa9f0293c3b8b0d9909db6f240cf8b530df2de34c98408185",
+  "arbiterPanel": {
+    "size": 3,
+    "threshold": 2
+  }
+}

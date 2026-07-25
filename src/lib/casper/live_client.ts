@@ -228,7 +228,10 @@ export interface CasperTransactionSubmitter {
     path: string[],
   ): Promise<{
     storedValue: {
-      contractPackage?: { versions: Array<{ contractHash: { hash: { toHex(): string } } }> };
+      contractPackage?: {
+        versions: Array<{ contractHash: { hash: { toHex(): string } } }>;
+        lockStatus?: string;
+      };
       clValue?: InstanceType<typeof CLValue>;
     };
   }>;
@@ -845,6 +848,17 @@ export class CasperLiveClient {
       if (/not found|ValueNotFound/i.test(msg) || (detail && /not found/i.test(detail))) return undefined;
       throw e;
     }
+  }
+
+  /** Reads the contract *package's* own `lock_status` ("Locked" / "Unlocked") directly via
+   *  `query_global_state` on the package key — a platform-level field on `ContractPackage`
+   *  itself, not an Odra `Mapping`/`Var` (so `readMapping`/`resolveEntityHash`'s dictionary-item
+   *  path doesn't apply here). Mirrors the manual check `DEMO_CASPER.md`'s redeploy verification
+   *  did by hand; this is that same read, made reusable. */
+  async getLockStatus(): Promise<string | undefined> {
+    const packageKey = this.contractHash.startsWith("hash-") ? this.contractHash : `hash-${stripHashPrefix(this.contractHash)}`;
+    const { storedValue } = await this.rpc.queryLatestGlobalState(packageKey, []);
+    return storedValue.contractPackage?.lockStatus;
   }
 
   /** `this.contractHash` is the *package* hash (stable across upgrades — what

@@ -1,0 +1,49 @@
+name: Dashboard snapshot
+
+# Refreshes docs/media/dashboard/casper_status.json from the live Casper Testnet contract on a
+# schedule, so the judge walkthrough page can show real on-chain state via a same-origin fetch()
+# (no browser ever calls the Casper RPC node directly — that path is CORS-blocked, verified
+# against the real public node: OPTIONS /rpc returns 403 with no Access-Control-Allow-Origin).
+# Read-only: no signer, no funded account, no secrets needed.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Export snapshot
+        env:
+          CASPER_RPC_URL: https://node.testnet.casper.network/rpc
+          KARMA_ODRA_REGISTRY: hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384
+        run: pnpm exec tsx src/scripts/export_casper_dashboard_snapshot.ts
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/media/dashboard/casper_status.json
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "chore(dashboard): refresh Casper status snapshot"
+          git push

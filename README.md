@@ -3,7 +3,12 @@
 > 🤖 **Judging this for the Casper Agentic Buildathon?** Start with
 > [DEMO_CASPER.md](DEMO_CASPER.md), or the
 > [90-second walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) if you
-> want the short version first — no clone needed.
+> want the short version first — no clone needed. That page now opens with a **live status strip**
+> (lock status, governance, timelock, arbiter panel) read directly off Casper Testnet by a
+> scheduled job and refreshed every ~30 min — not typed in, not a screenshot; verify it against
+> [testnet.cspr.live](https://testnet.cspr.live/contract-package/2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384)
+> yourself. It's a status strip, not a full dashboard app — reproducing it locally is
+> `pnpm exec tsx src/scripts/export_casper_dashboard_snapshot.ts`, read-only, no funded key needed.
 
 > [![KARMA on Casper — judge walkthrough: real x402 payment verification, 155/155 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)
 >
@@ -726,9 +731,19 @@ below for why that's the responsible call before an audit happens):
 - **v2 settlement rail extensions**, tracked in
   [`IPaymentPlugin-v1.md`](docs/standards/IPaymentPlugin-v1.md) and
   [`reference-implementations.md`](docs/standards/reference-implementations.md): a subscription
-  rail (time-windowed unlocks), streaming/chunked payments for long-running tasks, a Pharos
-  `IPaymentPlugin` wrapper, and multi-hop revenue-split composition beyond today's single-level
-  fan-out.
+  rail (time-windowed unlocks), a Pharos `IPaymentPlugin` wrapper, and multi-hop revenue-split
+  composition beyond today's single-level fan-out.
+  Streaming/chunked payments for long-running tasks turned out not to need a v2 at all — neither
+  rail has a native batch/channel primitive (`X402SettlementToken` has no entry point that settles
+  more than one authorization per call; `escrow_amount` is set once at `create_job` and never
+  incremented), but chunking a task into N ordinary escrow jobs, linked by a client-derived
+  `task_hash`, reuses the existing lifecycle verbatim — full dispute-bond + reputation protection
+  per chunk, zero new contract code, real measured cost ≈ $0.01/chunk at current CSPR prices. See
+  `src/scripts/demo_casper_streaming_installments.ts` (structured and typechecked against the same
+  pattern as `demo_casper_full_job_lifecycle.ts`; not yet broadcast — needs a funded key this
+  session didn't have). A separate, complementary option for payment that doesn't need dispute
+  protection: `X402SettlementToken`'s already-deployed CEP-18 `approve`/`transfer_from` lets a
+  payer authorize a budget once and a provider pull chunks unattended, no per-chunk signature.
 - **Cross-chain reputation, verified on-chain instead of governed.** `propose_set_cross_chain_rep`
   is a governance-attested value today; replacing that attestation with an on-chain-verifiable
   proof, in the spirit of the Stellar ZK track, is on the table for later.

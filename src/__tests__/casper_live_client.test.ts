@@ -596,6 +596,21 @@ describe("CasperLiveClient governance-state getters (P0-B, bare Var<T> fields â€
     expect(await client.getArbiter()).toBeUndefined();
   });
 
+  it("getLockStatus reads the ContractPackage's own lock_status via queryLatestGlobalState, not the state dictionary", async () => {
+    const rpc = fakeSubmitter();
+    rpc.queryLatestGlobalState.mockResolvedValue({
+      storedValue: {
+        contractPackage: {
+          versions: [{ contractHash: { hash: { toHex: () => ENTITY_HASH } } }],
+          lockStatus: "Locked",
+        },
+      },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getLockStatus()).toBe("Locked");
+    expect(rpc.queryLatestGlobalState).toHaveBeenCalledWith(CONTRACT_HASH, []);
+  });
+
   it("getGovernanceSigners decodes a Vec<Address> at field index 19", async () => {
     const rpc = fakeSubmitter();
     const rawSigners = concat(u32(2), address("Account", SIGNER_A), address("Account", SIGNER_B));
