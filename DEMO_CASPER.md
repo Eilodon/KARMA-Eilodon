@@ -354,25 +354,63 @@ New `contract_package_hash`: **`hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3
   exactly the spec §3b value, not the old 48h), `arbiter_panel: []` (correctly empty — not yet
   proposed) [verified 2026-07-25].
 
-**Step 4 — activate the panel, with the timelock genuinely exercised, not skipped (not yet run):**
-```bash
-# 1) Propose the panel (3 arbiters, threshold 2) and the flat per-vote fee — governance-signer only.
-pnpm exec tsx src/scripts/demo_casper_x402_live.ts  # or the equivalent propose_set_arbiter_panel /
-                                                      # propose_set_panel_arbiter_fee MCP tool calls
-# 2) Immediately attempt execute_proposal — expect a revert.
-#    errorMessage should decode to "User error: 42" = Error::TimelockNotElapsed, same ordinal as
-#    the cross-chain-rep proposal's revert further down this document. This is the proof the
-#    30-minute delay is a real, enforced wait, not governance theater (spec Failure Mode 2).
-# 3) Wait 30 minutes (real wall-clock wait — this is the point).
-# 4) execute_proposal again — expect success this time.
-# 5) Run the panel dispute end to end: register a skill, create+deliver a job,
-#    dispute_result_via_panel, respond_to_dispute, 2-of-3 cast_panel_vote — same evidentiary
-#    format as the single-arbiter courtroom flow earlier in this document (tx hash + on-chain read
-#    after each step, not just "it should have worked").
-```
+**Step 4 — panel activated and live-disputed: DONE, same day (2026-07-25).** Scripts:
+[`demo_casper_panel_governance.ts`](src/scripts/demo_casper_panel_governance.ts) (propose/approve/
+execute) and [`demo_casper_panel_dispute.ts`](src/scripts/demo_casper_panel_dispute.ts) (the
+dispute itself) — mirroring `demo_casper_cross_chain_rep_governance.ts` and
+`demo_casper_courtroom.ts`'s own patterns, not invented ad hoc.
 
-Once Step 4 actually runs, add its real transaction table here too, same evidentiary bar as Steps
-1-3 above — this paragraph is a placeholder for that evidence, not a substitute for it.
+**4a. Propose + approve + prove the timelock is real, not theater:**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| Fund 3 fresh arbiter keys, 10 CSPR each (signer 1) | `d576b280574aca25e905e1b60b0984acce3da2a59b6baf3056cae4eeecc4e139` · `03f10f67301d47948865eb02ecb51b991958dee1b1a7e756a2ae8f2fb7dce9fe` · `72e07c756f0af43c3824f35894161d9004861891d005524bd013e6c45b150930` | all `errorMessage: null` |
+| `propose_set_arbiter_panel` (signer 1, proposal_id=1) | `2bb28604e995b7d0cd4622b27f7187785f941f3f5b93c2c3a7e58d8bbd92c562` | success |
+| `propose_set_panel_arbiter_fee` (signer 1, proposal_id=2) | `3caebbefb9f84f5aea6903b97f3f0772d256b562e3c510bc1fa90221a93dc093` | success |
+| `approve_proposal(1)` (signer 2) | `f52d4e1e9448ecf02b9a6b7183991cbf5f5bd742cffc22d294eaa35bd1930cc9` | success, 2/2 |
+| `approve_proposal(2)` (signer 2) | `9b39ff7d5b6b87f000572a5eb4a3e523cd15ed66420a152adf1a8d434d1fe686` | success, 2/2 |
+| `execute_proposal(1)` attempted immediately | `b9d5ab7e76215e8732d85ee43ce3a933bc9b716209ea7c19a9773cb336a4f3ff` | **Reverted, `errorMessage: "User error: 42"`** = `Error::TimelockNotElapsed`, same ordinal as the cross-chain-rep proposal's revert below — the 30-minute delay is a real, enforced wait, not governance theater |
+
+Proposed at `2026-07-25T17:54:25.811Z`. Waited the real 30 minutes (no shortcuts — this was the
+entire point of choosing 30 minutes over 0 for this redeploy, spec §3b).
+
+**4b. Execute, after the wait — DONE, `2026-07-25T18:27Z`:**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `execute_proposal(1)` — panel | `81813aca0a546be55850204223eb2a9bfb2b30c90d63d8c693478c5cf680c1e0` | success |
+| `execute_proposal(2)` — fee | `299260aebc211e3c2f588b7bf82e2166ab6642127e7e5f47a7b3fc72c8584376` | success |
+
+On-chain read after: `getArbiterPanel()` → the 3 funded arbiter accounts, byte-for-byte;
+`getPanelThreshold()` → `2`. Not assumed from the tx succeeding — read back separately.
+
+**4c. Live panel dispute — DONE, same run, `skill_id=1`/`job_id=1` on this fresh contract:**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| Fund fresh provider key, 100 CSPR (signer 1) | `890535db83c847b2540d144c62424796f4af6a1164a631c9a4eb23b679ff74c0` | success |
+| `register_skill` (provider) | `bf2672b2f163d2f1343b7cfb7b079497a39299a67dee98dc0b29d73b07cb8cd4` | success — `skill_id=1` |
+| `create_job` (requester = signer 2, escrows 1 CSPR) | `e969fdd03e454ee388317059a679bc0a7c77ce7e9862e54a3af46acebc77c4f0` | success — `job_id=1` |
+| `deliver_result` (provider) | `9890a67889529aad6c7deacacae87fcce44132b13b94f93427667e5377062049` | success |
+| `dispute_result_via_panel` (requester, bond + 0.3 CSPR panel fee) | `9ac44d28b9cd6e5259df97e2e8c6df4a9ed4f26338b95dfb03fb9ce1370c188f` | success |
+| `respond_to_dispute` (provider matches the bond) | `f42a15b8dbe462120821d37c1c189e500b85beda85812250479e67dceaa79a12` | success |
+| `cast_panel_vote(arb1, ProviderAtFault)` — 1 of 3 | `8a51ba3806d33bdf30fc9ce24ba6cf6f0d5a4b1ad9bb291dc0c84fa3a1ce0e50` | success. `getJob(1).status` read back **still `"Disputed"`** — confirms 1 vote alone does not settle |
+| `cast_panel_vote(arb2, ProviderAtFault)` — 2 of 3, strict majority reached | `466228f133b77c427539800b7e9c4f547a2ee9a8d15925cfc84360f2db135403` | success — settles automatically in this one call |
+
+Final on-chain read: `getJob(1).status == "Refunded"` (escrow + both bonds → requester, exactly as
+`Verdict::ProviderAtFault` specifies) and `getSkill(1).reputationScore` dropped `50 → 40` — the
+same slash mechanism the single-arbiter courtroom flow already proved, now through the panel path
+instead. Pending withdrawals, read independently per address, not summed from logs:
+`requester = 3_000_000_000` motes (1 escrow + 2×1 CSPR bonds), `arb1 = 150_000_000`,
+`arb2 = 150_000_000` (the 0.3 CSPR fee split evenly between the two who voted), `arb3 = 0`
+(never voted — gets nothing, exactly as `distribute_panel_fee` specifies and
+`p1b_panel_majority_reached_settles_provider_at_fault_and_pays_participating_arbiters`'s unit test
+already predicted). This is that same test's assertion, now reproduced on live Casper Testnet
+state instead of an in-memory VM.
+
+19 real transactions across 4a-4c, all `testnet.cspr.live`-verifiable, none of them templated —
+the panel-arbitration mechanism (proposed 2026-07-22, live-demoed 2026-07-25) went from "155/155
+unit tests pass" to "actually settled a real dispute on-chain" in the same Buildathon window.
 
 ## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
 

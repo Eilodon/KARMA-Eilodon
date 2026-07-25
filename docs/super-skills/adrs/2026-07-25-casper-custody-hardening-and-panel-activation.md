@@ -139,12 +139,21 @@ landing this update).
   ADR's Locked-status claim should be re-verified against the new version before being relied on
   again. [status: OPEN, introduced by this change]
 
-## 9. Next Cycle Trigger
-When the owner actually broadcasts both redeploys (`DEMO_CASPER.md`'s "Prepared redeploy" section)
-and either (a) the panel-activation sequence completes live — replace that section's placeholder
-framing with the real transaction table, mirroring every other flow in `DEMO_CASPER.md` — or
-(b) the redeploy reveals the macro-codegen assumption (Known Debt above) was wrong, in which case
-re-open this ADR's decision before trying again.
+## 9. Next Cycle Trigger — FIRED, same day (2026-07-25)
+
+Both conditions this section originally named have now happened: the redeploys broadcast (§4),
+and the panel-activation sequence completed live — `demo_casper_panel_governance.ts` proposed the
+panel + fee, proved `TimelockNotElapsed` reverts for real on an immediate execute attempt, then
+executed successfully after the real 30-minute wait; `demo_casper_panel_dispute.ts` then ran a
+full dispute through the panel path (2 of 3 arbiters voting `ProviderAtFault`, settling
+automatically, fee split correctly between the two who voted). `DEMO_CASPER.md`'s Step 4 now
+carries the real 19-transaction table in place of the placeholder. The macro-codegen assumption
+(Known Debt below) was not contradicted by anything observed — no re-open needed.
+
+**New Next Cycle Trigger:** when the read-only dashboard/indexer work (mentioned as deferred in
+the 2026-07-22 ADR's Consequences) is picked up, it should represent panel-mode disputes and the
+now-active `arbiter_panel` — this ADR's live transaction hashes are real fixture data for that
+work, not a hypothetical.
 
 ## 10. Cycle Retrospective
 - `build-wasm.sh` needed both `wasm32-unknown-unknown` (rustup target) and the `rust-src`
