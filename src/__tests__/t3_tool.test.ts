@@ -2,17 +2,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { markTrustedRuntime, resetTrustedRuntimeForTest } from "../core/runtime_identity.js";
 import { withRequestContext, defaultRequestContext } from "../security/context.js";
 
-// Shared mock fn referenced both inside the vi.mock factory (constructor wiring) and
+// Shared mock fn/state referenced both inside the vi.mock factory (constructor wiring) and
 // from individual test bodies (to control success/failure per test) — vi.hoisted is
 // required because vi.mock factories are hoisted above normal module-scope const decls.
-const { mockExecuteAndDecode, mockCreatePolicy, mockSetGrants, mockRevokeDelegation } = vi.hoisted(() => ({
+//
+// agentAuthStore is a tiny in-memory stand-in for T3N's server-side agent-auth policy
+// document: agentDid -> scriptName -> grant. updateAgentAuth/getAgentAuth/agentAuthUpdate
+// below read and write it, so an authorize call in one part of a test is visible to a
+// revoke call later in the same test — exactly like the real read-merge-write / full-
+// document-write contract T3nClient documents.
+const { mockExecuteAndDecode, mockCreatePolicy, mockSetGrants, agentAuthStore } = vi.hoisted(() => ({
   mockExecuteAndDecode: vi.fn(async () => ({ status: "validated", ok: true })),
   mockCreatePolicy: vi.fn(async () => ({ status: "created", tx_hash: "0xpolicytx" })),
   mockSetGrants: vi.fn(async () => ({ status: "created", tx_hash: "0xgranttx" })),
-  mockRevokeDelegation: vi.fn(async (opts: { revokedFunctions?: string[] }) => ({
-    vcId: "mock-vc-id",
-    revokedFunctions: opts.revokedFunctions ?? null,
-  })),
+  agentAuthStore: new Map<string, Map<string, Record<string, unknown>>>(),
 }));
 
 // Mock T3N SDK before importing the plugin so module-level init is skipped.
@@ -33,29 +36,38 @@ vi.mock("@terminal3/t3n-sdk", () => ({
     this.getDid = vi.fn(() => "did:t3n:deadbeef01234567");
     this.isAuthenticated = vi.fn(() => true);
     this.executeAndDecode = mockExecuteAndDecode;
+    this.updateAgentAuth = vi.fn(async (agentDid: string, grant: Record<string, unknown> & { scriptName: string }) => {
+      if (!agentAuthStore.has(agentDid)) agentAuthStore.set(agentDid, new Map());
+      const scripts = agentAuthStore.get(agentDid)!;
+      const preservedRows = [...scripts.keys()].filter((name) => name !== grant.scriptName);
+      scripts.set(grant.scriptName, grant);
+      return { preservedRows };
+    });
+    this.getAgentAuth = vi.fn(async () => ({
+      agents: [...agentAuthStore.entries()].map(([agentDid, scripts]) => ({
+        agentDid,
+        scripts: [...scripts.values()],
+      })),
+      discoverDids: [] as string[],
+    }));
+    this.agentAuthUpdate = vi.fn(async (input: { agents: Array<{ agentDid: string; scripts: Array<{ scriptName: string } & Record<string, unknown>> }> }) => {
+      agentAuthStore.clear();
+      for (const agent of input.agents) {
+        const scripts = new Map<string, Record<string, unknown>>();
+        for (const s of agent.scripts) scripts.set(s.scriptName, s);
+        agentAuthStore.set(agent.agentDid, scripts);
+      }
+    });
   }),
   createEthAuthInput: vi.fn((addr: string) => ({ method: 0, address: addr })),
   getNodeUrl: vi.fn(() => "https://cn-api.sg.testnet.t3n.terminal3.io"),
   setEnvironment: vi.fn(),
   getScriptVersion: vi.fn(async () => "2.0.0"),
-  eip191Digest: vi.fn(() => new Uint8Array(32).fill(0xab)),
   compactDidFromBytes: vi.fn(() => "did:t3n:857c2f11e9edddC7ddc03d035b0998de"),
-  PAYROLL_FUNCTIONS_V1: ["compute-payroll", "execute-disbursement", "finalize-audit", "submit-escalations", "validate-credentials"],
-  b64uEncodeBytes: vi.fn((bytes: Uint8Array) => Buffer.from(bytes).toString("base64url")),
-  buildDelegationCredential: vi.fn((opts: Record<string, unknown>) => ({ v: "ot3.delegation/1", ...opts })),
-  buildPayrollDirectInvocation: vi.fn((opts: { request: unknown }) => ({ request: opts.request })),
-  // Regular function (not arrow) — same constructor-mock rule as T3nClient above.
-  DelegationCustodialClient: vi.fn(function MockDelegationCustodialClient(this: Record<string, unknown>) {
-    this.signCustodial = vi.fn(async () => ({
-      credentialJcs: new Uint8Array([1, 2, 3]),
-      userSig: new Uint8Array([4, 5, 6]),
-    }));
-  }),
   createOrgDataClientFromSession: vi.fn(() => ({
     createPolicy: mockCreatePolicy,
     setGrants: mockSetGrants,
   })),
-  revokeDelegation: mockRevokeDelegation,
 }));
 
 // Mock keystoreManager singleton.
@@ -344,6 +356,7 @@ describe("t3.tool.ts — t3_authorize_payroll_agent", () => {
     resetTrustedRuntimeForTest();
     markTrustedRuntime();
     clearVerifiedDidsForTest();
+    agentAuthStore.clear();
     mockExecuteAndDecode.mockClear();
     mockExecuteAndDecode.mockImplementation(async () => ({ status: "validated", ok: true }));
     mockCreatePolicy.mockClear();
@@ -375,9 +388,7 @@ describe("t3.tool.ts — t3_authorize_payroll_agent", () => {
       functions_authorised: ["validate-credentials"],
       batch_cap_cents: "100000",
     });
-    expect(typeof sc.vc_id_b64u).toBe("string");
-    expect((sc.credential_jcs_hex as string).startsWith("0x")).toBe(true);
-    expect((sc.user_sig_hex as string).startsWith("0x")).toBe(true);
+    expect(Array.isArray(sc.preserved_script_rows)).toBe(true);
     expect(new Date(sc.not_after as string).getTime()).toBeGreaterThan(new Date(sc.not_before as string).getTime());
   });
 
@@ -492,11 +503,22 @@ describe("t3.tool.ts — t3_revoke_payroll_authorization", () => {
     resetTrustedRuntimeForTest();
     markTrustedRuntime();
     clearVerifiedDidsForTest();
-    mockRevokeDelegation.mockClear();
+    agentAuthStore.clear();
+  });
+
+  it("rejects when agent not T3N-verified", async () => {
+    const tools = createT3Tools();
+    const revoke = tools.find(t => t.name === "t3_revoke_payroll_authorization")!;
+    await expect(
+      revoke.handler({ agent_id: "agent-alpha" }, {} as never, undefined, undefined),
+    ).rejects.toThrow(/not t3n-verified|t3_verify_identity/i);
   });
 
   it("rejects when no credential has been issued for this agent", async () => {
     const tools = createT3Tools();
+    const verify = tools.find(t => t.name === "t3_verify_identity")!;
+    await verify.handler({ agent_id: "agent-alpha" }, {} as never, undefined, undefined);
+
     const revoke = tools.find(t => t.name === "t3_revoke_payroll_authorization")!;
     await expect(
       revoke.handler({ agent_id: "agent-alpha" }, {} as never, undefined, undefined),
@@ -515,9 +537,7 @@ describe("t3.tool.ts — t3_revoke_payroll_authorization", () => {
     const sc = res.structuredContent as Record<string, unknown>;
     expect(sc.revoked_entirely).toBe(true);
     expect(sc.revoked_functions).toBeNull();
-    expect(mockRevokeDelegation).toHaveBeenCalledWith(
-      expect.objectContaining({ revokedFunctions: undefined }),
-    );
+    expect(sc.remaining_functions).toEqual([]);
   });
 
   it("narrows the credential when specific functions are revoked", async () => {
@@ -538,5 +558,6 @@ describe("t3.tool.ts — t3_revoke_payroll_authorization", () => {
     const sc = res.structuredContent as Record<string, unknown>;
     expect(sc.revoked_entirely).toBe(false);
     expect(sc.revoked_functions).toEqual(["compute-payroll"]);
+    expect(sc.remaining_functions).toEqual(["validate-credentials"]);
   });
 });
