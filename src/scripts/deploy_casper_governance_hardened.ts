@@ -27,7 +27,13 @@ if (apiKey) handler.setCustomHeaders({ Authorization: apiKey });
 const rpc = new RpcClient(handler);
 
 const REVIEW_WINDOW_MS = "259200000"; // 3 days — DEFAULT_REVIEW_WINDOW
-const TIMELOCK_DELAY_MS = "172800000"; // 48 hours — DEFAULT_TIMELOCK_DELAY
+// 30 minutes, not 48h. execute_proposal (agent_skill_registry.rs) applies this delay uniformly to
+// every ProposalAction, including SetArbiterPanel — there is no fast path for governance-object
+// setup. At 48h, propose_set_arbiter_panel -> execute_proposal cannot complete same-day. 30 min is
+// long enough that TimelockNotElapsed is genuinely observable on an early-execute attempt (real
+// proof the guard is enforced, not just present), short enough to leave same-day margin for a live
+// panel dispute afterward. See docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md §3b.
+const TIMELOCK_DELAY_MS = "1800000"; // 30 minutes
 const PAYMENT_MOTES = 800_000_000_000; // 800 CSPR ceiling (real cost ~579 CSPR per the original deploy)
 
 async function main() {
@@ -51,8 +57,32 @@ async function main() {
 
   const args = Args.fromMap({
     odra_cfg_package_hash_key_name: CLValue.newCLString("AgentSkillRegistry"),
-    odra_cfg_allow_key_override: CLValue.newCLValueBool(false),
-    odra_cfg_is_upgradable: CLValue.newCLValueBool(true),
+    // true, not false: this deploy is submitted from signer 1's account, the SAME account that
+    // already holds an "AgentSkillRegistry" named key from the currently-live install
+    // (hash-42f6945f...). Verified against the actual Odra bootstrap source
+    // (odra-casper-wasm-env-2.9.0/src/host_functions.rs:106-110,
+    // install_new_contract): `if package_hash_key.is_some() && !allow_key_override { revert(
+    // ExecutionError::CannotOverrideKeys) }` — with false here this deploy would revert and
+    // burn the full gas payment for nothing (no refund on failure — the same lesson already
+    // paid for once in this repo's history, see the redeploy gotcha below). true just repoints
+    // the named key on signer 1's account to the new package; the old package/history at its
+    // old hash is untouched, and KARMA_ODRA_REGISTRY is read from .env, never looked up via the
+    // named key at runtime, so nothing downstream depends on the old pointer.
+    odra_cfg_allow_key_override: CLValue.newCLValueBool(true),
+    // false, not true: closes the _access_token custody gap (README.md "Security notes" #3) for
+    // good, verified against real platform source rather than assumed. odra-core-2.9.0's
+    // InstallConfig.is_upgradable (host.rs) forwards to the odra_cfg_is_upgradable session arg
+    // (consts.rs IS_UPGRADABLE_ARG); casper-execution-engine-8.1.1's
+    // add_contract_version_by_contract_package/add_contract_version_by_package
+    // (runtime/mod.rs) both unconditionally `return Err(ExecError::LockedEntity(...))` when
+    // is_locked() is true, checked BEFORE any access-key/URef validation. A Locked package can
+    // never have a new version added by anyone, including whoever holds _access_token — this is
+    // stronger than moving custody to a dedicated multisig account, and platform-enforced, not an
+    // Odra-level convention. Governance entry points (propose/approve/execute, arbiter, panel,
+    // cross-chain-rep) are unaffected — locking only blocks add_contract_version, a different code
+    // path. Trade-off accepted knowingly: this registry instance can never be upgraded again after
+    // this deploy; a future v2 interface becomes a fresh deployment. See spec §3a for full citation.
+    odra_cfg_is_upgradable: CLValue.newCLValueBool(false),
     odra_cfg_is_upgrade: CLValue.newCLValueBool(false),
     odra_cfg_constructor: CLValue.newCLString("init"),
     review_window_ms: CLValue.newCLUint64(REVIEW_WINDOW_MS),

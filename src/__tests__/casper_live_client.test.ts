@@ -214,6 +214,63 @@ describe("CasperLiveClient (T13-live)", () => {
     expect(rpc.putTransaction.mock.calls[2][0].entryPoint.customEntryPoint).toBe("cancel_proposal");
   });
 
+  it("proposeSetArbiterPanel (P4-A) encodes the panel as a List(Key) and threshold as a plain u32", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    const panel = ["account-hash-" + "11".repeat(32), "account-hash-" + "22".repeat(32), "account-hash-" + "33".repeat(32)];
+    await client.proposeSetArbiterPanel(SIGNER, panel, 2);
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("propose_set_arbiter_panel");
+    const panelArg = transaction.args.getByName("panel");
+    expect(panelArg!.list!.elements.map((e: InstanceType<typeof CLValue>) => e.getKey().toPrefixedString())).toEqual(panel);
+    expect(transaction.args.getByName("threshold")?.toString()).toBe("2");
+  });
+
+  it("proposeSetPanelArbiterFee (P4-A) encodes the fee as a plain U512", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await client.proposeSetPanelArbiterFee(SIGNER, 300_000_000n);
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("propose_set_panel_arbiter_fee");
+    expect(transaction.args.getByName("fee")?.toString()).toBe("300000000");
+  });
+
+  it("disputeResultViaPanel (P4-A) is payable â€” routes through the proxy caller with only job_id as an inner arg and bond+fee as attached_value", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await client.disputeResultViaPanel(SIGNER, 1n, 1_300_000_000n);
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.target.session?.moduleBytes.length).toBeGreaterThan(0);
+    expect(transaction.args.getByName("entry_point")?.toString()).toBe("dispute_result_via_panel");
+    expect(transaction.args.getByName("attached_value")?.toString()).toBe("1300000000");
+
+    const innerArgsBytes = Uint8Array.from(
+      transaction.args.getByName("args")!.list!.elements.map((e: InstanceType<typeof CLValue>) => e.ui8!.toNumber()),
+    );
+    const innerArgs = casperSdk.Args.fromBytes(innerArgsBytes);
+    expect(innerArgs.getByName("job_id")?.toString()).toBe("1");
+  });
+
+  it("castPanelVote (P4-A) is NOT payable (unlike disputeResultViaPanel) and encodes Verdict as the same plain U8 discriminant as arbitrate", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await client.castPanelVote(SIGNER, 1n, "ProviderAtFault");
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("cast_panel_vote");
+    expect(transaction.args.getByName("job_id")?.toString()).toBe("1");
+    expect(transaction.args.getByName("verdict")?.ui8?.toNumber()).toBe(0);
+    expect(transaction.target.session).toBeUndefined(); // direct call, not the proxy-caller session
+  });
+
+  it("resolvePanelDefault (P4-A) hits its own entry point with job_id as the only arg", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    await client.resolvePanelDefault(SIGNER, 1n);
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    expect(transaction.entryPoint.customEntryPoint).toBe("resolve_panel_default");
+    expect(transaction.args.getByName("job_id")?.toString()).toBe("1");
+  });
+
   it("uses the configured chain name and a caller-overridable payment ceiling", async () => {
     const rpc = fakeSubmitter();
     const client = new CasperLiveClient(
@@ -580,5 +637,32 @@ describe("CasperLiveClient governance-state getters (P0-B, bare Var<T> fields â€
 
     rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
     expect(await client.getTimelockDelayMs()).toBe(0n);
+  });
+
+  it("getArbiterPanel (P4-A) decodes a Vec<Address> at field index 26, empty until a SetArbiterPanel proposal has ever executed", async () => {
+    const rpc = fakeSubmitter();
+    const rawPanel = concat(u32(2), address("Account", SIGNER_A), address("Account", SIGNER_B));
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({ storedValue: { clValue: newCLOdraStructBytes(rawPanel) } });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+
+    expect(await client.getArbiterPanel()).toEqual([
+      { kind: "Account", hashHex: SIGNER_A },
+      { kind: "Account", hashHex: SIGNER_B },
+    ]);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getArbiterPanel()).toEqual([]);
+  });
+
+  it("getPanelThreshold (P4-A) decodes a plain u32 at field index 27, defaulting to 0", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(u32(2)) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getPanelThreshold()).toBe(2);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getPanelThreshold()).toBe(0);
   });
 });

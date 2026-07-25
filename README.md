@@ -13,12 +13,18 @@
 > walkthrough is a real captured run, not typed-out copy. Reproduce it yourself:
 > `pnpm exec tsx src/scripts/demo_casper_x402_live.ts` runs the actual local HTTP 402 → pay → verify
 > loop, `cargo +nightly test --manifest-path contracts-odra/Cargo.toml` gets you 155/155, and
-> `contracts-odra/build-wasm.sh` builds the same ~535KB `karma_odra.wasm` (WebAssembly.validate()-
-> clean, every entry point exported) that's live on Testnet right now at `hash-42f6945f…`
-> (attestation-hardened redeploy, 2026-07-21 — tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md)).
-> Governance is a real 2-of-2 multisig with a 48h timelock, and we didn't just take that on faith
-> from the deploy args — we decoded `governance_signers`/`governance_threshold`/`timelock_delay`
-> straight out of the contract's own storage to confirm it.
+> `contracts-odra/build-wasm.sh` builds the same ~578KB `karma_odra.wasm` (WebAssembly.validate()-
+> clean, every entry point exported, including the N-of-M panel arbitration path) that's live on
+> Testnet right now at `hash-2262a0a9…` (custody-hardening + panel-activation redeploy,
+> 2026-07-25 — tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md)). Governance is a real 2-of-2
+> multisig with a real 30-minute timelock (down from the prior redeploy's 48h, specifically so the
+> panel could be proposed, timelocked, and executed live before this Buildathon's deadline — see
+> [spec §3b](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md#3b-timelock-for-this-redeploy-30-minutes-1_800_000-ms--not-48h-not-0)),
+> and we didn't just take that on faith from the deploy args — we decoded
+> `governance_signers`/`governance_threshold`/`timelock_delay` straight out of the contract's own
+> storage to confirm it. The contract package's `lock_status` reads `Locked` on-chain too — this
+> instance can never be upgraded again, verified against Casper's own execution-engine source, not
+> assumed from Odra's docs (same spec, §3a).
 
 > **New this Buildathon, proven live the same day it shipped:** a requester can now commit a hash
 > of their agent's decision rationale on-chain (`attest_rationale`) and read it back byte-for-byte
@@ -120,9 +126,20 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination, scored against a hidden answer key by `eval_harness.ts` (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
 | User Experience & Design | [90-second plain-language walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) + a 46-tool MCP surface — the UX of a protocol is its interface, for agents and for the humans who have to trust it |
-| Working Smart Contracts | `hash-42f6945f…`, attestation-hardened redeploy, 23+ real transactions — [Live deployment](#live-deployment) |
+| Working Smart Contracts | `hash-2262a0a9…`, custody-hardened + panel-enabled redeploy (Locked on-chain, verified), N-of-M panel arbitration activated and live-disputed same day, 44+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) — solo builder, real community presence: [X](https://x.com/MathEnemy) · [Telegram](https://t.me/HoaTrungBinh) · Discord `mathenemy` |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
+
+### Why KARMA is a different kind of submission
+
+Most agentic projects here ship a single agent that does one thing well — a worker. KARMA isn't a
+worker; it's the trust substrate a worker needs before it can safely transact with a stranger:
+identity, reputation, escrow, and a real verdict when someone cheats, specified once as a protocol
+and proven live on three independent chains rather than described once and assumed to generalize.
+That's a narrower thing to demo in 90 seconds than a dashboard, and a deeper claim to back up —
+every mechanism above has a real on-chain transaction behind it, not a diagram. Worth judging as
+infrastructure other agentic projects could build on top of, not as a single-purpose agent
+competing on the same axis as one.
 
 ## What KARMA actually builds
 
@@ -403,12 +420,12 @@ redeploy (real multisig threshold + timelock, see `DEMO_CASPER.md`) remains owne
 | `IPaymentPlugin` interface + registry | `src/lib/payment/` | in-repo, tested |
 | **Reputation-scaled pricing** — optional discount ladder a skill owner applies to a base price before calling `quote`/`pay` (Verity-style economics; doesn't touch `IPaymentPlugin` itself, so no conformant implementation is affected) | `src/lib/payment/reputation_pricing.ts` | in-repo, tested — not wired into any default call path |
 | x402 **Stellar** rail (USDC; ed25519 via HKDF) | `src/plugins/x402_stellar.ts` · `src/lib/stellar/keypair.ts` | testnet, real funded accounts |
-| x402 **Casper** rail (EIP-712 + CEP-18, wire-compatible with the official [`make-software/casper-x402`](https://github.com/make-software/casper-x402) reference) | `src/plugins/x402_casper.ts` · `contracts-odra/src/x402_settlement_token.rs` · `src/lib/casper/live_client.ts` | **live on Testnet** — `X402SettlementToken` at `hash-b3387d59…`, real `transfer_with_authorization` settlement ([demo](src/scripts/demo_casper_x402_settlement_live.ts), [RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)) |
+| x402 **Casper** rail (EIP-712 + CEP-18, wire-compatible with the official [`make-software/casper-x402`](https://github.com/make-software/casper-x402) reference) | `src/plugins/x402_casper.ts` · `contracts-odra/src/x402_settlement_token.rs` · `src/lib/casper/live_client.ts` | **live on Testnet** — `X402SettlementToken` at `hash-6667f2d0…` (redeployed Locked, 2026-07-25, supersedes `hash-b3387d59…`), `transfer_with_authorization` settlement proven on the prior deployment ([demo](src/scripts/demo_casper_x402_settlement_live.ts), [RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md)) — re-run against this hash not yet done |
 | **AgentCredentialProof** — Circom Groth16, verified on-chain via **native BN254 host functions** (`env.crypto().bn254()`, CAP-0074/Protocol 25 — no Arkworks) | `circuits/src/agent_credential.circom` · `contracts-soroban/agent_credential_verifier` | **live on Testnet** |
 | **ReputationAggregationProof** — portfolio credential (N=8, `validMask`, `providerId`), same native BN254 verifier path | `circuits/src/reputation_aggregation.circom` · `contracts-soroban/reputation_aggregation_verifier` · `src/lib/zk/reputation_aggregation.ts` | **live on Testnet** |
 | **Cross-chain reputation oracle** — folds indexed Pharos rep into a provable credential | `src/lib/zk/rep_oracle.ts` | in-repo, tested |
 | **Signed-TLS attestation** (fallback path) — verifiable RWA price feed | `src/lib/zk/signed_tls_attestation.ts` | in-repo, tested |
-| **N-of-M panel arbitration** — opt-in alternative to the single-arbiter dispute path: an odd-sized panel of independent arbiters settles by strict majority instead of one address ruling alone; governance manages the panel and its per-vote fee, and each dispute snapshots its own panel so a governance change mid-dispute can't change the terms retroactively | `contracts-odra/src/agent_skill_registry.rs` (`dispute_result_via_panel` / `cast_panel_vote` / `resolve_panel_default`) · `casper.tool.ts` | in-repo, 155/155 Rust tests — shares its settlement code with the single-arbiter path, but not yet on the redeployed live contract |
+| **N-of-M panel arbitration** — opt-in alternative to the single-arbiter dispute path: an odd-sized panel of independent arbiters settles by strict majority instead of one address ruling alone; governance manages the panel and its per-vote fee, and each dispute snapshots its own panel so a governance change mid-dispute can't change the terms retroactively | `contracts-odra/src/agent_skill_registry.rs` (`dispute_result_via_panel` / `cast_panel_vote` / `resolve_panel_default`) · `casper.tool.ts` | **live on Testnet, 2026-07-25** — 155/155 Rust tests, shares its settlement code with the single-arbiter path, activated via governance (propose → real `TimelockNotElapsed` revert proof → 30-min wait → execute) and live-disputed end to end: 2 of 3 arbiters voted `ProviderAtFault`, escrow + bonds refunded to the requester, fee split between the two who voted — see [DEMO_CASPER.md](DEMO_CASPER.md#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next) |
 | **Dispute audit-packet export** — a job's full dispute/arbitration history as JSON + Markdown, read live from chain, so a judge or counterparty can read one file instead of running MCP tools by hand | `src/lib/casper/dispute_audit_packet.ts` · `src/scripts/export_dispute_audit_packet.ts` | in-repo, tested |
 | **Skill composition** — weighted revenue split + reputation propagation | `contracts-odra/src/agent_skill_registry.rs` · `src/lib/casper/{odra_registry,composition_tools}.ts` | Odra + in-process, tested — reproducible demo: `pnpm exec tsx src/scripts/demo_casper_skill_composition.ts` |
 | **Autonomous economic loop** — budget-capped goal loop + live dashboard viewer + a decision-quality eval harness that scores the reasoning layer against a hidden answer key | `src/lib/autonomous_loop/` · `src/scripts/run_autonomous_loop.ts` (Stellar) · `src/scripts/run_autonomous_loop_casper.ts` (Casper) · `src/lib/autonomous_loop/eval_harness.ts` · [`docs/media/autonomous-loop-dashboard.html`](docs/media/autonomous-loop-dashboard.html) | dry-run tested on both chains; `--live` owner-driven |
@@ -431,15 +448,18 @@ pnpm exec tsx src/scripts/eval_autonomous_loop_reasoning.ts   # reasoning layer 
 
 ## Live deployment
 
-**Casper Testnet** (Odra, attestation-hardened) — this submission's primary deployment; full
-tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md):
+**Casper Testnet** (Odra, custody-hardened + panel-enabled, Locked) — this submission's primary
+deployment; full tx-by-tx evidence in [DEMO_CASPER.md](DEMO_CASPER.md):
 
 | | |
 |---|---|
-| **`AgentSkillRegistry`** | [`hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`](https://testnet.cspr.live/contract-package/42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d) (attestation-hardened redeploy, 2026-07-21 — supersedes `hash-29b7daeb…`) |
-| **Governance** | real 2-of-2 multisig + 48h timelock — confirmed live by directly decoding the contract's own storage (`governance_signers`, `governance_threshold`, `timelock_delay`) |
-| **LLM-decision attestation** | `attest_rationale`/`get_rationale_hash` — a requester's decision rationale, hashed and committed on-chain, read back byte-for-byte; `RationaleAlreadyAttested`/`NotRequester` reverts confirmed live |
-| **Sample transactions** | 23 real, `testnet.cspr.live`-verified calls (redeploy, lifecycle, courtroom, governance, attestation) — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions) in DEMO_CASPER.md |
+| **`AgentSkillRegistry`** | [`hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384`](https://testnet.cspr.live/contract-package/2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384) (custody-hardening + panel-activation redeploy, 2026-07-25 — supersedes `hash-42f6945f…`) |
+| **`X402SettlementToken`** | [`hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a`](https://testnet.cspr.live/contract-package/6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a) (same redeploy, supersedes `hash-b3387d59…`) |
+| **Lock status** | `ContractPackage.lock_status: Locked` on **both** contracts, read directly from `query_global_state` — no future upgrade possible on either, by anyone, platform-enforced (see [spec §3a](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md#3a-custody-fix-odra_cfg_is_upgradable-false-not-dedicated-multisig-custody)) |
+| **Governance** | real 2-of-2 multisig + a real 30-minute timelock (down from the prior redeploy's 48h — see [spec §3b](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md#3b-timelock-for-this-redeploy-30-minutes-1_800_000-ms--not-48h-not-0)) — confirmed live by directly decoding the contract's own storage (`governance_signers`, `governance_threshold`, `timelock_delay`) |
+| **LLM-decision attestation** | `attest_rationale`/`get_rationale_hash` — a requester's decision rationale, hashed and committed on-chain, read back byte-for-byte; `RationaleAlreadyAttested`/`NotRequester` reverts confirmed live on the prior deployment, entry point carried forward unchanged |
+| **N-of-M panel arbitration** | **activated and live-disputed, 2026-07-25** — `propose_set_arbiter_panel`/`propose_set_panel_arbiter_fee` → approved 2/2 → an immediate execute attempt correctly reverted `TimelockNotElapsed` (proof the 30-min timelock is real, not theater) → executed for real after the wait → `getArbiterPanel()` reads back the 3 configured arbiters, `getPanelThreshold() == 2` → a full dispute run through the panel path settled `ProviderAtFault` with 2 of 3 votes, escrow + bonds refunded, fee split between the two who voted, the third (non-voting) arbiter correctly paid nothing |
+| **Sample transactions** | 44+ real, `testnet.cspr.live`-verified calls (redeploy ×2, lifecycle, courtroom, governance, attestation, panel activation + panel dispute) — see [Recorded live transactions](DEMO_CASPER.md#recorded-live-transactions) in DEMO_CASPER.md |
 
 **Stellar Testnet** (Soroban, native BN254) — the same trust model's zero-knowledge reputation
 gate, proven on a second chain; full tx table + reproduction steps in
@@ -709,12 +729,6 @@ below for why that's the responsible call before an audit happens):
   rail (time-windowed unlocks), streaming/chunked payments for long-running tasks, a Pharos
   `IPaymentPlugin` wrapper, and multi-hop revenue-split composition beyond today's single-level
   fan-out.
-- **Redeploy N-of-M panel arbitration and put it through a real Testnet dispute.** The opt-in
-  panel mode — a strict-majority verdict from several independent arbiters instead of one — is
-  built and passing (155/155 Rust tests, incl. its own property-based invariants), but it landed a
-  day after the currently deployed contract, so `arbitrate` today still only knows the single-arbiter
-  path. Next step is a redeploy, then running a panel dispute live the way the courtroom flow
-  already is in [DEMO_CASPER.md](DEMO_CASPER.md).
 - **Cross-chain reputation, verified on-chain instead of governed.** `propose_set_cross_chain_rep`
   is a governance-attested value today; replacing that attestation with an on-chain-verifiable
   proof, in the spirit of the Stellar ZK track, is on the table for later.
@@ -744,11 +758,24 @@ code-level review of the originally deployed contract surfaced three real gaps, 
 2. **Deploy-time config gap** — the code fix alone wasn't sufficient; the actual redeploy needed
    real `governance_threshold ≥ 2`, ≥2 independent signers, and a non-zero `timelock_delay_ms`, or
    the fix would have been theater. Caught and corrected before the current live deploy.
-3. **Upgrade-token custody — still open, disclosed, not fixed.** Odra's install deploy writes an
+3. **Upgrade-token custody — fixed and live, 2026-07-25.** Odra's install deploy writes an
    `_access_token` to the deploying account; whoever holds it can push a contract upgrade outside
-   the governance gate above. Currently held by governance signer 1's key. Two options on the
-   table (dedicated multisig custody, or `is_upgradable: false` on a final redeploy) — not resolved
-   here.
+   the governance gate above. Applied to **both** `AgentSkillRegistry` and `X402SettlementToken`
+   (the latter previously undisclosed here — same deploy pattern, same gap). Resolved by setting
+   `odra_cfg_is_upgradable: false` on both contracts' redeploy — verified against Casper's own
+   execution-engine source (`add_contract_version_by_contract_package`/
+   `add_contract_version_by_package` in `casper-execution-engine`'s `runtime/mod.rs` both
+   unconditionally reject when the contract package is Locked, checked *before* any access-key
+   validation — so a Locked package can never be upgraded by anyone, `_access_token` holder
+   included), not assumed from Odra's own docs. This is stronger than the "dedicated multisig
+   custody" alternative once floated here, and cost zero new tooling. Trade-off, accepted: neither
+   contract can ever be upgraded again — consistent with the CEP-0000 framing that a locked,
+   audited v1 is a *stronger* trust-infrastructure claim than "upgradable, trust us." Both
+   redeployed same-day; `query_global_state` confirms `lock_status: Locked` on both, on-chain, not
+   just in the deploy args:
+   [spec](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md) ·
+   [DEMO_CASPER.md § Custody-hardening redeploy](DEMO_CASPER.md#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next)
+   for the real transaction hashes.
 
 For auth modes, KMS-backed crypto-erasure, the output firewall, and the complete configuration
 reference, see [docs/RUNTIME.md](docs/RUNTIME.md).
