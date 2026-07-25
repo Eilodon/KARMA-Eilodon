@@ -124,6 +124,17 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) — solo builder, real community presence: [X](https://x.com/MathEnemy) · [Telegram](https://t.me/HoaTrungBinh) · Discord `mathenemy` |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
 
+### Why KARMA is a different kind of submission
+
+Most agentic projects here ship a single agent that does one thing well — a worker. KARMA isn't a
+worker; it's the trust substrate a worker needs before it can safely transact with a stranger:
+identity, reputation, escrow, and a real verdict when someone cheats, specified once as a protocol
+and proven live on three independent chains rather than described once and assumed to generalize.
+That's a narrower thing to demo in 90 seconds than a dashboard, and a deeper claim to back up —
+every mechanism above has a real on-chain transaction behind it, not a diagram. Worth judging as
+infrastructure other agentic projects could build on top of, not as a single-purpose agent
+competing on the same axis as one.
+
 ## What KARMA actually builds
 
 Most agent projects ship a worker — one bot, one function. KARMA ships the institutions a labor

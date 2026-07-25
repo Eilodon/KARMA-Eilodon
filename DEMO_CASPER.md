@@ -283,34 +283,50 @@ Written 2026-07-25, ahead of the Final Round deadline. Full design reasoning, th
 the L1-L7 risk scan: [spec](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md) ·
 [plan](docs/super-skills/plans/2026-07-25-casper-custody-hardening-and-panel-activation.md).
 
-**Why "prepared," not "live":** this repository's own stated policy (see the callout at the top
-of the *Live run* section above) is that funded Testnet keys should reach an AI session
-"deliberately... never incidentally." The session that wrote this section has no `.env`, no
-`keystore.json*`, and no `CASPER_*` credentials — `env | grep -i casper` returns nothing, and the
-RPC endpoint itself returns `401` without an Authorization header this session doesn't have. Every
-step through "code changed, tests pass, wasm builds" is done; the actual `casper-js-sdk`
-`SessionBuilder` submission needs the repo owner's funded signer keys, run locally exactly like
-the original three deploys were.
+**Update, same day:** credentials for signer 1 and signer 2 were provided in a later session
+(`.env`, gitignored, never committed). Both accounts verified real and funded directly against
+`https://node.testnet.casper.network/rpc` (no Authorization header needed — a different, public
+node than the `cspr.cloud` one the original three deploys used, which is why that endpoint's `401`
+no longer blocks this): signer 1 (`x402-deployer`, deployer of both live contracts today) holds
+~3294 CSPR, signer 2 ~250 CSPR — both comfortably above what either redeploy costs.
 
-**What changed** (both scripts, already committed):
+Reading the actual Odra bootstrap source before trusting the recipe below
+(`odra-casper-wasm-env-2.9.0/src/host_functions.rs:106-110`, `install_new_contract`) surfaced a
+second real bug this session's earlier prep had missed: **signer 1 already deployed both
+contracts once**, so a named key (`"AgentSkillRegistry"` / `"X402SettlementToken"`) already
+exists on that account. `install_new_contract` reverts with `ExecutionError::CannotOverrideKeys`
+when a named key already exists and `odra_cfg_allow_key_override` is `false` — the value both
+scripts still had. Fixed to `true` in both (repoints the named key to the new package; the old
+package/history is untouched, and nothing downstream reads the named key at runtime — only the
+hash, from `.env`). Left at `false` this would have burned real gas for a guaranteed revert, same
+failure class as the original redeploy's `NotAllowedToAddContractVersion` gotcha above.
+
+Also fixed: `deploy_x402_settlement_token.ts` required a `keystore.json` this environment doesn't
+have. Since `x402-deployer` *is* governance signer 1 (same key), the script now accepts
+`CASPER_GOV_SIGNER_1_SECRET_HEX` directly as an alternative to the keystore path — no keystore
+setup needed when that env var is already present.
+
+**What changed** (both scripts, already committed — `da4cf22` plus this same-day follow-up):
 - `odra_cfg_is_upgradable: false` on both `AgentSkillRegistry` and `X402SettlementToken` — see
   Security notes item 3 above for the full citation chain.
+- `odra_cfg_allow_key_override: true` on both — see above; was `false`, would have reverted.
 - `timelock_delay_ms: "1800000"` (30 minutes) instead of 48h, for `AgentSkillRegistry` only — see
   spec §3b. `X402SettlementToken` has no timelock of its own (no governance surface).
 
-**Step 1 — redeploy `AgentSkillRegistry`** (needs `CASPER_RPC_URL`, `CASPER_RPC_API_KEY`,
-`CASPER_GOV_SIGNER_1_SECRET_HEX`, `CASPER_GOV_SIGNER_2_SECRET_HEX` in `.env`; wasm already rebuilt
-from current `HEAD`, which includes the panel-arbitration entry points):
+**Step 1 — redeploy `AgentSkillRegistry`** (needs `CASPER_RPC_URL`,
+`CASPER_GOV_SIGNER_1_SECRET_HEX`, `CASPER_GOV_SIGNER_2_SECRET_HEX` in `.env` — `CASPER_RPC_API_KEY`
+not needed against the public node URL above; wasm already rebuilt from current `HEAD`, which
+includes the panel-arbitration entry points, independently confirmed present via
+`WebAssembly.Module.exports()`):
 ```bash
 pnpm exec tsx src/scripts/deploy_casper_governance_hardened.ts
 # → prints the new contract_package_hash. Update KARMA_ODRA_REGISTRY/CASPER_CONTRACT_HASH in .env.
 ```
 
-**Step 2 — redeploy `X402SettlementToken`** (needs `KEYSTORE_PATH`/`KEYSTORE_PASSWORD` + an
-agent id already in the keystore):
+**Step 2 — redeploy `X402SettlementToken`** (needs `CASPER_GOV_SIGNER_1_SECRET_HEX` — no keystore
+needed once that's set):
 ```bash
-KEYSTORE_PATH=./keystore.json KEYSTORE_PASSWORD=... \
-  pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts x402-deployer
+pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts
 ```
 
 **Step 3 — verify, the same way the prior two hardening redeploys were verified: decode on-chain

@@ -160,3 +160,18 @@ re-open this ADR's decision before trying again.
   check that's easy to skip under deadline pressure and would have been wrong to skip: it changed
   the actual recommendation (Locked, not multisig-custody) from what the README had left as an
   open toss-up.
+
+**Same-day addendum, once credentials arrived:** §4's "no funded credentials" blocker was lifted
+mid-cycle (owner-provided `.env`, gitignored). Before broadcasting anything, re-verified against
+real chain state rather than trusting this ADR's own prior "prepared" framing: both signer
+accounts confirmed real and funded via `query_balance` against `https://node.testnet.
+casper.network/rpc` (a different, public node than the `401`-gated one — no auth header needed).
+That same discipline — read the actual Odra bootstrap source
+(`odra-casper-wasm-env-2.9.0/src/host_functions.rs:106-110`) instead of assuming the prepared
+recipe was correct — caught a **second** real bug: signer 1 already deployed both contracts once
+before, so `odra_cfg_allow_key_override: false` (unchanged until this point) would have hit
+`ExecutionError::CannotOverrideKeys` and reverted, burning real gas for nothing. Fixed to `true`
+in both scripts. Lesson: "the design was audited" does not mean "the exact bytes about to be
+submitted were re-checked against the account they're actually being submitted from" — those are
+different checks, and the second one only became possible (and necessary) once real credentials
+and real RPC access existed. `DEMO_CASPER.md`'s Prepared-redeploy section updated to match.

@@ -5,21 +5,28 @@
  *
  * Same `SessionBuilder` install pattern as `deploy_casper_governance_hardened.ts` (cspr.cloud
  * needs a custom Authorization header the casper-client CLI can't set). Signs with a keystore
- * agent's Casper key rather than a raw env-var secret — this is a one-signer utility deploy, not
- * a governance action.
+ * agent's Casper key by default, or a raw `CASPER_GOV_SIGNER_1_SECRET_HEX` env var if no
+ * keystore is present (added 2026-07-25 — this contract's deployer, "x402-deployer", is the same
+ * key as governance signer 1, so a session already holding that secret for the registry redeploy
+ * doesn't need a separate keystore file too; both paths produce the same `casper-js-sdk`
+ * `PrivateKey` type, see `../lib/keystore.ts`'s `deriveCasperPrivateKey`).
  *
- * Needs CASPER_RPC_URL (defaults to the public Testnet node) + KEYSTORE_PATH/KEYSTORE_PASSWORD.
+ * Needs CASPER_RPC_URL (defaults to the public Testnet node) + either KEYSTORE_PATH/
+ * KEYSTORE_PASSWORD + an agentId arg, or CASPER_GOV_SIGNER_1_SECRET_HEX with no arg needed.
  * Prints the new contract_package_hash on success.
  *
  *   KEYSTORE_PATH=./keystore.json KEYSTORE_PASSWORD=... \
  *   pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts x402-deployer
+ *
+ *   # or, raw-hex path:
+ *   pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts
  */
 import { readFileSync } from "node:fs";
 import "dotenv/config";
 import casperSdk from "casper-js-sdk";
 import { keystoreManager } from "../lib/keystore.js";
 
-const { RpcClient, HttpHandler, SessionBuilder, Args, CLValue } = casperSdk;
+const { RpcClient, HttpHandler, SessionBuilder, Args, CLValue, PrivateKey, KeyAlgorithm } = casperSdk;
 
 const rpcUrl = process.env.CASPER_RPC_URL ?? "https://node.testnet.casper.network/rpc";
 const apiKey = process.env.CASPER_RPC_API_KEY;
@@ -32,14 +39,20 @@ const rpc = new RpcClient(handler);
 const PAYMENT_MOTES = 700_000_000_000; // 700 CSPR ceiling — smaller wasm than AgentSkillRegistry's 800 CSPR one
 
 async function main() {
-  const keystorePath = process.env.KEYSTORE_PATH ?? "./keystore.json";
-  const password = process.env.KEYSTORE_PASSWORD;
-  if (!password) throw new Error("[deploy-x402-token] KEYSTORE_PASSWORD not set");
-  const agentId = process.argv[2];
-  if (!agentId) throw new Error("[deploy-x402-token] usage: deploy_x402_settlement_token.ts <agentId>");
-
-  await keystoreManager.load(keystorePath, password);
-  const signer = keystoreManager.getCasperKeypair(agentId);
+  const rawHex = process.env.CASPER_GOV_SIGNER_1_SECRET_HEX;
+  let signer: InstanceType<typeof PrivateKey>;
+  if (rawHex) {
+    signer = PrivateKey.fromHex(rawHex, KeyAlgorithm.SECP256K1);
+    console.log("signing with CASPER_GOV_SIGNER_1_SECRET_HEX (x402-deployer's raw key)");
+  } else {
+    const keystorePath = process.env.KEYSTORE_PATH ?? "./keystore.json";
+    const password = process.env.KEYSTORE_PASSWORD;
+    if (!password) throw new Error("[deploy-x402-token] set either CASPER_GOV_SIGNER_1_SECRET_HEX or KEYSTORE_PASSWORD");
+    const agentId = process.argv[2];
+    if (!agentId) throw new Error("[deploy-x402-token] usage: deploy_x402_settlement_token.ts <agentId>");
+    await keystoreManager.load(keystorePath, password);
+    signer = keystoreManager.getCasperKeypair(agentId);
+  }
   const deployerAccountHash = signer.publicKey.accountHash().toPrefixedString();
   console.log("deployer account:", deployerAccountHash);
 
@@ -48,7 +61,12 @@ async function main() {
 
   const args = Args.fromMap({
     odra_cfg_package_hash_key_name: CLValue.newCLString("X402SettlementToken"),
-    odra_cfg_allow_key_override: CLValue.newCLValueBool(false),
+    // true, not false: this signer already deployed X402SettlementToken once before ("deployed
+    // by signer 1 in an earlier session" — .env), so the "X402SettlementToken" named key already
+    // exists on this account. Same CannotOverrideKeys revert risk as
+    // deploy_casper_governance_hardened.ts's identical fix — see that file's comment for the
+    // verified source citation (odra-casper-wasm-env-2.9.0's install_new_contract).
+    odra_cfg_allow_key_override: CLValue.newCLValueBool(true),
     // false, not true — same _access_token custody gap as AgentSkillRegistry, previously
     // undisclosed for this contract specifically (README.md/DEMO_CASPER.md Security notes only
     // ever named the registry). Verified Locked status is platform-enforced regardless of who

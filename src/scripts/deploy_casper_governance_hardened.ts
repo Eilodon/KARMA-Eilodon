@@ -57,7 +57,18 @@ async function main() {
 
   const args = Args.fromMap({
     odra_cfg_package_hash_key_name: CLValue.newCLString("AgentSkillRegistry"),
-    odra_cfg_allow_key_override: CLValue.newCLValueBool(false),
+    // true, not false: this deploy is submitted from signer 1's account, the SAME account that
+    // already holds an "AgentSkillRegistry" named key from the currently-live install
+    // (hash-42f6945f...). Verified against the actual Odra bootstrap source
+    // (odra-casper-wasm-env-2.9.0/src/host_functions.rs:106-110,
+    // install_new_contract): `if package_hash_key.is_some() && !allow_key_override { revert(
+    // ExecutionError::CannotOverrideKeys) }` — with false here this deploy would revert and
+    // burn the full gas payment for nothing (no refund on failure — the same lesson already
+    // paid for once in this repo's history, see the redeploy gotcha below). true just repoints
+    // the named key on signer 1's account to the new package; the old package/history at its
+    // old hash is untouched, and KARMA_ODRA_REGISTRY is read from .env, never looked up via the
+    // named key at runtime, so nothing downstream depends on the old pointer.
+    odra_cfg_allow_key_override: CLValue.newCLValueBool(true),
     // false, not true: closes the _access_token custody gap (README.md "Security notes" #3) for
     // good, verified against real platform source rather than assumed. odra-core-2.9.0's
     // InstallConfig.is_upgradable (host.rs) forwards to the odra_cfg_is_upgradable session arg
