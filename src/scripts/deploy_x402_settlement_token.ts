@@ -49,7 +49,15 @@ async function main() {
   const args = Args.fromMap({
     odra_cfg_package_hash_key_name: CLValue.newCLString("X402SettlementToken"),
     odra_cfg_allow_key_override: CLValue.newCLValueBool(false),
-    odra_cfg_is_upgradable: CLValue.newCLValueBool(true),
+    // false, not true — same _access_token custody gap as AgentSkillRegistry, previously
+    // undisclosed for this contract specifically (README.md/DEMO_CASPER.md Security notes only
+    // ever named the registry). Verified Locked status is platform-enforced regardless of who
+    // holds _access_token — see deploy_casper_governance_hardened.ts's comment on the same arg,
+    // and docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md
+    // §3a for the full citation chain. This contract has no governance/upgrade surface of its own
+    // (init/deposit/withdraw only) so locking has no functional trade-off beyond "no v2 of this
+    // exact token contract" — a future settlement-rail extension is a new deploy, not an upgrade.
+    odra_cfg_is_upgradable: CLValue.newCLValueBool(false),
     odra_cfg_is_upgrade: CLValue.newCLValueBool(false),
     odra_cfg_constructor: CLValue.newCLString("init"),
     chain_name: CLValue.newCLString(chainName),

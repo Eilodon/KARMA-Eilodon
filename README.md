@@ -744,11 +744,27 @@ code-level review of the originally deployed contract surfaced three real gaps, 
 2. **Deploy-time config gap** — the code fix alone wasn't sufficient; the actual redeploy needed
    real `governance_threshold ≥ 2`, ≥2 independent signers, and a non-zero `timelock_delay_ms`, or
    the fix would have been theater. Caught and corrected before the current live deploy.
-3. **Upgrade-token custody — still open, disclosed, not fixed.** Odra's install deploy writes an
-   `_access_token` to the deploying account; whoever holds it can push a contract upgrade outside
-   the governance gate above. Currently held by governance signer 1's key. Two options on the
-   table (dedicated multisig custody, or `is_upgradable: false` on a final redeploy) — not resolved
-   here.
+3. **Upgrade-token custody — fix prepared, redeploy pending owner execution.** Odra's install
+   deploy writes an `_access_token` to the deploying account; whoever holds it can push a contract
+   upgrade outside the governance gate above. Applies to **both** `AgentSkillRegistry` and
+   `X402SettlementToken` (the latter previously undisclosed here — same deploy pattern, same gap).
+   Resolved by setting `odra_cfg_is_upgradable: false` on both contracts' next redeploy — verified
+   against Casper's own execution-engine source
+   (`add_contract_version_by_contract_package`/`add_contract_version_by_package` in
+   `casper-execution-engine`'s `runtime/mod.rs` both unconditionally reject when the contract
+   package is Locked, checked *before* any access-key validation — so a Locked package can never
+   be upgraded by anyone, `_access_token` holder included), not assumed from Odra's own docs. This
+   is stronger than the "dedicated multisig custody" alternative once floated here, and costs zero
+   new tooling. Trade-off: the redeployed registry can never be upgraded again — consistent with
+   the CEP-0000 framing that a locked, audited v1 is a *stronger* trust-infrastructure claim than
+   "upgradable, trust us." Code change landed
+   (`src/scripts/deploy_casper_governance_hardened.ts`, `src/scripts/deploy_x402_settlement_token.ts`);
+   full rationale and the exact deploy commands:
+   [spec](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md) ·
+   [DEMO_CASPER.md § Prepared redeploy](DEMO_CASPER.md#prepared-redeploy-custody-fix--panel-activation-not-yet-broadcast).
+   Broadcasting the actual transaction needs a funded signer key, which is the repo owner's action,
+   not something run inside an AI session incidentally — so this stays "prepared," not "live,"
+   until a real transaction hash exists to point to.
 
 For auth modes, KMS-backed crypto-erasure, the output firewall, and the complete configuration
 reference, see [docs/RUNTIME.md](docs/RUNTIME.md).
