@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   const requester = PrivateKey.fromHex(process.env.CASPER_GOV_SIGNER_2_SECRET_HEX!, KeyAlgorithm.SECP256K1);
   const providerKey = PrivateKey.generate(KeyAlgorithm.SECP256K1);
 
-  const state: PanelState = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  const state = JSON.parse(readFileSync(STATE_FILE, "utf8")) as PanelState;
   const [arb1, arb2, arb3] = state.arbiterSecretsHex.map((hex) => PrivateKey.fromHex(hex, KeyAlgorithm.SECP256K1));
 
   const requesterAccountHash = requester.publicKey.accountHash().toPrefixedString();

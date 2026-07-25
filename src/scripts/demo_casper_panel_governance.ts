@@ -81,7 +81,7 @@ async function main(): Promise<void> {
 
   if (mode === "--execute") {
     if (!existsSync(STATE_FILE)) throw new Error(`no state file at ${STATE_FILE} — run without --execute first`);
-    const state: PanelState = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    const state = JSON.parse(readFileSync(STATE_FILE, "utf8")) as PanelState;
     console.log("loaded state from earlier run:", state);
 
     console.log(`\nexecuting panel proposal ${state.panelProposalId}...`);
