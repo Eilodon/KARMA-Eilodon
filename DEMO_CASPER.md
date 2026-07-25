@@ -137,7 +137,7 @@ plaintext independently re-hashes and compares against this on-chain value) on t
 the 2026-07-07 governance-hardening redeploy already proved. Storage is purely additive
 (`Mapping<u64, Bytes>`, field index 25) — nothing about the existing `Job`/`Skill` schema changed.
 
-**Current live contract: `hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`**
+**Live at the time (2026-07-21): `hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`**
 (supersedes `hash-29b7daebfc4fb924b340f06ea5d367d590b1ebc27f644d404738a5c5ccbad5aa`, which is now
 retired — its own history is preserved below for the record, but new demos/tooling target the new
 hash). Deployed via the same `deploy_casper_governance_hardened.ts` recipe (unchanged — the P2-A
@@ -150,6 +150,14 @@ governance_signers  = [account-hash-0daa27a3…, account-hash-d22cc952…]  (2 s
 governance_threshold = 2
 timelock_delay_ms    = 172800000  (48h)
 ```
+
+> **Update 2026-07-25:** this hash is itself now retired, superseded by
+> `hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384` — Locked, panel-enabled,
+> 30-min timelock instead of the 48h above (see spec §3b for why). See
+> [§ Custody-hardening redeploy](#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next)
+> below for that redeploy's own evidence. Everything else in this section remains an accurate,
+> unchanged record of what actually ran against the `hash-42f6945f…` contract on 2026-07-21, same
+> as the 07-21 section already preserves the retired `hash-29b7daeb…`'s history above it.
 
 **Every flow below was re-run fresh against the new contract, same-day, 23 real transactions
 total** (deploy + funding + lifecycle + courtroom + governance + the new P2-A attestation demo —
@@ -214,8 +222,8 @@ submitted. Recipe used: `src/scripts/deploy_casper_governance_hardened.ts`.
 > (`hash-42f6945f…`) — `odra_cfg_is_upgradable: true`, 48h timelock. It is preserved verbatim as
 > an accurate record of that transaction, not edited to match later changes.
 > `src/scripts/deploy_casper_governance_hardened.ts` itself has since changed
-> (`is_upgradable: false`, 30-minute timelock) for the *next* redeploy — see
-> [§ Prepared redeploy](#prepared-redeploy-custody-fix--panel-activation-not-yet-broadcast) below.
+> (`is_upgradable: false`, 30-minute timelock) for the redeploy that produced the contract now
+> live — see [§ Custody-hardening redeploy](#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next) below.
 
 **Recipe actually used** (`src/scripts/deploy_casper_governance_hardened.ts`, via `casper-js-sdk`'s
 `SessionBuilder` directly rather than the `casper-client` CLI — same auth-header reasoning as the
@@ -252,13 +260,13 @@ nothing before this was caught. The second attempt (with `.installOrUpgrade()`) 
 *did* refund the unused portion (~161 of 800 CSPR) — so "no refund on this network" isn't a
 blanket rule, it was specific to that failure mode.
 
-3. **Upgrade-token custody — fix prepared 2026-07-25, redeploy pending owner execution.** Odra's
-   install deploy writes an `_access_token` named key to the deploying account; whoever holds it
-   can push a contract upgrade later, entirely outside the `governance_signers`/timelock gate
-   above — a real, separate single-key surface (currently held by governance signer 1's key, since
-   it doubled as the installing account). Also applies to `X402SettlementToken`
-   (`contracts-odra/src/x402_settlement_token.rs`), previously undisclosed here — same deploy
-   pattern (`src/scripts/deploy_x402_settlement_token.ts`), same gap.
+3. **Upgrade-token custody — fixed and live, 2026-07-25.** Odra's install deploy writes an
+   `_access_token` named key to the deploying account; whoever holds it can push a contract
+   upgrade later, entirely outside the `governance_signers`/timelock gate above — a real, separate
+   single-key surface (was held by governance signer 1's key, since it doubled as the installing
+   account). Also applied to `X402SettlementToken` (`contracts-odra/src/x402_settlement_token.rs`),
+   previously undisclosed here — same deploy pattern
+   (`src/scripts/deploy_x402_settlement_token.ts`), same gap.
    **Resolved by `odra_cfg_is_upgradable: false` on both contracts**, chosen over "move to a
    dedicated multisig account" after reading the actual platform source rather than assuming
    either option's strength: `casper-execution-engine`'s `runtime/mod.rs`
@@ -267,17 +275,17 @@ blanket rule, it was specific to that failure mode.
    checked *before* any access-key/URef validation — so once Locked, no one can ever add a new
    version, `_access_token` holder included. Full citation chain and the trade-off analysis:
    [spec §3a](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md#3a-custody-fix-odra_cfg_is_upgradable-false-not-dedicated-multisig-custody).
-   Code changed in both deploy scripts; see [§ Prepared redeploy](#prepared-redeploy-custody-fix--panel-activation-not-yet-broadcast)
-   below for the exact commands. **Not yet broadcast** — this session has no funded Testnet key
-   (see that section for why), so the currently live contract (`hash-42f6945f…`) is still
-   Unlocked/upgradable until the owner runs the redeploy.
+   **Broadcast, not just prepared:** both contracts redeployed same-day, `query_global_state`
+   confirms `lock_status: Locked` on both, live — see
+   [§ Custody-hardening redeploy](#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next)
+   below for the real transaction hashes.
 
 The MCP/client-side work needed to actually *use* the redeployed contract's fuller surface
 (composition, evaluator/dispute/arbitration, cross-chain-rep governance) was already wired and
 tested before the redeploy — see `casper.tool.ts`'s 25 tools — so `KARMA_ODRA_REGISTRY` (already
 updated in `.env`) was the only thing that needed changing for all of it to go live.
 
-## Prepared redeploy: custody fix + panel activation (not yet broadcast)
+## Custody-hardening redeploy — DONE live (2026-07-25); panel activation next
 
 Written 2026-07-25, ahead of the Final Round deadline. Full design reasoning, the pre-mortem, and
 the L1-L7 risk scan: [spec](docs/super-skills/specs/2026-07-25-casper-custody-hardening-and-panel-activation-design.md) ·
@@ -313,31 +321,40 @@ setup needed when that env var is already present.
 - `timelock_delay_ms: "1800000"` (30 minutes) instead of 48h, for `AgentSkillRegistry` only — see
   spec §3b. `X402SettlementToken` has no timelock of its own (no governance surface).
 
-**Step 1 — redeploy `AgentSkillRegistry`** (needs `CASPER_RPC_URL`,
-`CASPER_GOV_SIGNER_1_SECRET_HEX`, `CASPER_GOV_SIGNER_2_SECRET_HEX` in `.env` — `CASPER_RPC_API_KEY`
-not needed against the public node URL above; wasm already rebuilt from current `HEAD`, which
-includes the panel-arbitration entry points, independently confirmed present via
-`WebAssembly.Module.exports()`):
-```bash
-pnpm exec tsx src/scripts/deploy_casper_governance_hardened.ts
-# → prints the new contract_package_hash. Update KARMA_ODRA_REGISTRY/CASPER_CONTRACT_HASH in .env.
-```
+**Step 1 — redeploy `AgentSkillRegistry`: DONE.** Captured live via
+`demo-video/record_casper.sh redeploy-registry` (real pty session, `.cast` at
+`demo-video/out_casper/cast/redeploy-registry.cast`, not re-runnable-for-a-recording — the point
+of setting that up beforehand).
 
-**Step 2 — redeploy `X402SettlementToken`** (needs `CASPER_GOV_SIGNER_1_SECRET_HEX` — no keystore
-needed once that's set):
-```bash
-pnpm exec tsx src/scripts/deploy_x402_settlement_token.ts
-```
+| Step | Tx hash | Result |
+|---|---|---|
+| `deploy_casper_governance_hardened.ts` (signer 1) | `5a96ff563cfaefaca78e2310621717a480840d57fd3d29f4990a75d71b1bd903` | `errorMessage: null`. Block `353ff7a3db321f8823df579fcfce1c7733ad6bc1a5e830146d5f793ed50a87e5`, height 8622530. `limit` 800 CSPR, `consumed` ~650.77 CSPR, `refund` ~111.92 CSPR |
 
-**Step 3 — verify, the same way the prior two hardening redeploys were verified: decode on-chain
-state directly, don't trust the tool's exit code.** Read `governance_signers`,
-`governance_threshold`, and `timelock_delay` back from the new contract (same pattern as the
-governance-hardening and attestation-hardening redeploys above), and additionally confirm the
-contract package's lock status is now Locked (query the package's `ContractPackageStatus` via
-`state_get_item`/the equivalent `casper-js-sdk` call on the new `contract_package_hash` — expect
-`Locked`, not `Unlocked`).
+New `contract_package_hash`: **`hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384`**
+(supersedes `hash-42f6945f…` above) — read from signer 1's own `named_keys` via
+`state_get_account_info` (`AgentSkillRegistry` entry), not assumed from the tool's stdout alone.
+`.env`'s `KARMA_ODRA_REGISTRY`/`CASPER_CONTRACT_HASH` updated to match.
 
-**Step 4 — activate the panel, with the timelock genuinely exercised, not skipped:**
+**Step 2 — redeploy `X402SettlementToken`: DONE**, same session, via the raw-hex signing path
+added same-day (`CASPER_GOV_SIGNER_1_SECRET_HEX`, no keystore needed):
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `deploy_x402_settlement_token.ts` (signer 1, raw-hex path) | `590912093117415c696a521bbd4d2f1d68e2ed951d780397f0c6de81fc28369f` | `errorMessage: null`. Block `1f26bd9272dc8e6866718bbdfe8e7fa001c3833f8a8c55693f7a7cfc37d877b9`, height 8622551. `limit` 700 CSPR, `consumed` ~429.58 CSPR, `refund` ~202.82 CSPR |
+
+New `contract_package_hash`: **`hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a`**
+(supersedes `hash-b3387d595f…` above). `.env`'s `KARMA_X402_CASPER_SETTLEMENT_TOKEN` updated.
+
+**Step 3 — verified, decoding real on-chain state, not the tool's exit code:**
+- `query_global_state` on both new package hashes → `"lock_status": "Locked"` for **both**
+  [verified 2026-07-25] — the platform-level guarantee from spec §3a, confirmed on-chain, not just
+  in the deploy args.
+- `CasperLiveClient.getGovernanceSigners/getGovernanceThreshold/getTimelockDelayMs/getArbiterPanel`
+  against the new registry → `governance_threshold: 2`, `timelock_delay_ms: 1800000` (30 min,
+  exactly the spec §3b value, not the old 48h), `arbiter_panel: []` (correctly empty — not yet
+  proposed) [verified 2026-07-25].
+
+**Step 4 — activate the panel, with the timelock genuinely exercised, not skipped (not yet run):**
 ```bash
 # 1) Propose the panel (3 arbiters, threshold 2) and the flat per-vote fee — governance-signer only.
 pnpm exec tsx src/scripts/demo_casper_x402_live.ts  # or the equivalent propose_set_arbiter_panel /
@@ -354,9 +371,8 @@ pnpm exec tsx src/scripts/demo_casper_x402_live.ts  # or the equivalent propose_
 #    after each step, not just "it should have worked").
 ```
 
-Once Steps 1-4 actually run, replace this section's "not yet broadcast" framing with the real
-transaction table, exactly like every other flow in this document — this section is a placeholder
-for that evidence, not a substitute for it.
+Once Step 4 actually runs, add its real transaction table here too, same evidentiary bar as Steps
+1-3 above — this paragraph is a placeholder for that evidence, not a substitute for it.
 
 ## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
 
@@ -639,11 +655,13 @@ pnpm exec tsx src/scripts/demo_casper_x402_live.ts --live
 
 ### Recorded live transactions
 
-Real, already-confirmed calls against the **current** deployed `AgentSkillRegistry`
+Real, already-confirmed calls against the `AgentSkillRegistry` deployed 2026-07-21
 ([`hash-42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d`](https://testnet.cspr.live/contract-package/42f6945fe9ac5ab493beed468465228ecb830036e27bb2c8cac9e1736a2b5a1d),
-attestation-hardened, 2026-07-21) — not a template, these already happened and are independently
-verifiable by anyone. 23 transactions total: deploy, signer funding, full lifecycle, courtroom,
-governance, and the new P2-A attestation demo.
+attestation-hardened — since superseded 2026-07-25 by the Locked, panel-enabled `hash-2262a0a9…`,
+see [§ Custody-hardening redeploy](#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next))
+— not a template, these already happened and are independently verifiable by anyone. 23
+transactions total: deploy, signer funding, full lifecycle, courtroom, governance, and the P2-A
+attestation demo.
 
 **Contract deploy** (attestation-hardened, 2026-07-21)
 
@@ -806,7 +824,11 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   matching source strings — against a real CEP-18 asset: `X402SettlementToken`
   (`contracts-odra/src/x402_settlement_token.rs`, composed from `odra-modules`' official
   `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet at
-  `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`**.
+  `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`** at the time this demo
+  ran (2026-07-21). That contract was redeployed 2026-07-25, Locked, now at
+  `hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a` — this specific demo has
+  not been re-run against the new hash yet; the mechanism it proves is unchanged (same source,
+  recompiled), but re-running it for fresh evidence against the current deployment is still open.
   `demo_casper_x402_settlement_live.ts` proves the full path for real: deposits CSPR into the
   token, signs a `transfer_with_authorization` authorization, submits it via
   `settleTransferWithAuthorization`, and confirms `errorMessage: null` + a real `Transfer` event

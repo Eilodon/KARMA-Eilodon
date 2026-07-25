@@ -56,17 +56,19 @@ new ad hoc check) [verified 2026-07-25 — all of `dispute_result_via_panel`, `c
 the compiled export list, 68 exports total].
 
 ## 4. Status
-**PARTIAL — code, build, and test verification complete; on-chain broadcast NOT done.**
+**ACCEPTED — broadcast and verified live, 2026-07-25.**
 
-This session has no funded Casper Testnet credentials (`env | grep -i casper` empty, no `.env`,
-no `keystore.json*`) and the RPC endpoint (`node.testnet.cspr.cloud`) returns `401` without an
-Authorization header this session cannot supply. Per this project's own stated policy
-(`DEMO_CASPER.md`'s *Live run* section), funded keys reach an AI session deliberately, never
-incidentally — so the actual `casper-js-sdk` `SessionBuilder` submission is the repo owner's
-action, run locally, exactly like the prior three deploys. Exact commands are in
-`DEMO_CASPER.md`'s new "Prepared redeploy" section. **Uncommitted** — per this session's own
-operating instructions (never commit without being explicitly asked), all file changes described
-here are sitting in the working tree for the owner's review, not yet in git history.
+Credentials arrived later the same day (owner-provided `.env`, gitignored) via a public RPC node
+(`node.testnet.casper.network`, no Authorization header needed — unlike the earlier `cspr.cloud`
+endpoint that returned `401`). Both redeploys broadcast with explicit owner confirmation, captured
+live via `demo-video/record_casper.sh redeploy-registry redeploy-token` (real pty sessions, not
+re-runnable-for-a-recording). Both verified against real on-chain state afterward, not the tool's
+exit code: `query_global_state` → `lock_status: Locked` on both new package hashes;
+`CasperLiveClient` reads → `governance_threshold: 2`, `timelock_delay_ms: 1800000`,
+`arbiter_panel: []` on the new registry. See `DEMO_CASPER.md`'s "Custody-hardening redeploy"
+section for the transaction table. All code, doc, and this ADR's own changes committed and pushed
+to `claude/hackathon-karma-comparison-ku59mx` (`da4cf22`, `105acc1`, `ca36dac`, plus the commit
+landing this update).
 
 ## 5. Consequences
 
