@@ -16,7 +16,7 @@
 import { keystoreManager } from "../lib/keystore.js";
 import { markTrustedRuntime } from "../core/runtime_identity.js";
 import { createT3Tools } from "../plugins/t3.tool.js";
-import { C, banner, step, kv, ok, short } from "./_demo_format.js";
+import { C, banner, step, kv, ok } from "./_demo_format.js";
 
 const ALPHA = process.env.KARMA_ALPHA_AGENT ?? "agent-alpha";
 const BETA = process.env.KARMA_BETA_AGENT ?? "agent-beta";
@@ -87,8 +87,8 @@ async function main(): Promise<void> {
   await sleep(HOLD);
 
   // ── SCENE 3 ───────────────────────────────────────────────────────────────
-  console.log(banner("Scene 3 — FLAGSHIP: bounded, revocable delegation (TEE-signed)"));
-  console.log(step(3, 4, "The funded agent issues a Terminal3 delegation credential"));
+  console.log(banner("Scene 3 — FLAGSHIP: bounded, revocable delegation (agent-auth policy)"));
+  console.log(step(3, 4, "The funded agent authorises itself via Terminal3's agent-auth policy"));
   const id3 = await run<{ did: unknown }>("t3_verify_identity", { agent_id: T3N });
   console.log(kv("agent DID", C.green(didStr(id3.did))));
   const auth = await run<{
@@ -97,8 +97,7 @@ async function main(): Promise<void> {
     not_before: string;
     not_after: string;
     batch_cap_cents: string;
-    vc_id_b64u: string;
-    user_sig_hex: string;
+    preserved_script_rows: string[];
     grant_provisioned: boolean;
     invocation_succeeded: boolean;
   }>("t3_authorize_payroll_agent", {
@@ -108,22 +107,19 @@ async function main(): Promise<void> {
   console.log(kv("functions", auth.functions_authorised.join(", ")));
   console.log(kv("valid window", `${auth.not_before}  →  ${auth.not_after}`));
   console.log(kv("batch cap", `$${(Number(auth.batch_cap_cents) / 100).toFixed(2)}`));
-  console.log(kv("vc_id", C.cyan(auth.vc_id_b64u)));
-  console.log(kv("TEE signature", C.cyan(short(auth.user_sig_hex, 26, 8))));
   await sleep(HOLD + 1000);
   console.log(C.dim("\n  Honest guardrail on public testnet (never a fake success):"));
   console.log(kv("grant_provisioned", `${auth.grant_provisioned ? C.green("true") : C.yellow("false")}  ${C.dim("(org not deployed on testnet)")}`));
   console.log(kv("invocation", `${auth.invocation_succeeded ? C.green("true") : C.yellow("false")}  ${C.dim("(tee:payroll 404 on testnet)")}`));
-  console.log(C.dim("  → the TEE-signed credential is the verifiable, independently-checkable artifact."));
+  console.log(C.dim("  → the recorded agent-auth authorisation is the verifiable, independently-checkable artifact."));
   await sleep(HOLD);
 
   // ── SCENE 4 ───────────────────────────────────────────────────────────────
   console.log(banner("Scene 4 — Authority is temporary"));
-  console.log(step(4, 4, "Revoke the very same credential — full issue → sign → revoke lifecycle"));
-  const rev = await run<{ revoked_entirely: boolean; vc_id: string }>("t3_revoke_payroll_authorization", { agent_id: T3N });
+  console.log(step(4, 4, "Revoke the very same authorisation — full grant → use → revoke lifecycle"));
+  const rev = await run<{ revoked_entirely: boolean; remaining_functions: string[] }>("t3_revoke_payroll_authorization", { agent_id: T3N });
   console.log(ok(C.bold("revoked_entirely: " + C.green(String(rev.revoked_entirely)))));
-  const matches = rev.vc_id === auth.vc_id_b64u;
-  console.log(kv("vc_id", `${C.cyan(rev.vc_id)}  ${matches ? C.green("✓ matches Scene 3") : C.red("✗ mismatch")}`));
+  console.log(kv("remaining functions", rev.remaining_functions.length > 0 ? C.yellow(rev.remaining_functions.join(", ")) : C.dim("(none)")));
   await sleep(HOLD);
 
   console.log(banner("Terminal3 Agent Auth SDK — full lifecycle proven LIVE"));
