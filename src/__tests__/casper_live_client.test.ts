@@ -56,6 +56,29 @@ describe("CasperLiveClient (T13-live)", () => {
     expect(transaction.approvals.length).toBeGreaterThan(0); // signed
   });
 
+  it("registerSkill encodes a non-ASCII description with a correct UTF-8-byte length prefix (casper-js-sdk@5.0.12's own newCLString does not — confirmed by a real on-chain revert, User error: 64649)", async () => {
+    const rpc = fakeSubmitter();
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    const description = "KARMA streaming — demo café 🎉"; // em-dash, accent, emoji: all multi-byte UTF-8, single/surrogate-pair UTF-16
+    await client.registerSkill(SIGNER, {
+      name: "rwa_price_oracle",
+      description,
+      mcpEndpoint: "casper-mcp://providers/rwa_price_oracle",
+      pricePerCallMotes: 10_000_000n,
+      minReputationToInvoke: 0,
+      identityPolicy: 0,
+    });
+
+    const transaction = rpc.putTransaction.mock.calls[0][0];
+    const arg = transaction.args.getByName("description");
+    const bytes: Uint8Array = arg.bytes();
+    const lenPrefix = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
+    const utf8ByteLength = Buffer.byteLength(description, "utf8");
+    expect(lenPrefix).toBe(utf8ByteLength);
+    expect(bytes.length - 4).toBe(utf8ByteLength);
+    expect(Buffer.from(bytes.slice(4)).toString("utf8")).toBe(description);
+  });
+
   it("depositBond routes through the proxy-caller session (Odra payable convention — deposit_bond takes no named args, only attached_value)", async () => {
     const rpc = fakeSubmitter();
     const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);

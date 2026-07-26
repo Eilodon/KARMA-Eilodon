@@ -30,8 +30,39 @@
  *
  * Needs CASPER_RPC_URL/CASPER_RPC_API_KEY/CASPER_CHAIN_NAME/CASPER_CONTRACT_HASH/
  * CASPER_GOV_SIGNER_1_SECRET_HEX/CASPER_GOV_SIGNER_2_SECRET_HEX in .env — same funded pair
- * `demo_casper_full_job_lifecycle.ts` uses. Not run live in this session (no funded Testnet key
- * available here); typechecked and structured to match that script's proven pattern exactly.
+ * `demo_casper_full_job_lifecycle.ts` uses.
+ *
+ * PROVEN LIVE, 2026-07-26, 3 chunks against skill_id=2 on `hash-2262a0a9…`: register_skill +
+ * 3×(create_job, deliver_result, confirm_completion), all 10 transactions `error_message: null`
+ * (independently re-verified per-transaction via raw `info_get_transaction`, not just this
+ * script's own — initially buggy, see below — polling). Final state read back live:
+ * `getSkill(2).totalInvocations == 3`, `reputationScore` 50 -> 65 (+5/job), jobs 2/3/4 all
+ * `status: "Completed"`. Real gas consumed, summed from the raw RPC re-check: 12.72 CSPR total
+ * (register_skill 1.03 + 3 chunks at ~3.89/3.33/2.91 CSPR each) — at ~$0.0015/CSPR, ~$0.02 for
+ * the whole 3-chunk series, not the ~$0.01/chunk order-of-magnitude estimate above being wrong,
+ * just create_job (the payable proxy-session call) costing more than the plain-call chunks.
+ *
+ * This same live run caught and fixed two real bugs, not zero:
+ *   1. `casper-js-sdk@5.0.12`'s `CLValue.newCLString()` writes the JS string's UTF-16 `.length`
+ *      as the 4-byte wire length prefix instead of the actual UTF-8 byte length — any non-ASCII
+ *      character (this script's own em-dash in its skill description) desyncs the two and
+ *      corrupts the arg, reverting with a low-level Odra error (`User error: 64649`) instead of
+ *      a clear one. Fixed in `live_client.ts` (`newCLStringUtf8Safe`, used by every
+ *      `CLValue::String` arg this file sends) — reproduced in isolation, unit-tested, then
+ *      confirmed fixed by re-running this exact script live.
+ *   2. This script's (and `demo_casper_full_job_lifecycle.ts`'s, copied from — now fixed in both)
+ *      `waitForFinalization` accepted `exec.executionResult` as final the moment it was truthy,
+ *      but the SDK can return it present-yet-incompletely-populated (`errorMessage`/`consumed`
+ *      both `undefined`) for a transaction that already succeeded — a raw RPC re-query for the
+ *      same hash showed `error_message: null` and real non-zero `consumed`. Now only accepts
+ *      once `errorMessage` is unambiguously `null` or a string, not `undefined`.
+ * Known open gap: `register_skill`'s own transaction still fails this script's polling with a
+ * `casper-js-sdk` internal parse error ("invalid transaction hash") every attempt, unrelated to
+ * either fix above (confirmed by checking the raw RPC response's `parsed` field renders
+ * correctly post-fix) — the script tolerates it (continues, treats the skill as registered once
+ * `create_job` against it stops reverting with `SkillNotFound`) rather than block, but the real
+ * `register_skill` cost isn't captured in the script's own running total because of it; the
+ * 12.72 CSPR figure above is from the raw RPC re-check, not the script's own tally.
  *
  *   pnpm exec tsx src/scripts/demo_casper_streaming_installments.ts [chunkCount]
  */
@@ -74,9 +105,14 @@ async function waitForFinalization(
     try {
       const info = await rpc.getTransactionByTransactionHash(txHash);
       const exec = info.executionInfo;
-      if (exec) {
-        const err = exec.executionResult?.errorMessage;
-        const consumed = BigInt(exec.executionResult?.consumed ?? 0);
+      // `exec.executionResult` can come back present-but-incompletely-populated on this SDK
+      // version (errorMessage/consumed both undefined even though the tx is real and finalized
+      // — confirmed live: a raw RPC query for the same tx hash showed errorMessage: null and a
+      // real non-zero consumed). Only accept once errorMessage is unambiguously null (success)
+      // or a string (revert) — undefined means "not really ready yet," keep polling.
+      if (exec && exec.executionResult?.errorMessage !== undefined) {
+        const err = exec.executionResult.errorMessage;
+        const consumed = BigInt(exec.executionResult.consumed ?? 0);
         console.log(`    [${label}] finalized. errorMessage: ${err === null ? "null (success)" : err}, consumed: ${consumed} motes`);
         return consumed;
       }

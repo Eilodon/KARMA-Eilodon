@@ -738,11 +738,20 @@ below for why that's the responsible call before an audit happens):
   more than one authorization per call; `escrow_amount` is set once at `create_job` and never
   incremented), but chunking a task into N ordinary escrow jobs, linked by a client-derived
   `task_hash`, reuses the existing lifecycle verbatim — full dispute-bond + reputation protection
-  per chunk, zero new contract code, real measured cost ≈ $0.01/chunk at current CSPR prices. See
-  `src/scripts/demo_casper_streaming_installments.ts` (structured and typechecked against the same
-  pattern as `demo_casper_full_job_lifecycle.ts`; not yet broadcast — needs a funded key this
-  session didn't have). A separate, complementary option for payment that doesn't need dispute
-  protection: `X402SettlementToken`'s already-deployed CEP-18 `approve`/`transfer_from` lets a
+  per chunk, zero new contract code. **Proven live, 2026-07-26**
+  (`src/scripts/demo_casper_streaming_installments.ts`): 3 chunks against a fresh skill on
+  `hash-2262a0a9…`, 10/10 transactions `error_message: null`, `totalInvocations` 0→3,
+  `reputationScore` 50→65, all 3 jobs `Completed` — 12.72 CSPR total (~$0.02) for the whole
+  3-chunk series, independently re-verified per-transaction via raw RPC, not just the script's own
+  output. That same run caught and fixed two real bugs along the way (both documented in the
+  script's own header): `casper-js-sdk@5.0.12`'s `CLValue.newCLString()` mis-encodes any non-ASCII
+  character's length prefix (UTF-16 code units instead of UTF-8 bytes), corrupting the arg and
+  reverting with a cryptic low-level error — worked around in `live_client.ts`
+  (`newCLStringUtf8Safe`); and this script's (and `demo_casper_full_job_lifecycle.ts`'s)
+  `waitForFinalization` could accept an incompletely-populated SDK response as final, misreporting
+  a genuinely successful transaction — now fixed in both. A separate, complementary option for
+  payment that doesn't need dispute protection: `X402SettlementToken`'s already-deployed CEP-18
+  `approve`/`transfer_from` lets a
   payer authorize a budget once and a provider pull chunks unattended, no per-chunk signature.
 - **Cross-chain reputation, verified on-chain instead of governed.** `propose_set_cross_chain_rep`
   is a governance-attested value today; replacing that attestation with an on-chain-verifiable
