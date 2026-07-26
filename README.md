@@ -771,9 +771,14 @@ below for why that's the responsible call before an audit happens):
   (`newCLStringUtf8Safe`); and this script's (and `demo_casper_full_job_lifecycle.ts`'s)
   `waitForFinalization` could accept an incompletely-populated SDK response as final, misreporting
   a genuinely successful transaction — now fixed in both. A separate, complementary option for
-  payment that doesn't need dispute protection: `X402SettlementToken`'s already-deployed CEP-18
-  `approve`/`transfer_from` lets a
-  payer authorize a budget once and a provider pull chunks unattended, no per-chunk signature.
+  payment that doesn't need dispute protection, **also proven live, 2026-07-26**
+  (`src/scripts/demo_casper_x402_allowance_streaming.ts`): `X402SettlementToken`'s already-deployed
+  CEP-18 `approve`/`transfer_from` lets a payer authorize a budget once and a provider pull chunks
+  unattended, no per-chunk signature — deposit, one `approve`, 3 unattended `transfer_from` pulls,
+  all 5 `error_message: null`; a 6th pull deliberately sized past what's left in the budget
+  correctly reverted with the contract's own `InsufficientAllowance` (60002), proving the ceiling
+  is real enforcement, not just a documented intention. 3.28 CSPR total (~$0.005) for the whole
+  run, all 6 transactions independently re-verified via raw RPC.
 - **Cross-chain reputation, verified on-chain instead of governed.** `propose_set_cross_chain_rep`
   is a governance-attested value today; replacing that attestation with an on-chain-verifiable
   proof, in the spirit of the Stellar ZK track, is on the table for later.

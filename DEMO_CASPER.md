@@ -465,6 +465,33 @@ skill registered indirectly, once `create_job` against it stops reverting with `
 rather than blocking, but `register_skill`'s own real cost isn't captured in the script's own
 running total because of it; the 12.72 CSPR figure above is from the raw RPC re-check.
 
+**4e. Streaming payment via CEP-18 `approve`/`transfer_from` — DONE live, `2026-07-26`, zero new
+contract code, no dispute protection by design (the complementary "Design A" from the same
+research — see 4d above for the escrow-protected alternative)
+(`src/scripts/demo_casper_x402_allowance_streaming.ts`):**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `deposit` (requester wraps 0.5 CSPR into KX402) | `3554ed1609e2c1906e7a8d8f8521d870d22c8da88efa64b30a6e9518fa0025c2` | success |
+| `approve` (requester authorizes provider for 0.3 KX402, once) | `6be343824c2ea21015781943445648f9bf3e2ec8a728d22a191b09842c8ebb35` | success |
+| `transfer_from` chunk 1/3 (provider pulls, no requester signature) | `c186b58e20a05aa7ffc00070f05523ae4d63cf4827c33e31af0151f21b713184` | success |
+| `transfer_from` chunk 2/3 | `399a757ee353241e1640aed1e81a4133e06473a1550994e2f9012199c9cb837f` | success |
+| `transfer_from` chunk 3/3 | `f54bb162faa16ad0c96bc0442e06e972e15abe8accfdff0147e4f826a9279019` | success |
+| `transfer_from` — deliberate over-limit pull (0.1 KX402, 0 left in the allowance) | `c141d477db298114921b90230e57b92de29e4c7c59a89bceec552976b34eac6d` | **error, `User error: 60002`** — `odra-modules`' `cep18::errors::Error::InsufficientAllowance`, expected/correct rejection |
+
+All 6 independently re-verified via raw `info_get_transaction`, not just the script's own output.
+The first 5 prove the mechanism (payer signs once, provider pulls N times unattended, no per-chunk
+signature); the 6th proves the ceiling is real contract-level enforcement, not just a documented
+intention — the same pattern this repo's other demos use to prove a boundary (the courtroom
+flow's double-attest revert, the governance flow's `TimelockNotElapsed` revert). Real gas: 3.28
+CSPR total for the whole run (deposit 0.97 + approve 0.35 + 3×~0.64 pulls + the reverted 6th call's
+partial charge ~0.03) — at ~$0.0015/CSPR, ~$0.005. `approve`/`transfer_from` are plain
+(non-payable) calls, cheaper per call than `create_job`'s payable proxy-session (4d's escrow path)
+— consistent with why this design trades away dispute protection for a cheaper, unattended pull
+model. No bugs found on this run — the fixes from 4d (`newCLStringUtf8Safe`, the
+`waitForFinalization` `errorMessage !== undefined` check) were reused directly, both already
+correct going in.
+
 ## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
 
 > **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `proposal_id=1`
@@ -914,19 +941,29 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   cross-checked byte-for-byte in `src/__tests__/x402_casper.test.ts`, not assumed equal from
   matching source strings — against a real CEP-18 asset: `X402SettlementToken`
   (`contracts-odra/src/x402_settlement_token.rs`, composed from `odra-modules`' official
-  `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet at
-  `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`** at the time this demo
-  ran (2026-07-21). That contract was redeployed 2026-07-25, Locked, now at
-  `hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a` — this specific demo has
-  not been re-run against the new hash yet; the mechanism it proves is unchanged (same source,
-  recompiled), but re-running it for fresh evidence against the current deployment is still open.
-  `demo_casper_x402_settlement_live.ts` proves the full path for real: deposits CSPR into the
-  token, signs a `transfer_with_authorization` authorization, submits it via
-  `settleTransferWithAuthorization`, and confirms `errorMessage: null` + a real `Transfer` event
-  on-chain — this caught two real bugs a unit test alone could not have (a wire-arg name
-  mismatch, and a wrong typehash from a generic npm preset instead of `CEP3009`'s own hardcoded
-  constant). Proving interop against the *external* hosted `make-software/casper-x402`
-  facilitator (as opposed to this settlement path, which KARMA deploys and controls itself) is
-  the one remaining open, non-blocking step — see the RFC's §7-§9.
+  `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet, currently at
+  `hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a`** (redeployed 2026-07-25,
+  Locked — supersedes `hash-b3387d595f…`, the hash this demo originally ran against on 2026-07-21).
+  **Re-run against the current hash, 2026-07-26** — no longer open:
+
+  | Step | Tx hash | Result |
+  |---|---|---|
+  | `deposit` (wrap 0.05 CSPR into KX402) | `7582373f5d24225b4b4b5b70ab149ec0aa85ffdb233b83384754b1b69e2ca2cf` | success, consumed 3.65 CSPR |
+  | `transfer_with_authorization` (EIP-712, self-transfer proof) | `6deed93fd624009a3766aa9c0d04fc58151063db477de22eca757cecac84ca64` | success, consumed 1.02 CSPR |
+
+  Both `error_message: null`, independently re-verified via raw `info_get_transaction`, not just
+  the script's own output. `demo_casper_x402_settlement_live.ts` proves the full path for real:
+  deposits CSPR into the token, signs a `transfer_with_authorization` authorization, submits it
+  via `settleTransferWithAuthorization`, and confirms `errorMessage: null` — this caught two real
+  bugs a unit test alone could not have, on 2026-07-21 (a wire-arg name mismatch, and a wrong
+  typehash from a generic npm preset instead of `CEP3009`'s own hardcoded constant) and one more
+  on this 2026-07-26 re-run: `waitForExecution` accepted a present-but-incompletely-populated SDK
+  response as final (`errorMessage` `undefined`, not `null` — the same bug class found and fixed
+  in `demo_casper_streaming_installments.ts`'s `waitForFinalization` the day before), fixed the
+  same way here too. Script also gained a raw-hex signer path
+  (`CASPER_GOV_SIGNER_1_SECRET_HEX`, no keystore needed), matching
+  `deploy_x402_settlement_token.ts`'s existing convention. Proving interop against the *external*
+  hosted `make-software/casper-x402` facilitator (as opposed to this settlement path, which KARMA
+  deploys and controls itself) is the one remaining open, non-blocking step — see the RFC's §7-§9.
 - **Nightly Rust required.** `odra-macros 2.x` uses `#![feature(box_patterns)]`.
   Documented in `contracts-odra/README.md` and the plan's done-state notes.
