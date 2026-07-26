@@ -1,0 +1,34 @@
+{
+  "generatedAt": "2026-07-26T19:27:51.350Z",
+  "jobId": "4",
+  "found": true,
+  "job": {
+    "requester": "Account:d22cc952497985433d3f5db12d99cfc231f7739499ebd4a3297af33945a435b4",
+    "provider": "Account:0daa27a36e5d07afa9f0293c3b8b0d9909db6f240cf8b530df2de34c98408185",
+    "skillId": "2",
+    "skillName": "casper_streaming_installments_demo",
+    "escrowAmountMotes": "100000000",
+    "status": "Completed",
+    "createdAt": "1785032163636",
+    "completedAt": "1785032179638",
+    "evaluator": null,
+    "evaluatorFeeMotes": null,
+    "taskHashHex": "6806b702bb9221da848fff410b2217bdc4a64b4190d5b7d62c62da3cc4e14278",
+    "resultHashHex": "a263580384c211364b984abbc036009b51398d861babb2e0877f14d232e2b270"
+  },
+  "dispute": null,
+  "attestedRationaleHash": null,
+  "narrative": "No dispute — requester confirmed completion normally.",
+  "verification": {
+    "resultHash": {
+      "onChainHex": "a263580384c211364b984abbc036009b51398d861babb2e0877f14d232e2b270",
+      "recomputedHex": "eb3cd1f2df7d3bb78da5808b67d88262a8c42a0711b74dfabd2128e0fbe4bb92",
+      "verdict": "mismatch"
+    },
+    "rationaleHash": {
+      "onChainHex": null,
+      "recomputedHex": null,
+      "verdict": "not_checked"
+    }
+  }
+}

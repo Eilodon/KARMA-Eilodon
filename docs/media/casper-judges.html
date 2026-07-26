@@ -428,7 +428,7 @@
     <p class="deck"><span class="plain-lead">In one sentence: a vending machine for real‑world data, with an ID check built in.</span> One of the buildathon's four reference shapes — a price-feed agent that proves who it is before it gets paid.</p>
     <div class="archetype">
       <div class="card"><span class="num">01</span><h3>RWA oracle</h3><p><code>rwa_price_oracle</code> — a signed BTC/ETH/gold feed, priced per call, discoverable by any agent through KARMA-MCP.</p></div>
-      <div class="card"><span class="num">02</span><h3>Verified identity</h3><p><code>identity_policy</code> is a real, owner-settable field on the Odra contract, readable on-chain via <code>casper_get_skill</code>. Enforcement today lives at the KARMA gateway for Pharos-path skills — the pure-Casper MCP path doesn't check it before <code>create_job</code> yet (tracked, not yet shipped).</p></div>
+      <div class="card"><span class="num">02</span><h3>Verified identity</h3><p><code>identity_policy</code> is a real, owner-settable field on the Odra contract, readable on-chain via <code>casper_get_skill</code>. Enforced gateway-side on both paths — Pharos's <code>karma.tool.ts</code> and, as of 2026-07-27, Casper's <code>casper_create_job</code>/<code>casper_create_job_with_evaluator</code> too, via the same shared <code>checkIdentityGate</code>.</p></div>
       <div class="card"><span class="num">03</span><h3>Escrow, not trust</h3><p>Payment sits in the Odra registry's pull-payment ledger until the buyer confirms — never a bare promise.</p></div>
       <div class="card"><span class="num">04</span><h3>Agent decides</h3><p>The autonomous loop picks the highest expected-profit skill under a hard budget cap and invokes it itself — no human clicks "buy".</p></div>
     </div>

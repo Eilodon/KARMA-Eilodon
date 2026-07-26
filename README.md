@@ -18,7 +18,7 @@ KARMA is the identity, reputation, and dispute layer that makes that safe — sp
 deployed live on three independent chains, with a neutral on-chain arbiter for when someone
 cheats anyway.
 
-![KARMA on-chain status: Casper registry Locked, 2-of-2 multisig + 30-min timelock, N-of-M panel live-disputed, 155/155 Rust + 903 TypeScript tests, 50+ real transactions, one spec across Casper/Stellar/Pharos](docs/media/readme-status-card.png)
+![KARMA on-chain status: Casper registry Locked, 2-of-2 multisig + 30-min timelock, N-of-M panel live-disputed, 155/155 Rust + 939 TypeScript tests, 50+ real transactions, one spec across Casper/Stellar/Pharos](docs/media/readme-status-card.png)
 
 <sub>Every line in that card is a real tx hash or a real test run (see [Live deployment](#live-deployment)
 for the links) — the badge above stays current automatically; the card itself is a snapshot,
@@ -29,7 +29,7 @@ refreshed by hand alongside this README. Prefer moving pictures? [2:18 narrated 
 
 | Check | Scope | Enforced by |
 |---|---|---|
-| TypeScript tests | 903 tests | [`ci.yml`](.github/workflows/ci.yml) `verify` job, blocking |
+| TypeScript tests | 939 tests | [`ci.yml`](.github/workflows/ci.yml) `verify` job, blocking |
 | Rust tests — Casper (Odra) | 155/155, incl. 4 property-based invariant tests | [`ci.yml`](.github/workflows/ci.yml) `rust-odra` job, blocking |
 | Rust tests — Stellar (Soroban) | 12/12 + 19/19, real Groth16 proof verification | [`ci.yml`](.github/workflows/ci.yml) `rust-soroban` job, blocking |
 | Solidity tests — Pharos (Foundry) | 96 tests | [`ci.yml`](.github/workflows/ci.yml) `foundry` job, blocking |
@@ -98,7 +98,7 @@ is provable, not just claimed, to a caller on another.
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm typecheck && pnpm test   # 903 tests, 155/155 Rust (contracts-odra)
+pnpm typecheck && pnpm test   # 939 tests, 155/155 Rust (contracts-odra)
 ```
 
 ```bash
@@ -127,13 +127,13 @@ brief's own **"RWA Oracle Agent with Verifiable On-Chain Identity"** example
 ([full text](https://dorahacks.io/hackathon/casper-agentic-buildathon-finals/detail)) — the RWA
 price-oracle + escrow flow in [DEMO_CASPER.md](DEMO_CASPER.md) matches that shape, plus the
 dispute-bond courtroom and governance layers the brief doesn't ask for but a real trust layer
-needs anyway. The "identity" half is declarative today (`identity_policy` is a real, owner-settable,
-on-chain-readable field — gateway-level enforcement exists for the Pharos path, not yet for the
-pure-Casper MCP path; see [Security notes](#security-notes)) — stated plainly rather than implied.
+needs anyway. `identity_policy` is a real, owner-settable, on-chain-readable field, enforced
+gateway-side on both paths — Pharos and, as of 2026-07-27, the pure-Casper MCP path too; see
+[Security notes](#security-notes).
 
 | Judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 155/155 Rust (`contracts-odra`, incl. 4 property-based invariants), 903 TypeScript tests, clean typecheck/lint |
+| Technical Execution | 155/155 Rust (`contracts-odra`, incl. 4 property-based invariants), 939 TypeScript tests, clean typecheck/lint |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral arbiter rules, loser pays both bonds + escrow in one atomic call; opt-in N-of-M panel mode on top, same fund-movement code — [RFC §11](docs/rfc/2026-06-24-symmetric-dispute-bond.md#11-atomicity-vs-quorum--why-the-verify-then-act-critique-doesnt-apply-here) |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real LLM tool-use reasoning (Gemini or Claude, BYOK either way) over safety-checked candidates, scored against a hidden answer key; captured transcript shows the LLM diverging from the deterministic formula — see [judge walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) |
 | Real-World Applicability | `rwa_price_oracle` (skill_id=3) — real BTC/USD + US Treasury yield feed, full lifecycle live on the canonical Casper contract (tx-by-tx: [DEMO_CASPER.md](DEMO_CASPER.md#rwa-oracle-full-lifecycle--done-live-2026-07-26-canonical-contract)) |
@@ -168,16 +168,27 @@ Every address below is checked and verifiable.
 
 Casper is Locked and governance-hardened — three real gaps a code review of the original deploy
 found and fixed (governance-bypass inconsistency, a deploy-time config gap, and upgrade-token
-custody), full writeup in [Security notes](#security-notes). N-of-M panel arbitration: governance
-proposed it, an immediate execute attempt correctly reverted `TimelockNotElapsed` (the 30-min
-timelock is real, not theater), executed after the wait, then live-disputed end to end — 2 of 3
-arbiters voted `ProviderAtFault`, escrow + bonds refunded, fee split between the two who voted, the
-non-voter paid nothing. `attest_rationale`/`get_rationale_hash` anchors an agent's decision
-rationale on-chain, byte-for-byte readable back, double-attest and wrong-requester both revert
-correctly. The `rwa_price_oracle` skill (skill_id=3) ran its full lifecycle live on this same
-contract — real BTC/USD + US Treasury yield feed, provider-signed receipt whose sha256 is the
-on-chain `result_hash`, requester's purchase rationale attested and hash-matched — both
-independently recomputable, not asserted (tx-by-tx: [DEMO_CASPER.md](DEMO_CASPER.md#rwa-oracle-full-lifecycle--done-live-2026-07-26-canonical-contract)).
+custody), full writeup in [Security notes](#security-notes). Four more things proven live on that
+same contract, not just claimed:
+
+- **N-of-M panel arbitration.** Governance proposed it; an immediate execute attempt correctly
+  reverted `TimelockNotElapsed` (the 30-min timelock is real, not theater); executed after the
+  wait; then live-disputed end to end — 2 of 3 arbiters voted `ProviderAtFault`, escrow + bonds
+  refunded, fee split between the two who voted, the non-voter paid nothing.
+- **Rationale attestation.** `attest_rationale`/`get_rationale_hash` anchors an agent's decision
+  on-chain, byte-for-byte readable back; double-attest and wrong-requester both revert correctly.
+- **RWA-oracle full lifecycle — MATCH.** The `rwa_price_oracle` skill (skill_id=3) ran its full
+  lifecycle live — real BTC/USD + US Treasury yield feed, provider-signed receipt whose sha256 is
+  the on-chain `result_hash`, requester's purchase rationale attested and hash-matched, both
+  independently recomputable, not asserted (tx-by-tx:
+  [DEMO_CASPER.md](DEMO_CASPER.md#rwa-oracle-full-lifecycle--done-live-2026-07-26-canonical-contract)).
+- **Hash verification — MISMATCH.** A checker that always says MATCH isn't a checker, so the same
+  verification was also run against a deliberately wrong artifact for a different real job on this
+  contract — and it correctly said MISMATCH:
+  [DEMO_CASPER.md](DEMO_CASPER.md#hash-verification-catches-a-lie--done-live-2026-07-27). Try both
+  verdicts yourself in [`verify.html`](https://eilodon.github.io/KARMA-Eilodon/media/verify.html)
+  (job `5` = MATCH, job `4` = deliberate MISMATCH).
+
 Full tx-by-tx evidence for all of it, plus two live streaming-payment proofs (see
 [Roadmap](#roadmap--team)): [DEMO_CASPER.md](DEMO_CASPER.md) · [DEMO_STELLAR.md](DEMO_STELLAR.md) ·
 [DEMO.md](DEMO.md) (Pharos).
@@ -381,7 +392,7 @@ pnpm exec tsx src/scripts/run_autonomous_loop.ts --ticks 20   # autonomous loop 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 155/155 Rust, Casper
-pnpm build && pnpm test && pnpm typecheck   # 903 TypeScript tests
+pnpm build && pnpm test && pnpm typecheck   # 939 TypeScript tests
 ```
 
 Casper: 155 Rust tests — 148 example-based (full escrow/dispute/evaluator/composition/governance/
@@ -411,6 +422,21 @@ The 2 occasionally-flaky TypeScript tests need a local `dist/` build to exist fi
 `src/lib/abi.ts`.
 
 ## Known limitations
+
+Honest scope, scannable first: what's limited, why, and whether the real mechanism underneath it
+is still proven regardless. Detail and evidence links for each row are in the bullets below —
+said plainly, on purpose, because a claim we can't back up is worse than no claim.
+
+| Limitation | Why | Real mechanism proven anyway? |
+|---|---|---|
+| x402 interop only proven against KARMA's own settlement, not the external `casper-x402` facilitator | Upstream bug in the facilitator's own dependency, not fixable from this repo | ✅ wire format + on-chain settlement, live |
+| Streaming needs the payer to co-sign every chunk | `create_job` has no relay/session-key path | ✅ full dispute-bond protection per chunk, live |
+| Cross-chain reputation is governance-attested, not ZK-verified | Casper has no native BN254 pairing precompile | ✅ multisig + timelock governance flow, live |
+| Subscription rail + multi-hop skill composition | Genuine v2 work — new primitive / contract restriction | — tracked, not built |
+| Terminal3 org-grant + payroll can't fully execute on public testnet | No pre-provisioned org / `tee:payroll` contract there | ✅ identity verify + delegation issue/revoke, end-to-end |
+| Pharos `IPaymentPlugin` conformance wrapper | Not shipped yet | ✅ escrow + settlement work today |
+| 2 TypeScript tests need a local `dist/` build first | Test infra nit | — see [Testing](#testing) |
+| CSPR.click human-payer: live browser click-through | This environment has no browser or funded wallet | ✅ digest equivalence + browser bundle + relay signature verify, all tested |
 
 - **x402 Casper interop is proven against KARMA's own settlement, not the external hosted
   `make-software/casper-x402` facilitator — and that facilitator's own dependency has a real bug
@@ -553,15 +579,18 @@ a code-level review of the originally deployed contract surfaced three real gaps
    from Odra's docs. Trade-off, accepted: neither contract can ever be upgraded again — consistent
    with a locked, audited v1 being a *stronger* trust claim than "upgradable, trust us." Real
    transaction hashes: [DEMO_CASPER.md](DEMO_CASPER.md#custody-hardening-redeploy--done-live-2026-07-25-panel-activation-next).
-4. **Identity-gate enforcement gap — known, not yet fixed.** `identity_policy` is a real,
+4. **Identity-gate enforcement gap — fixed and live, 2026-07-27.** `identity_policy` is a real,
    owner-settable field on the Odra contract (`register_skill`/`set_identity_policy`), readable
-   on-chain via `casper_get_skill`. `karma.tool.ts` enforces it (`enforceIdentityGate`) before
-   creating a job on the Pharos path; `casper.tool.ts`'s `casper_create_job` does not check it
-   before broadcasting on the Casper path. Since the contract itself is Locked (no upgrade
-   possible), the fix is gateway-side — porting the same session-check pattern into
-   `casper.tool.ts`. Not required for the RWA-oracle skill in this repo (registered with
-   `identity_policy: 0` / NONE), but a skill owner setting a stricter policy on Casper today
-   would not actually get it enforced yet.
+   on-chain via `casper_get_skill`. `karma.tool.ts` already enforced it (`enforceIdentityGate`)
+   before creating a job on the Pharos path; `casper.tool.ts`'s `casper_create_job` and
+   `casper_create_job_with_evaluator` didn't check it before broadcasting on the Casper path.
+   Fixed by pulling the check into a shared `checkIdentityGate` (`identity_session.ts`) and
+   wiring it into both Casper create-job tools via `enforceCasperIdentityGate` — same session
+   store, same policy semantics, same rejection reasons (`identity_required`/`identity_stale`/
+   `identity_policy_unknown`) as the Pharos path, unit-tested for all three
+   (`src/__tests__/casper_tool.test.ts`). The RWA-oracle skill in this repo is still registered
+   with `identity_policy: 0` / NONE, so this gate has nothing to reject there today — but a skill
+   owner setting a stricter policy on Casper now gets it enforced, not silently ignored.
 
 For auth modes, KMS-backed crypto-erasure, the output firewall, and the complete configuration
 reference: [docs/RUNTIME.md](docs/RUNTIME.md).

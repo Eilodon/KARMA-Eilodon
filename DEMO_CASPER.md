@@ -636,6 +636,47 @@ above verifies against `providerPublicKeyHex` with `casper-js-sdk`'s `PublicKey.
 `result_hash` isn't just an opaque commitment, it's a hash of a receipt anyone can independently
 re-verify both cryptographically (signature) and numerically (hash).
 
+## Hash-verification catches a lie — DONE live (2026-07-27)
+
+The RWA-oracle lifecycle above shows the MATCH case: a real receipt, its hash genuinely equal to
+`getJob(5).result_hash`. That alone doesn't prove `verifyAuditPacketArtifacts`
+(`src/lib/casper/dispute_audit_packet.ts`) does anything but echo the chain back — a checker that
+always says MATCH is not a checker. So here's the other side, against the same live contract: feed
+it an artifact that is *not* the real one and watch it say so.
+
+`job_id=4` is a real, already-completed job on the canonical contract (`skill_id=2`,
+`casper_streaming_installments_demo`, no dispute, nothing wrong with it) — used here only as
+substrate, the same way a counterparty auditing a real delivery later would run this exact command
+against a receipt someone handed them:
+
+```text
+$ echo '{"tampered":"this is not the real off-chain artifact for this job"}' > /tmp/fake-receipt.json
+$ pnpm exec tsx src/scripts/export_dispute_audit_packet.ts --job 4 --result-artifact /tmp/fake-receipt.json
+[export] reading job 4 live from hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384 via https://node.testnet.cspr.cloud/rpc...
+[export] wrote dispute-audit-packet-job-4.json
+[export] wrote dispute-audit-packet-job-4.md
+[export] wrote docs/media/dispute-packets/4.json (feeds docs/media/verify.html)
+[export] outcome: No dispute — requester confirmed completion normally.
+[export] resultHash verdict: mismatch, rationaleHash verdict: not_checked
+```
+
+Not a stubbed response — `resultHash.onChainHex` below is the real, live `getJob(4).result_hash`;
+`recomputedHex` is `sha256()` of the fake file above; they don't match, so the verdict is
+genuinely computed, not asserted:
+
+```json
+"resultHash": {
+  "onChainHex":    "a263580384c211364b984abbc036009b51398d861babb2e0877f14d232e2b270",
+  "recomputedHex": "eb3cd1f2df7d3bb78da5808b67d88262a8c42a0711b74dfabd2128e0fbe4bb92",
+  "verdict": "mismatch"
+}
+```
+
+Try it yourself, no keystore or funded wallet needed (this command is read-only): rerun the two
+lines above, or open [`docs/media/verify.html`](https://eilodon.github.io/KARMA-Eilodon/media/verify.html)
+and enter job id `4` — vs. job id `5`, the real MATCH from the lifecycle above — to see both
+verdicts rendered from the same page, same code, no browser-side computation.
+
 ## Courtroom (dispute + arbitrate) — DONE live (2026-07-07, re-run 2026-07-21)
 
 > **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `skill_id=2`,
