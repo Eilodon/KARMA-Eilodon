@@ -3,6 +3,7 @@ import casperSdk from "casper-js-sdk";
 import type { ToolDefinition, ToolResult } from "../mcp/adapter/tool_registry.js";
 import { jsonSafe } from "../lib/serialize.js";
 import { keystoreManager } from "../lib/keystore.js";
+import { identitySessions, checkIdentityGate } from "../lib/identity_session.js";
 import { casperAccountHash } from "../lib/casper/keypair.js";
 import { CasperLiveClient } from "../lib/casper/live_client.js";
 import type { CasperAddress } from "../lib/casper/odra_codec.js";
@@ -68,6 +69,40 @@ function requireSigner(agentId: string) {
     throw new Error(`[KARMA] Agent '${agentId}' not found in keystore. Run setup:keystore first.`);
   }
   return keystoreManager.getCasperKeypair(agentId);
+}
+
+/** Real identity-gate enforcement for the Casper create-job tools — `casperCreateJob`/
+ *  `casperCreateJobWithEvaluator` previously broadcast unconditionally; `identityPolicy` was
+ *  pure schema pass-through elsewhere in this file (registration, read, the owner-only
+ *  `casper_set_identity_policy` mutator) with no gate at the one place it's meant to matter.
+ *  Mirrors `karma.tool.ts`'s own `enforceIdentityGate` via the shared `checkIdentityGate`
+ *  (`identity_session.ts`) — see that function's doc comment for why `boundAddress` must be
+ *  `keystoreManager.getAddress(agentId)` specifically, not a Casper account-hash. */
+async function enforceCasperIdentityGate(
+  client: Pick<CasperClientLike, "getSkill">,
+  toolName: string,
+  skillId: bigint,
+  agentId: string,
+): Promise<ToolResult | null> {
+  const skill = await client.getSkill(skillId);
+  const policy = skill?.identityPolicy ?? 0;
+  const gate = checkIdentityGate(policy, identitySessions.get(agentId), keystoreManager.getAddress(agentId));
+  if (gate.ok) return null;
+  const messages: Record<typeof gate.reason, string> = {
+    identity_required:
+      `[KARMA] ${toolName} rejected: skill #${skillId} requires a verified Terminal3 identity ` +
+      `(policy ${policy}). Call t3_verify_identity for '${agentId}' first.`,
+    identity_stale:
+      `[KARMA] ${toolName} rejected: skill #${skillId} requires a FRESH Terminal3 identity ` +
+      `(re-verify via t3_verify_identity).`,
+    identity_policy_unknown: `[KARMA] ${toolName} rejected: skill #${skillId} declares an unknown identity policy ${policy}.`,
+  };
+  return reply(messages[gate.reason], {
+    status: "rejected",
+    reason: gate.reason,
+    skillId: skillId.toString(),
+    identityPolicy: policy,
+  });
 }
 
 /** The exact `CasperLiveClient` surface these tools call — narrowed to a type so tests can
@@ -294,6 +329,8 @@ export function createCasperTools(
       const env = requireCasperEnv();
       const signer = requireSigner(a.agentId);
       const client = makeClient(env);
+      const identityReject = await enforceCasperIdentityGate(client, "casper_create_job", BigInt(a.skillId), a.agentId);
+      if (identityReject) return identityReject;
       const { txHash } = await client.createJob(signer, {
         skillId: BigInt(a.skillId),
         taskHashHex: a.taskHashHex,
@@ -671,6 +708,13 @@ export function createCasperTools(
       const env = requireCasperEnv();
       const signer = requireSigner(a.agentId);
       const client = makeClient(env);
+      const identityReject = await enforceCasperIdentityGate(
+        client,
+        "casper_create_job_with_evaluator",
+        BigInt(a.skillId),
+        a.agentId,
+      );
+      if (identityReject) return identityReject;
       const { txHash } = await client.createJobWithEvaluator(signer, {
         skillId: BigInt(a.skillId),
         taskHashHex: a.taskHashHex,

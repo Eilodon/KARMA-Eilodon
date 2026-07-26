@@ -428,7 +428,7 @@
     <p class="deck"><span class="plain-lead">In one sentence: a vending machine for real‑world data, with an ID check built in.</span> One of the buildathon's four reference shapes — a price-feed agent that proves who it is before it gets paid.</p>
     <div class="archetype">
       <div class="card"><span class="num">01</span><h3>RWA oracle</h3><p><code>rwa_price_oracle</code> — a signed BTC/ETH/gold feed, priced per call, discoverable by any agent through KARMA-MCP.</p></div>
-      <div class="card"><span class="num">02</span><h3>Verified identity</h3><p><code>identity_policy</code> is a real field on the Odra contract — a skill can require a fresh, verified caller before it will run.</p></div>
+      <div class="card"><span class="num">02</span><h3>Verified identity</h3><p><code>identity_policy</code> is a real, owner-settable field on the Odra contract, readable on-chain via <code>casper_get_skill</code>. Enforcement today lives at the KARMA gateway for Pharos-path skills — the pure-Casper MCP path doesn't check it before <code>create_job</code> yet (tracked, not yet shipped).</p></div>
       <div class="card"><span class="num">03</span><h3>Escrow, not trust</h3><p>Payment sits in the Odra registry's pull-payment ledger until the buyer confirms — never a bare promise.</p></div>
       <div class="card"><span class="num">04</span><h3>Agent decides</h3><p>The autonomous loop picks the highest expected-profit skill under a hard budget cap and invokes it itself — no human clicks "buy".</p></div>
     </div>
@@ -506,7 +506,7 @@
 
   <div class="section">
     <h2>The agent actually thinks</h2>
-    <p class="deck"><span class="plain-lead">In one sentence: instead of a fixed formula picking the cheapest good deal, a real Claude call weighs the risk and says why in plain English.</span>
+    <p class="deck"><span class="plain-lead">In one sentence: instead of a fixed formula picking the cheapest good deal, a real LLM call weighs the risk and says why in plain English — and here it diverged from the formula.</span>
       The loop's formula alone is real and tested — but it can't explain a choice, or notice
       "the highest‑paying option here is also from a brand‑new, unproven seller." An LLM sitting
       on top of the exact same safety checks can. It never gets to touch the money limits — it only
@@ -514,16 +514,19 @@
     <div class="flow">
       <div class="flow-step"><div class="k">1 · safety filter</div><div class="v">unchanged code</div><div class="sub">budget / per‑tx / per‑hour caps</div></div>
       <div class="flow-arrow">→</div>
-      <div class="flow-step"><div class="k">2 · LLM reasons</div><div class="v">real Claude call</div><div class="sub">weighs price vs. reputation, in words</div></div>
+      <div class="flow-step"><div class="k">2 · LLM reasons</div><div class="v">real Gemini call</div><div class="sub">weighs price vs. reputation, in words</div></div>
       <div class="flow-arrow">→</div>
       <div class="flow-step"><div class="k">3 · verified</div><div class="v">code checks the pick</div><div class="sub">hallucinated pick? falls back safely</div></div>
     </div>
-    <p class="cap" style="margin-top:18px">Run it yourself — <code>pnpm demo:llm-agent</code> (offline, shows the deterministic pick) or
-      <code>ANTHROPIC_API_KEY=sk-ant-… pnpm demo:llm-agent</code> (a real Claude call). Captured verbatim below —
-      three skills, same price tier, one of them the highest‑paying <em>and</em> the least proven:</p>
+    <p class="cap" style="margin-top:18px">Run it yourself — <code>pnpm demo:llm-agent</code> (offline, shows the deterministic pick),
+      <code>GEMINI_API_KEY=… pnpm demo:llm-agent</code> (free-tier Google AI Studio key, no billing needed — what captured
+      the transcript below), or <code>ANTHROPIC_API_KEY=sk-ant-… pnpm demo:llm-agent</code> if you have Anthropic BYOK
+      (wins over Gemini when both are set — same code path, see <code>buildReasoningProviderFromEnv</code> in
+      <code>llm_strategy.ts</code>). Captured verbatim below, unedited — three skills, same price tier, one of them
+      the highest‑paying <em>and</em> the least proven:</p>
     <div class="term">
       <div class="bar"><span></span><span></span><span></span></div>
-      <pre>$ pnpm exec tsx src/scripts/demo_llm_agent_reasoning.ts
+      <pre>$ GEMINI_API_KEY=… pnpm exec tsx src/scripts/demo_llm_agent_reasoning.ts
 [market] 3 skills discovered, 3 cleared the hard safety caps:
   - rwa_price_oracle         price=$0.010  profit=$0.008  reputation=88
   - unaudited_yield_signal   price=$0.010  profit=$0.016  reputation=12
@@ -535,15 +538,23 @@
 │ rationale = none — a formula does not explain itself  │
 └────────────────────────────────────────────────────────┘
 
-<span class="muted">[llm] ANTHROPIC_API_KEY is not set — skipping the live reasoning call.
-      Re-run with:  ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent
-      to see an actual Claude call choose among the same candidates and explain why.</span>
-<span class="ok">[demo] deterministic leg PASS (offline)</span></pre>
+┌── LLM pick (source=llm, provider=Gemini) ──────┐
+│ chosen    = rwa_price_oracle                    │
+│ greedy would've picked = unaudited_yield_signal │
+│ agreement = LLM DIVERGED from the formula       │
+└──────────────────────────────────────────────────┘
+
+<span class="ok">[llm] rationale:</span>
+  "The rwa_price_oracle skill offers an optimal balance of high profitability (80,000 stroops
+  expected profit) and high reliability (reputation of 88). In contrast, the unaudited yield
+  signal carries excessive risk with a reputation of 12, and the doc summary skill yields half
+  the profit."
+
+<span class="ok">[demo] LLM reasoning leg PASS (live Gemini call)</span></pre>
     </div>
     <p class="cap">The formula alone chases the highest number and walks straight into the least‑proven
-      seller — exactly the blind spot a reasoning layer exists to catch. With a key set, this same
-      run prints the LLM's actual sentence-by-sentence reasoning and flags whether it agreed with
-      the formula or overruled it. Full write‑up, safety argument, and the fallback‑on‑hallucination
+      seller; the LLM caught exactly that and overruled it, unprompted — this is a real captured
+      divergence, not a scripted one. Full write‑up, safety argument, and the fallback‑on‑hallucination
       test coverage: <a href="https://github.com/Eilodon/KARMA-Eilodon/blob/main/DEMO_CASPER.md#agent-reasoning--a-real-llm-inside-the-loop-not-just-deterministic-code">DEMO_CASPER.md</a>.</p>
   </div>
 
@@ -553,16 +564,16 @@
     <div class="twrap">
       <table class="status">
         <tr><th>Layer</th><th>Status</th><th>Detail</th></tr>
-        <tr><td>Odra <code>AgentSkillRegistry</code> logic</td><td><span class="pill real">real</span></td><td>2063 LoC, 155 tests: escrow, dispute, evaluator, identity gate, Sybil bond, governance, rationale attestation, N-of-M panel arbitration, x402 settlement token, plus 4 property-based invariant tests (escrow conservation + reputation bounds, each proven for both the single-arbiter and panel-arbiter paths).</td></tr>
+        <tr><td>Odra <code>AgentSkillRegistry</code> logic</td><td><span class="pill real">real</span></td><td>2063 LoC, 155 tests: escrow, dispute, evaluator, declarative identity_policy field, Sybil bond, governance, rationale attestation, N-of-M panel arbitration, x402 settlement token, plus 4 property-based invariant tests (escrow conservation + reputation bounds, each proven for both the single-arbiter and panel-arbiter paths).</td></tr>
         <tr><td>x402 payment envelope</td><td><span class="pill real">real</span></td><td>secp256k1/SHA-256/DER signed and independently re-verified — not a structural stub.</td></tr>
         <tr><td>HTTP 402 → pay → verify loop</td><td><span class="pill real">real</span></td><td>Runs against a live local server, shown above verbatim.</td></tr>
         <tr><td>Casper keystore</td><td><span class="pill real">real</span></td><td>Same secp256k1 key already signing Ethereum/Stellar — one backup, three chains.</td></tr>
-        <tr><td>MCP tool surface</td><td><span class="pill real">real</span></td><td>41 tools (<code>casper_register_skill</code>, <code>casper_create_job</code>, <code>casper_get_account_state</code>, <code>casper_get_skill</code>/<code>casper_get_job</code>, <code>casper_claim_refund</code>, composition, evaluator/dispute/arbitration, cross-chain-rep governance, <code>casper_get_governance_state</code>, owner mutators (<code>casper_deactivate_skill</code>/<code>casper_set_min_reputation</code>/<code>casper_set_identity_policy</code>), agent/job/proposal browsing (<code>casper_get_provider_jobs</code>/<code>casper_get_requester_jobs</code>/<code>casper_get_agent_skills</code>/<code>casper_get_dispute_info</code>/<code>casper_get_proposal</code>), …) — any MCP client can drive this directly, not just a terminal script.</td></tr>
+        <tr><td>MCP tool surface</td><td><span class="pill real">real</span></td><td>46 tools (<code>casper_register_skill</code>, <code>casper_create_job</code>, <code>casper_get_account_state</code>, <code>casper_get_skill</code>/<code>casper_get_job</code>, <code>casper_claim_refund</code>, composition, evaluator/dispute/arbitration, cross-chain-rep governance, <code>casper_get_governance_state</code>, owner mutators (<code>casper_deactivate_skill</code>/<code>casper_set_min_reputation</code>/<code>casper_set_identity_policy</code>), agent/job/proposal browsing (<code>casper_get_provider_jobs</code>/<code>casper_get_requester_jobs</code>/<code>casper_get_agent_skills</code>/<code>casper_get_dispute_info</code>/<code>casper_get_proposal</code>), …) — any MCP client can drive this directly, not just a terminal script.</td></tr>
         <tr><td>Compiled contract wasm</td><td><span class="pill real">real</span></td><td>~538,000 bytes, <code>WebAssembly.validate()</code>-clean, all 59 entry points exported — <code>contracts-odra/build-wasm.sh</code>, reproducible today.</td></tr>
         <tr><td>On-chain deploy + settlement tx</td><td><span class="pill real">real</span></td><td>Deployed at <code>hash-42f6945f…</code> (attestation-hardened redeploy, 2026-07-21, supersedes <code>hash-29b7daeb…</code>), verified end-to-end: deploy, full job lifecycle, courtroom dispute+arbitrate, governance propose/approve/execute, and the new <code>attest_rationale</code>/<code>get_rationale_hash</code> on-chain LLM-decision attestation — 23 real transactions total. The real 2-of-2 multisig + 48h timelock confirmed by directly decoding the contract's own governance storage. See <code>DEMO_CASPER.md</code> for tx-by-tx evidence.</td></tr>
         <tr><td>Full job lifecycle</td><td><span class="pill real">real</span></td><td>register → bond → escrow → deliver → confirm → withdraw, six real transactions, provider reputation bumped live to 55.</td></tr>
         <tr><td>Courtroom — dispute + arbitrate</td><td><span class="pill real">real</span></td><td>A real contested delivery, ruled by a neutral on-chain arbiter — <code>ProviderAtFault</code>, reputation slashed 50→40, escrow refunded. Previously unit-tested only; now run live.</td></tr>
-        <tr><td>LLM reasoning layer</td><td><span class="pill real">real</span></td><td>Real Anthropic call chooses among safety-checked candidates and explains why (5/5 tests, fake provider); requires <code>ANTHROPIC_API_KEY</code> to exercise the live network leg — see "The agent actually thinks" above.</td></tr>
+        <tr><td>LLM reasoning layer</td><td><span class="pill real">real</span></td><td>Real Gemini/Claude call (BYOK, either — <code>GEMINI_API_KEY</code> free-tier or <code>ANTHROPIC_API_KEY</code>) chooses among safety-checked candidates and explains why (5/5 tests, fake provider); captured transcript above is a genuine Gemini call that diverged from the deterministic formula — see "The agent actually thinks" above.</td></tr>
         <tr><td>Cross-chain reputation governance</td><td><span class="pill real">real</span> / <span class="pill pending">pending</span></td><td><code>propose_set_cross_chain_rep</code> + <code>approve_proposal</code> both real and confirmed on-chain, re-run 2026-07-21 against the current attestation-hardened contract (fresh <code>proposal_id=1</code>); <code>execute_proposal</code> correctly reverts <code>TimelockNotElapsed</code> against the real 48h clock — completes ~2026-07-23.</td></tr>
       </table>
     </div>

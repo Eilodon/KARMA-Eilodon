@@ -241,4 +241,25 @@ describe("tick", () => {
     }
     expect(state.budgetUsdc < ONE_USDC / 10n).toBe(true);
   });
+
+  it("injected decideFn replaces decide() and its rationale surfaces on the result", async () => {
+    const picked = cand("reasoned-pick", ONE_USDC / 10n, ONE_USDC / 5n);
+    const { adapter } = makeAdapter([picked], () => ONE_USDC / 5n);
+    const state = freshState();
+    let calledWith: unknown;
+    const decideFn = async (
+      tickState: LoopState,
+      tickBudget: LoopBudget,
+      candidates: readonly SkillCandidate[],
+      nextTickMs: number,
+    ) => {
+      calledWith = { tickState, tickBudget, candidates, nextTickMs };
+      return { action: { kind: "invoke" as const, skill: picked, reason: "llm pick" }, rationale: "because reasons" };
+    };
+    const { action, rationale } = await tick(state, freshBudget(), adapter, state.now, 60_000, decideFn);
+    expect(calledWith).toBeDefined();
+    expect(action.kind).toBe("invoke");
+    expect(action.skill?.skillId).toBe("reasoned-pick");
+    expect(rationale).toBe("because reasons");
+  });
 });

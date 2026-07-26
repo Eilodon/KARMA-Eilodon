@@ -67,3 +67,39 @@ export const identitySessions: IdentitySessionStore = new MemoryIdentitySessionS
 export const SESSION_TTL_MS = ENV.T3N_SESSION_TTL_SECS * 1000;
 /** Max session age accepted for a policy=2 (T3N_VERIFIED_FRESH) skill — the high-assurance tier (D3). */
 export const SESSION_FRESH_MAX_AGE_MS = ENV.T3N_SESSION_FRESH_MAX_AGE_SECS * 1000;
+
+export type IdentityGateReason = "identity_required" | "identity_stale" | "identity_policy_unknown";
+export type IdentityGateResult = { ok: true } | { ok: false; reason: IdentityGateReason };
+
+/**
+ * Pure identityPolicy check (docs/standards/IdentityPolicy-registry.md's exact algorithm) —
+ * shared by any NEW caller (e.g. `casper.tool.ts`); `karma.tool.ts`'s own `enforceIdentityGate`
+ * closure is left as-is (already proven, its own tests are the safety net for that path).
+ *
+ * `boundAddress` MUST be the agent's chain-agnostic EVM address — `keystoreManager.getAddress
+ * (agentId)` (or the equivalent `svc.account(agentId, tenantId).address` `karma.tool.ts` already
+ * uses) — never a chain-specific representation. `KeystoreManager` derives one seed per agentId
+ * into sibling EVM/Stellar/Casper keys, so this address is genuinely the same identity across
+ * chains. A Casper account-hash string (`account-hash-<hex>`) is a DIFFERENT format entirely —
+ * comparing it against `session.address` would never match, silently rejecting every agent that
+ * legitimately called `t3_verify_identity`, even on a chain identityPolicy was never meant to
+ * exclude.
+ */
+export function checkIdentityGate(
+  policy: number,
+  session: IdentitySession | null,
+  boundAddress: Address,
+  now: number = Date.now(),
+): IdentityGateResult {
+  if (policy === 0) return { ok: true };
+  if (session == null || session.address.toLowerCase() !== boundAddress.toLowerCase()) {
+    return { ok: false, reason: "identity_required" };
+  }
+  if (policy === 2 && now - session.verifiedAt > SESSION_FRESH_MAX_AGE_MS) {
+    return { ok: false, reason: "identity_stale" };
+  }
+  if (policy > 2) {
+    return { ok: false, reason: "identity_policy_unknown" };
+  }
+  return { ok: true };
+}

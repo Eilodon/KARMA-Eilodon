@@ -5,12 +5,15 @@
  * candidates, and prints its reasoning verbatim next to what the formula alone would
  * have picked.
  *
- * Offline by default — no chain, no keystore. Set ANTHROPIC_API_KEY to see a real
- * Anthropic call reason over the marketplace below; without it, this prints the
- * deterministic pick only and explains how to turn the LLM leg on.
+ * Offline by default — no chain, no keystore. Set ANTHROPIC_API_KEY (Claude, BYOK) or
+ * GEMINI_API_KEY (free-tier Google AI Studio, no billing needed) to see a real LLM call reason
+ * over the marketplace below; without either, this prints the deterministic pick only and
+ * explains how to turn the LLM leg on. ANTHROPIC_API_KEY wins if both are set — see
+ * `buildReasoningProviderFromEnv` in llm_strategy.ts.
  *
  *   pnpm demo:llm-agent
  *   ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent
+ *   GEMINI_API_KEY=... pnpm demo:llm-agent
  */
 
 import {
@@ -23,8 +26,7 @@ import {
 } from "../lib/autonomous_loop/loop.js";
 import {
   decideWithReasoning,
-  buildAnthropicReasoningProvider,
-  type ReasoningProvider,
+  buildReasoningProviderFromEnv,
 } from "../lib/autonomous_loop/llm_strategy.js";
 
 const STROOPS = 10_000_000n; // 1 USDC = 1e7 stroops
@@ -113,13 +115,14 @@ async function main(): Promise<void> {
     `rationale = none — a formula does not explain itself`,
   ]);
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  const selected = buildReasoningProviderFromEnv();
+  if (!selected) {
     console.log(
-      "\n[llm] ANTHROPIC_API_KEY is not set — skipping the live reasoning call.\n" +
-        "      Re-run with:  ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent\n" +
-        "      to see an actual Claude call choose among the same candidates and explain why —\n" +
-        "      the wiring (decideWithReasoning + buildAnthropicReasoningProvider) is real code,\n" +
+      "\n[llm] Neither ANTHROPIC_API_KEY nor GEMINI_API_KEY is set — skipping the live reasoning call.\n" +
+        "      Re-run with:  ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent   (Claude, BYOK)\n" +
+        "      or:           GEMINI_API_KEY=...          pnpm demo:llm-agent   (free-tier AI Studio)\n" +
+        "      to see an actual LLM call choose among the same candidates and explain why —\n" +
+        "      the wiring (decideWithReasoning + buildReasoningProviderFromEnv) is real code,\n" +
         "      unit-tested with a fake provider in src/__tests__/llm_strategy.test.ts; this is\n" +
         "      just the network leg gated behind a key nobody should hardcode.",
     );
@@ -127,11 +130,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const reasoning: ReasoningProvider = buildAnthropicReasoningProvider({ apiKey });
+  const { provider: reasoning, label } = selected;
   const reasoned = await decideWithReasoning(state, budget, candidates, reasoning);
 
   const chosenId = reasoned.action.kind === "invoke" ? reasoned.action.skill?.skillId : "(noop)";
-  box(`LLM pick (source=${reasoned.source})`, [
+  box(`LLM pick (source=${reasoned.source}, provider=${label})`, [
     `chosen    = ${chosenId}`,
     `greedy would've picked = ${pickGreedyBest(eligible).skillId}`,
     `agreement = ${chosenId === pickGreedyBest(eligible).skillId ? "same as formula" : "LLM DIVERGED from the formula"}`,
@@ -150,7 +153,7 @@ async function main(): Promise<void> {
   console.log(
     "└──────────────────────────────────────────────────────────────────────────",
   );
-  console.log("\n[demo] LLM reasoning leg PASS (live Anthropic call)");
+  console.log(`\n[demo] LLM reasoning leg PASS (live ${label} call)`);
 }
 
 main().catch((e) => {

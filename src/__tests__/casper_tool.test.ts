@@ -4,6 +4,8 @@ import { deriveCasperPrivateKey, casperAccountHash } from "../lib/casper/keypair
 import type { CasperClientLike } from "../plugins/casper.tool.js";
 import type { ToolDefinition } from "../mcp/adapter/tool_registry.js";
 import { casperSkillIndex } from "../lib/casper_indexer_runtime.js";
+import { identitySessions } from "../lib/identity_session.js";
+import type { IdentitySession } from "../lib/identity_session.js";
 
 const SIGNER = deriveCasperPrivateKey(new Uint8Array(32).fill(0x44));
 
@@ -11,6 +13,7 @@ vi.mock("../lib/keystore.js", () => ({
   keystoreManager: {
     has: vi.fn((id: string) => id === "agent-alpha"),
     getCasperKeypair: vi.fn(() => SIGNER),
+    getAddress: vi.fn(() => "0x1111111111111111111111111111111111111111"),
   },
 }));
 
@@ -889,6 +892,127 @@ describe("createCasperTools (T13-live MCP surface)", () => {
           cancelled: false,
         },
       });
+    });
+  });
+
+  describe("casper_create_job identity gate (P0-2)", () => {
+    // Matches the mocked keystoreManager.getAddress() return at the top of this file — the gate
+    // must bind against THIS (EVM form), never a Casper account-hash.
+    const BOUND_ADDRESS = "0x1111111111111111111111111111111111111111";
+
+    beforeEach(() => {
+      process.env.CASPER_RPC_URL = "https://node.example";
+      process.env.KARMA_ODRA_REGISTRY = "hash-" + "77".repeat(32);
+      identitySessions.clear();
+    });
+    afterEach(() => {
+      identitySessions.clear();
+    });
+
+    function skillWithPolicy(policy: number) {
+      return {
+        getSkill: vi.fn(async () => ({
+          owner: { kind: "Account" as const, hashHex: "aa".repeat(32) },
+          name: "gated-skill",
+          description: "",
+          mcpEndpoint: "",
+          pricePerCallMotes: 1000n,
+          reputationScore: 50,
+          totalInvocations: 0n,
+          active: true,
+          registeredAt: 0n,
+          minReputationToInvoke: 0,
+          identityPolicy: policy,
+        })),
+      };
+    }
+
+    function session(overrides: Partial<IdentitySession> = {}): IdentitySession {
+      return {
+        did: "did:t3n:test",
+        address: BOUND_ADDRESS,
+        verifiedAt: Date.now(),
+        expiresAt: Date.now() + 999_999_999,
+        ...overrides,
+      };
+    }
+
+    const baseArgs = {
+      agentId: "agent-alpha",
+      skillId: "1",
+      taskHashHex: "aa".repeat(32),
+      deadlineSecs: "259200",
+      escrowMotes: "1000",
+    };
+
+    it("policy 0: passes through with no session required", async () => {
+      const client = fakeClient(skillWithPolicy(0));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-createjob" });
+      expect(client.createJob).toHaveBeenCalled();
+    });
+
+    it("policy 1: rejects with identity_required when no session exists", async () => {
+      const client = fakeClient(skillWithPolicy(1));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ status: "rejected", reason: "identity_required" });
+      expect(client.createJob).not.toHaveBeenCalled();
+    });
+
+    it("policy 2: rejects with identity_stale once the session has aged past the fresh window", async () => {
+      identitySessions.set("agent-alpha", session({ verifiedAt: Date.now() - 999_999_999 }));
+      const client = fakeClient(skillWithPolicy(2));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ status: "rejected", reason: "identity_stale" });
+      expect(client.createJob).not.toHaveBeenCalled();
+    });
+
+    it("policy 2: passes with a fresh session", async () => {
+      identitySessions.set("agent-alpha", session());
+      const client = fakeClient(skillWithPolicy(2));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-createjob" });
+    });
+
+    it("policy >2 (unknown): fails closed even with a fresh session", async () => {
+      identitySessions.set("agent-alpha", session());
+      const client = fakeClient(skillWithPolicy(3));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ status: "rejected", reason: "identity_policy_unknown" });
+      expect(client.createJob).not.toHaveBeenCalled();
+    });
+
+    it("cross-chain address binding: an EVM-bound session authorizes a Casper job — proves the gate binds against keystoreManager.getAddress(), not a Casper account-hash (a naive account-hash comparison would reject this)", async () => {
+      identitySessions.set("agent-alpha", session({ address: BOUND_ADDRESS }));
+      const client = fakeClient(skillWithPolicy(1));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job").handler(baseArgs, {} as never);
+      expect(result.structuredContent).toMatchObject({ txHash: "tx-createjob" });
+      expect(client.createJob).toHaveBeenCalled();
+    });
+
+    it("casper_create_job_with_evaluator is gated the same way", async () => {
+      const client = fakeClient(skillWithPolicy(1));
+      const tools = createCasperTools(() => client);
+      const result = await find(tools, "casper_create_job_with_evaluator").handler(
+        {
+          agentId: "agent-alpha",
+          skillId: "1",
+          taskHashHex: "aa".repeat(32),
+          deadlineSecs: "259200",
+          evaluatorAccountHash: "account-hash-" + "bb".repeat(32),
+          evaluatorFeeMotes: "1000",
+          escrowMotes: "1001000",
+        },
+        {} as never,
+      );
+      expect(result.structuredContent).toMatchObject({ status: "rejected", reason: "identity_required" });
+      expect(client.createJobWithEvaluator).not.toHaveBeenCalled();
     });
   });
 });

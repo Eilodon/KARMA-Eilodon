@@ -85,6 +85,13 @@ export function accountAddressToBytes(accountHashHex: string): Uint8Array {
 /** `contracts-odra/src/agent_skill_registry.rs`'s `AgentSkillRegistry` module field indices —
  *  pinned by `cargo expand`, not recomputed. Only the fields this module currently reads. */
 export const AGENT_SKILL_REGISTRY_FIELD_INDEX = {
+  /** `skill_id_counter: Var<u64>` — index 2, `job_id_counter: Var<u64>` — index 3. Confirmed by
+   *  struct declaration order in `agent_skill_registry.rs` (`review_window` [1], `skill_id_counter`
+   *  [2], `job_id_counter` [3], `skills` [4], `jobs` [5]) — the same struct whose next two fields,
+   *  `skills`/`jobs`, are already pinned as 4/5 below, so this ordering is corroborated by those
+   *  existing indices, not a fresh guess. */
+  skillIdCounter: 2,
+  jobIdCounter: 3,
   skills: 4,
   jobs: 5,
   /** `agent_provider_jobs: Mapping<Address, Vec<u64>>` — index 6, by the same struct-declaration-

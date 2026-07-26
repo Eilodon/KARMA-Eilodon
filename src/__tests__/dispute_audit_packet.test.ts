@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildDisputeAuditPacket, renderAuditPacketMarkdown } from "../lib/casper/dispute_audit_packet.js";
+import {
+  buildDisputeAuditPacket,
+  renderAuditPacketMarkdown,
+  verifyAuditPacketArtifacts,
+} from "../lib/casper/dispute_audit_packet.js";
 import type { DisputeAuditPacketClient } from "../lib/casper/dispute_audit_packet.js";
 import type { DecodedJob, DecodedDisputeInfo, DecodedSkill, CasperAddress } from "../lib/casper/odra_codec.js";
 
@@ -114,5 +118,55 @@ describe("buildDisputeAuditPacket", () => {
     expect(md).toContain("job 7");
     expect(md).toContain("ProviderAtFault");
     expect(md).toContain("500000 motes");
+  });
+
+  it("hex-encodes taskHash/resultHash onto the job record", async () => {
+    const client = fakeClient({
+      getJob: vi.fn(async () =>
+        baseJob({ taskHash: new Uint8Array([0xde, 0xad]), resultHash: new Uint8Array([0xbe, 0xef]) }),
+      ),
+    });
+    const packet = await buildDisputeAuditPacket(client, 1n);
+    expect(packet.job?.taskHashHex).toBe("dead");
+    expect(packet.job?.resultHashHex).toBe("beef");
+  });
+});
+
+describe("verifyAuditPacketArtifacts", () => {
+  it("reports not_checked for both fields when no artifact is supplied", async () => {
+    const client = fakeClient({ getJob: vi.fn(async () => baseJob()) });
+    const packet = await buildDisputeAuditPacket(client, 1n);
+    const v = verifyAuditPacketArtifacts(packet);
+    expect(v.resultHash.verdict).toBe("not_checked");
+    expect(v.rationaleHash.verdict).toBe("not_checked");
+  });
+
+  it("MATCH when the supplied artifact hashes to the on-chain commitment", async () => {
+    const resultHash = new Uint8Array(
+      Buffer.from("ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5", "hex"),
+    );
+    const client = fakeClient({
+      getJob: vi.fn(async () => baseJob({ resultHash })),
+      getRationaleHash: vi.fn(async () => "bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6"),
+    });
+    const packet = await buildDisputeAuditPacket(client, 5n);
+    const receiptJson =
+      '{"feeds":[{"feed":"BTC/USD","price":"64603.00","timestamp":1785076056629,"source":"coingecko"},' +
+      '{"feed":"UST-BILLS/AVG-YIELD","price":"3.71","timestamp":1785076058204,"source":"ustreasury"}],' +
+      '"providerPublicKeyHex":"02034a7c7839fd6af86afac55c46b84780e89ddaf12af29df15809382af618a2c8cf",' +
+      '"signatureHex":"0240f2d55e52f1e5bfdb5c61bcec893190498614e60921809adcb49134ab86f9335d9c42780e6a24e0670f64be6996b7fd33080bcc12c383b4dce8fb5767c97234"}';
+    const v = verifyAuditPacketArtifacts(packet, { resultArtifactJson: receiptJson });
+    expect(v.resultHash.verdict).toBe("match");
+    expect(v.rationaleHash.verdict).toBe("not_checked");
+  });
+
+  it("MISMATCH when the supplied artifact was tampered with", async () => {
+    const resultHash = new Uint8Array(
+      Buffer.from("ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5", "hex"),
+    );
+    const client = fakeClient({ getJob: vi.fn(async () => baseJob({ resultHash })) });
+    const packet = await buildDisputeAuditPacket(client, 5n);
+    const v = verifyAuditPacketArtifacts(packet, { resultArtifactJson: '{"tampered":true}' });
+    expect(v.resultHash.verdict).toBe("mismatch");
   });
 });

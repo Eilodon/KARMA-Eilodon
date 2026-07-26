@@ -636,6 +636,25 @@ export class CasperLiveClient {
     return bytes ? decodeJob(bytes) : undefined;
   }
 
+  /** Reads `skill_id_counter` (`Var<u64>`, field index 2) — the highest skill id ever assigned
+   *  (mirrors the contract's `skill_count()` view, unreachable from RPC directly — same reason
+   *  every other getter here is a dictionary read, not an entry-point call). `0n` on a fresh
+   *  contract, matching every other bare-`Var` getter's undefined-means-zero convention. */
+  async getSkillCount(): Promise<bigint> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.skillIdCounter, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64(bytes) : 0n;
+  }
+
+  /** Reads `job_id_counter` (`Var<u64>`, field index 3) — the highest job id ever created
+   *  (mirrors the contract's `job_count()` view). See `getSkillCount`'s doc comment for why this
+   *  is a dictionary read rather than an entry-point call, and for the `0n`-on-fresh-contract
+   *  convention. */
+  async getJobCount(): Promise<bigint> {
+    const clValue = await this.readMapping(AGENT_SKILL_REGISTRY_FIELD_INDEX.jobIdCounter, EMPTY_VAR_KEY);
+    const bytes = odraStructBytes(clValue);
+    return bytes ? decodeU64(bytes) : 0n;
+  }
 
   /** Reads `disputes[job_id]` (`Mapping<u64, DisputeInfo>`, field index 18, P1-A) — the bonded
    *  amounts + dispute timestamp for a job currently under dispute; `undefined` once resolved

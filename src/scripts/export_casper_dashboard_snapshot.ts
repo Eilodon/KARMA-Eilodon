@@ -20,12 +20,26 @@ import { CasperLiveClient } from "../lib/casper/live_client.js";
 
 const OUT_FILE = process.argv[2] ?? "docs/media/dashboard/casper_status.json";
 
+// The canonical, Locked, panel-enabled registry this repo's README/badge/judges page all point
+// at (2026-07-25 redeploy — see DEMO_CASPER.md's redeploy chain). A wrong/stale KARMA_ODRA_REGISTRY
+// silently overwrites this file with a DIFFERENT contract's state (caught the hard way: an
+// Unlocked, panel-empty superseded contract's snapshot got committed over this one once already).
+const CANONICAL_REGISTRY_HASH = "hash-2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384";
+
 async function main(): Promise<void> {
   const rpcUrl = process.env.CASPER_RPC_URL;
   const contractHash = process.env.KARMA_ODRA_REGISTRY ?? process.env.CASPER_CONTRACT_HASH;
   if (!rpcUrl || !contractHash) {
     throw new Error(
       "[dashboard-snapshot] set CASPER_RPC_URL and KARMA_ODRA_REGISTRY (the deployed AgentSkillRegistry package hash)",
+    );
+  }
+  if (contractHash !== CANONICAL_REGISTRY_HASH && !process.argv.includes("--force")) {
+    throw new Error(
+      `[dashboard-snapshot] KARMA_ODRA_REGISTRY (${contractHash}) does not match the canonical ` +
+        `contract this repo's README/badge/judges page point at (${CANONICAL_REGISTRY_HASH}). ` +
+        "Refusing to overwrite the committed snapshot with a different contract's state — " +
+        "pass --force if this is intentional (e.g. testing against your own deployment).",
     );
   }
   const client = new CasperLiveClient({ rpcUrl, contractHash });

@@ -94,6 +94,11 @@ would expand to `uint16` if `127` is filled, but no v2 is planned for now.
   - Odra: [`contracts-odra/src/agent_skill_registry.rs`](../../contracts-odra/src/agent_skill_registry.rs)
     `IDENTITY_POLICY_*` constants
   - TypeScript: [`src/plugins/karma.tool.ts`](../../src/plugins/karma.tool.ts)
-    `create_job` identity-gate block
+    `create_job` identity-gate block (Pharos path)
+  - TypeScript: [`src/plugins/casper.tool.ts`](../../src/plugins/casper.tool.ts)
+    `casper_create_job` / `casper_create_job_with_evaluator` — via the shared
+    [`checkIdentityGate`](../../src/lib/identity_session.ts) (Casper path, added 2026-07-27;
+    binds against `keystoreManager.getAddress(agentId)`, the chain-agnostic EVM address, not a
+    Casper account-hash)
 - ADR: internal `t3adk-terminal3-identity-gate` decision record (2026-06-22)
 - Design rationale (D1–D3): internal `d1-d5-tradeoff-study` (2026-06-23)

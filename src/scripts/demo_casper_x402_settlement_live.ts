@@ -35,9 +35,13 @@ function bytesToCLList(bytes: Uint8Array): InstanceType<typeof CLValue> {
 const rpcUrl = process.env.CASPER_RPC_URL ?? "https://node.testnet.casper.network/rpc";
 const apiKey = process.env.CASPER_RPC_API_KEY;
 const chainName = process.env.CASPER_CHAIN_NAME ?? "casper-test";
+// Canonical, Locked X402SettlementToken (2026-07-25 redeploy — see DEMO_CASPER.md's redeploy
+// chain). The previous fallback here (hash-b3387d59…) is the superseded Unlocked pre-redeploy
+// token — verified live via RPC 2026-07-26 (query_global_state lock_status differs between the
+// two), don't revert to it.
 const settlementTokenHash =
   process.env.KARMA_X402_CASPER_SETTLEMENT_TOKEN ??
-  "hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310";
+  "hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a";
 const bareTokenHash = settlementTokenHash.replace(/^hash-/, "");
 
 const handler = new HttpHandler(rpcUrl);

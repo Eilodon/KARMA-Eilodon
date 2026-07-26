@@ -108,26 +108,51 @@ risk?" is exactly the kind of judgment call a fixed formula can't make and an LL
 `src/lib/autonomous_loop/llm_strategy.ts` adds that layer **without touching the safety rails**:
 `filterEligible()` (the same budget/per-tx/per-hour hard caps `decide()` always used, unchanged
 and still covered by `autonomous_loop.test.ts`) runs first, and only *then* does a
-`ReasoningProvider` — a real Claude call via `buildAnthropicReasoningProvider` — get to choose
-*among* whatever survives. If the model names a skill outside that already-safe set (hallucination)
-or the API call fails, `decideWithReasoning` falls back to the exact same deterministic pick —
-an LLM can upgrade the decision, never bypass the kernel that guards real money.
+`ReasoningProvider` — a real LLM call, either Claude (`buildAnthropicReasoningProvider`) or
+Gemini (`buildGeminiReasoningProvider`, free-tier Google AI Studio, no billing needed) — get to
+choose *among* whatever survives. `buildReasoningProviderFromEnv` picks whichever key is set
+(`ANTHROPIC_API_KEY` wins if both are). If the model names a skill outside that already-safe set
+(hallucination) or the API call fails, `decideWithReasoning` falls back to the exact same
+deterministic pick — an LLM can upgrade the decision, never bypass the kernel that guards real
+money.
 
 ```bash
-pnpm demo:llm-agent                                    # offline: deterministic pick only, explains how to add the LLM leg
-ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent        # live: a real Claude call reasons over the same candidates
+pnpm demo:llm-agent                              # offline: deterministic pick only, explains how to add the LLM leg
+GEMINI_API_KEY=...          pnpm demo:llm-agent  # live: free-tier Gemini reasons over the same candidates
+ANTHROPIC_API_KEY=sk-ant-... pnpm demo:llm-agent # live: Claude BYOK reasons over the same candidates
+```
+
+**DONE live (2026-07-27), real Gemini call, captured verbatim — the LLM diverged from the
+formula:**
+
+```text
+[market] 3 skills discovered, 3 cleared the hard safety caps:
+  - rwa_price_oracle         price=$0.010  profit=$0.008  reputation=88
+  - unaudited_yield_signal   price=$0.010  profit=$0.016  reputation=12
+  - doc_summary              price=$0.005  profit=$0.004  reputation=91
+
+Deterministic pick (decide(), unchanged formula): chosen=unaudited_yield_signal, reason=expected_profit=160000
+
+LLM pick (source=llm, provider=Gemini): chosen=rwa_price_oracle
+greedy would've picked = unaudited_yield_signal
+agreement = LLM DIVERGED from the formula
+
+rationale: "The rwa_price_oracle skill offers an optimal balance of high profitability (80,000
+stroops expected profit) and high reliability (reputation of 88). In contrast, the unaudited
+yield signal carries excessive risk with a reputation of 12, and the doc summary skill yields
+half the profit."
 ```
 
 The offline run alone already shows the deterministic pick and the exact safety-filtered
-candidate set; the live run prints the LLM's actual rationale next to it, and flags explicitly
-whether the LLM agreed with the formula or diverged from it. The market data in the demo is
-deliberately adversarial to a pure-EV formula — the highest expected-profit skill also has the
-weakest reputation of the three (a brand-new, unaudited provider) — so a reasoning agent has
-something real to weigh, not just a rubber stamp of whatever the formula would have picked anyway.
-`src/__tests__/llm_strategy.test.ts` covers all of this — no-candidates short-circuit (the
-provider is never called when there's nothing to choose from), a valid LLM pick, a hallucinated
-skillId falling back, and a thrown API error falling back — entirely with a fake `ReasoningProvider`,
-no network required to prove the logic is correct.
+candidate set; the live run above prints the LLM's actual rationale next to it, and flags
+explicitly whether the LLM agreed with the formula or diverged from it — here, it diverged, which
+is exactly what the deliberately-adversarial market data (highest expected-profit skill also has
+the weakest reputation, a brand-new unaudited provider) exists to surface: not a rubber stamp of
+whatever the formula would have picked anyway. `src/__tests__/llm_strategy.test.ts` covers the
+provider-agnostic logic — no-candidates short-circuit (the provider is never called when there's
+nothing to choose from), a valid LLM pick, a hallucinated skillId falling back, and a thrown API
+error falling back — entirely with a fake `ReasoningProvider`, no network required to prove the
+logic is correct.
 
 ## Attestation-hardening redeploy — DONE (2026-07-21)
 
@@ -558,6 +583,59 @@ reputation signals when `requester == provider`). All six real transactions:
 Final on-chain read confirms it, not just the tx receipts: `getJob(1).status == "Completed"`,
 `getSkill(1).reputationScore == 55` (bumped from the registration baseline), `totalInvocations == 1`.
 
+## RWA-oracle full lifecycle — DONE live (2026-07-26, canonical contract)
+
+Closes a gap a code audit found: `rwa_price_oracle` — the skill README's "Real-World
+Applicability" rubric row and the Buildathon brief's "RWA Oracle Agent" example both point at —
+had never actually been registered on the current canonical contract (`hash-2262a0a9…`, the one
+the badge/judges page/live-deployment table all reference), only on superseded predecessors.
+`src/scripts/demo_casper_rwa_oracle_lifecycle_live.ts` closes it: `register_skill` →
+`deposit_bond` → real BTC/UST feed fetch (fail-closed if either falls back — verified live: the
+first attempt hit a real US Treasury API timeout and correctly aborted rather than sign/sell the
+fallback value) → `create_job` → `attest_rationale` → `deliver_result` (result_hash binds a
+provider-signed feed receipt) → `confirm_completion` → `withdraw`, provider = governance signer 1,
+requester = governance signer 2 (same self-deal-avoidance pattern as the full-lifecycle demo
+above).
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `register_skill` | `22e154563640b9b7db5d7b309eb07e2855eda310ef1a0da8ec6195fbdcdf230e` | success — `skill_id=3` |
+| `deposit_bond` (1 CSPR) | `0c0d87402224448cfc062c1554e9cc4e37586fad09a1973a704c38c39ea3b968` | success |
+| `create_job` (0.01 CSPR escrow) | `e0551a9e7770d1ec72c94d3ca8d24930a1d1de34c0d6f21562161eb7ced1a5e7` | success — `job_id=5` |
+| `attest_rationale` | `206d4b8bf47979b80cef05eb6e7eeddac95ef22b290fb80421b6d420b87211d1` | success |
+| `deliver_result` | `90b36aa5010d7e296efd265dad8eb96726cb120ef64ccee4428a663aa0147861` | success |
+| `confirm_completion` | `aec4717ff87e6a5a6dca66dde82030d638497bd4e00d98257aa0500a4755c145` | success |
+| `withdraw` | `50d93afc6879cadef504d00da3b062f23300833aa2831a5def21f5f218354ef1` | success |
+
+Verify it yourself — every hash below is independently recomputable, not asserted:
+
+```text
+task_hash (create_job)      = d568ff85fe7ad191a7984e43e6de00ab757b79a2a12d8a15833d205b74e33c27
+rationale text (attested)   = "Requester selected rwa_price_oracle (skill_id=3) — the registered
+                                RWA-oracle skill on this registry — at 10000000 motes (0.01 CSPR)
+                                per call. Feeds requested: BTC/USD (CoinGecko) and
+                                UST-BILLS/AVG-YIELD (U.S. Treasury Fiscal Data API), both required
+                                to be a live quote (source != "fallback") at purchase time or the
+                                job is not created at all."
+sha256(rationale text)       = bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6
+get_rationale_hash(5)        = bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6  (MATCH)
+
+receipt (signed by provider) = {"feeds":[{"feed":"BTC/USD","price":"64603.00","timestamp":1785076056629,"source":"coingecko"},
+                                {"feed":"UST-BILLS/AVG-YIELD","price":"3.71","timestamp":1785076058204,"source":"ustreasury"}],
+                                "providerPublicKeyHex":"02034a7c7839fd6af86afac55c46b84780e89ddaf12af29df15809382af618a2c8cf",
+                                "signatureHex":"0240f2d55e52f1e5bfdb5c61bcec893190498614e60921809adcb49134ab86f9335d9c42780e6a24e0670f64be6996b7fd33080bcc12c383b4dce8fb5767c97234"}
+sha256(receipt JSON)         = ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5
+getJob(5).result_hash        = ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5  (MATCH)
+```
+
+Final on-chain read confirms it: `getSkill(3).name == "rwa_price_oracle"`,
+`getSkill(3).reputationScore == 55`, `getJob(5).status == "Completed"`,
+`getJob(5).skillId == 3`, `getJob(5).escrowAmountMotes == "10000000"`. The `receipt.signatureHex`
+above verifies against `providerPublicKeyHex` with `casper-js-sdk`'s `PublicKey.verifySignature`
+(same check `demo_casper_x402_live.ts`'s Step 3.5 does against a live-signed feed) — the on-chain
+`result_hash` isn't just an opaque commitment, it's a hash of a receipt anyone can independently
+re-verify both cryptographically (signature) and numerically (hash).
+
 ## Courtroom (dispute + arbitrate) — DONE live (2026-07-07, re-run 2026-07-21)
 
 > **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `skill_id=2`,
@@ -712,6 +790,10 @@ casper-client put-deploy \
 >    `CASPER_RPC_API_KEY` in `.env.example`) rather than the `casper-client` CLI shown above.
 
 ### Step 2 — Register the `rwa_price_oracle` skill
+
+> Done live on the canonical contract, 2026-07-26 — real tx hashes, full lifecycle including
+> attest_rationale and a provider-signed receipt: see [RWA-oracle full lifecycle](#rwa-oracle-full-lifecycle--done-live-2026-07-26-canonical-contract)
+> above.
 
 ```bash
 export CASPER_RPC_URL=https://node.testnet.cspr.cloud/rpc

@@ -204,3 +204,87 @@ export function buildAnthropicReasoningProvider(
     return { skillId: input.skillId, rationale: input.rationale };
   };
 }
+
+export interface GeminiProviderOptions {
+  apiKey: string;
+  model?: string;
+}
+
+/** A real LLM as the ReasoningProvider — one Gemini `generateContent` call, forced through a
+ *  function call so the reply is structured `{ skillId, rationale }`, same shape and same
+ *  system-prompt content as `buildAnthropicReasoningProvider` above (only the wire format
+ *  differs). Raw REST `fetch` against the real Gemini API — no SDK dependency, same convention
+ *  `rwa_price_feed.ts` uses for CoinGecko/US Treasury. Requires a real `GEMINI_API_KEY` (free
+ *  tier, no billing needed, from Google AI Studio). Exists so this demo isn't Anthropic-only:
+ *  see `buildReasoningProviderFromEnv` below for which key wins when both are set. */
+export function buildGeminiReasoningProvider(opts: GeminiProviderOptions): ReasoningProvider {
+  return async ({ state, budget, eligible }) => {
+    const model = opts.model ?? "gemini-3.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${opts.apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{
+            text:
+              "You are the decision-making core of an autonomous economic agent. You are shown a " +
+              "shortlist of skills that already passed every hard safety cap (budget, per-tx, " +
+              "per-hour) — you are only choosing WHICH one to buy, not whether spending is allowed. " +
+              "Weigh expected profit against reputation as a risk signal: a high-profit skill from a " +
+              "low-reputation provider is not automatically the best pick. Always call the " +
+              `${REASONING_TOOL_NAME} function with your choice — never answer in plain text.`,
+          }],
+        },
+        contents: [{ role: "user", parts: [{ text: describeEligibleForPrompt({ state, budget, eligible }) }] }],
+        tools: [{
+          functionDeclarations: [{
+            name: REASONING_TOOL_NAME,
+            description: "Record which eligible skill to invoke next, and why.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                skillId: { type: "STRING", description: "Must exactly match one skillId from the eligible list." },
+                rationale: { type: "STRING", description: "2-3 plain-English sentences justifying the pick." },
+              },
+              required: ["skillId", "rationale"],
+            },
+          }],
+        }],
+        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [REASONING_TOOL_NAME] } },
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Gemini API returned HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    }
+    const body = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ functionCall?: { name?: string; args?: unknown } }> } }>;
+    };
+    const parts = body.candidates?.[0]?.content?.parts ?? [];
+    const call = parts.find((p) => p.functionCall?.name === REASONING_TOOL_NAME)?.functionCall;
+    if (!call) {
+      throw new Error("Gemini response contained no functionCall block");
+    }
+    const args = call.args as { skillId?: unknown; rationale?: unknown } | undefined;
+    if (typeof args?.skillId !== "string" || typeof args?.rationale !== "string") {
+      throw new Error("Gemini functionCall args missing skillId/rationale");
+    }
+    return { skillId: args.skillId, rationale: args.rationale };
+  };
+}
+
+/** Picks a real LLM `ReasoningProvider` from whichever key is present in the environment —
+ *  `ANTHROPIC_API_KEY` (Claude, BYOK) wins if both are set; `GEMINI_API_KEY` (free-tier Google
+ *  AI Studio) is the fallback so this demo doesn't require an Anthropic key specifically.
+ *  `undefined` when neither is set — caller should fall back to the deterministic `decide()`. */
+export function buildReasoningProviderFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): { provider: ReasoningProvider; label: string } | undefined {
+  if (env.ANTHROPIC_API_KEY) {
+    return { provider: buildAnthropicReasoningProvider({ apiKey: env.ANTHROPIC_API_KEY }), label: "Claude" };
+  }
+  if (env.GEMINI_API_KEY) {
+    return { provider: buildGeminiReasoningProvider({ apiKey: env.GEMINI_API_KEY }), label: "Gemini" };
+  }
+  return undefined;
+}

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>KARMA /verify — on-chain dispute audit verification</title>
+<style>
+  :root{
+    --bg:#0d0f12; --surface:#15181c; --surface-2:#1b1f24;
+    --ink:#eef0f2; --ink-soft:#9aa3ac; --ink-faint:#5f6870;
+    --accent:#ef4d3d; --accent-soft:#3a1c17; --accent-ink:#fff0ee;
+    --good:#34c77b; --good-soft:#123420;
+    --bad:#e5484d; --bad-soft:#3d1315;
+    --pending:#f0b429; --pending-soft:#3a2c0d;
+    --border:#262b31; --code-bg:#0a0c0e;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:64px 24px 100px;}
+  a{color:var(--accent);}
+  code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+
+  .eyebrow{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    font-size:12.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 14px;
+  }
+  h1{
+    font-size:clamp(28px,5vw,40px); font-weight:800; letter-spacing:-.01em;
+    line-height:1.1; margin:0 0 16px; text-wrap:balance;
+  }
+  h1 .hl{color:var(--accent);}
+  .lede{font-size:16.5px; color:var(--ink-soft); max-width:62ch; margin:0 0 32px;}
+
+  .verify-form{
+    display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px 18px; box-shadow:var(--shadow); margin:0 0 28px;
+  }
+  .verify-form label{font-size:13px; color:var(--ink-soft); font-weight:600;}
+  .verify-form input{
+    font-family:ui-monospace,monospace; font-size:15px;
+    background:var(--code-bg); color:var(--ink); border:1px solid var(--border);
+    border-radius:8px; padding:9px 12px; width:120px;
+  }
+  .verify-form button{
+    font-family:inherit; font-size:14px; font-weight:700; cursor:pointer;
+    background:var(--accent); color:var(--accent-ink); border:none;
+    border-radius:8px; padding:10px 18px;
+  }
+  .verify-form button:hover{opacity:.9;}
+  .verify-form .hint{font-size:12.5px; color:var(--ink-faint); width:100%;}
+
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:18px 20px; box-shadow:var(--shadow); margin:0 0 14px;
+  }
+  .card h3{font-size:13px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-faint);}
+  .card .val{font-family:ui-monospace,monospace; font-size:14px; word-break:break-all;}
+  .card .sub{font-size:13px; color:var(--ink-soft); margin-top:6px;}
+
+  .verdict{
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:ui-monospace,monospace; font-size:12px; font-weight:700;
+    padding:4px 10px; border-radius:100px; margin-left:8px; vertical-align:middle;
+  }
+  .verdict.match{background:var(--good-soft); color:var(--good);}
+  .verdict.mismatch{background:var(--bad-soft); color:var(--bad);}
+  .verdict.not_checked{background:var(--surface-2); color:var(--ink-faint);}
+
+  #status-line{font-size:13.5px; color:var(--ink-faint); margin:0 0 20px;}
+  #status-line.error{color:var(--bad);}
+  #results{display:none;}
+
+  footer{margin-top:40px; font-size:12.5px; color:var(--ink-faint);}
+  footer code{background:var(--code-bg); padding:2px 6px; border-radius:4px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">KARMA · Casper testnet</p>
+  <h1>Verify a job's <span class="hl">on-chain commitments</span></h1>
+  <p class="lede">
+    Every KARMA job on Casper commits a <code>taskHash</code>, <code>resultHash</code>, and an
+    attested rationale hash on-chain — but a hash is only a commitment, not the payload. A real
+    MATCH/MISMATCH verdict means <code>export_dispute_audit_packet.ts</code> re-hashed the actual
+    off-chain artifact (the signed receipt JSON, the plain rationale text) and compared it against
+    the live on-chain value — not something computed in your browser. This page reads whatever
+    that script last wrote to <code>dispute-packets/&lt;jobId&gt;.json</code>.
+  </p>
+
+  <div class="verify-form">
+    <label for="job-id">Job ID</label>
+    <input id="job-id" type="text" value="5" />
+    <button id="verify-btn">Verify</button>
+    <span class="hint">Defaults to job_id=5 (skill_id=3, <code>rwa_price_oracle</code>) — a real completed job, MATCH-verified below.</span>
+  </div>
+
+  <p id="status-line">loading…</p>
+
+  <div id="results">
+    <div class="card">
+      <h3>Job</h3>
+      <div class="val" id="r-job"></div>
+      <div class="sub" id="r-narrative"></div>
+    </div>
+    <div class="card">
+      <h3>Task hash <span id="r-task-verdict"></span></h3>
+      <div class="val" id="r-task"></div>
+    </div>
+    <div class="card">
+      <h3>Result hash <span id="r-result-verdict"></span></h3>
+      <div class="val" id="r-result"></div>
+    </div>
+    <div class="card">
+      <h3>Rationale hash <span id="r-rationale-verdict"></span></h3>
+      <div class="val" id="r-rationale"></div>
+    </div>
+  </div>
+
+  <footer>
+    No local snapshot for a jobId? Generate one (read-only, needs <code>CASPER_RPC_URL</code> +
+    <code>KARMA_ODRA_REGISTRY</code>):<br />
+    <code>pnpm exec tsx src/scripts/export_dispute_audit_packet.ts --job &lt;id&gt;
+    --result-artifact &lt;receipt.json&gt; --rationale-artifact &lt;rationale.txt&gt;</code><br />
+    then refresh this page — it writes straight to <code>docs/media/dispute-packets/&lt;id&gt;.json</code>.
+  </footer>
+</div>
+
+<script>
+(function () {
+  var statusLine = document.getElementById("status-line");
+  var results = document.getElementById("results");
+
+  function verdictBadge(v) {
+    var span = document.createElement("span");
+    span.className = "verdict " + v;
+    span.textContent = v === "match" ? "MATCH" : v === "mismatch" ? "MISMATCH" : "not checked";
+    return span;
+  }
+
+  function render(packet) {
+    if (!packet.found) {
+      statusLine.textContent = packet.narrative || ("No job found for id " + packet.jobId);
+      statusLine.className = "error";
+      results.style.display = "none";
+      return;
+    }
+    statusLine.textContent = "loaded — generated " + packet.generatedAt;
+    statusLine.className = "";
+    results.style.display = "block";
+
+    document.getElementById("r-job").textContent =
+      (packet.job.skillName || ("skill " + packet.job.skillId)) + " — job " + packet.jobId + " — status: " + packet.job.status;
+    document.getElementById("r-narrative").textContent = packet.narrative;
+
+    document.getElementById("r-task").textContent = packet.job.taskHashHex;
+    var taskV = document.getElementById("r-task-verdict");
+    taskV.innerHTML = "";
+    taskV.appendChild(verdictBadge("not_checked"));
+
+    var v = packet.verification || { resultHash: { verdict: "not_checked" }, rationaleHash: { verdict: "not_checked" } };
+
+    document.getElementById("r-result").textContent = packet.job.resultHashHex;
+    var resultV = document.getElementById("r-result-verdict");
+    resultV.innerHTML = "";
+    resultV.appendChild(verdictBadge(v.resultHash.verdict));
+
+    document.getElementById("r-rationale").textContent = packet.attestedRationaleHash || "(none attested)";
+    var rationaleV = document.getElementById("r-rationale-verdict");
+    rationaleV.innerHTML = "";
+    rationaleV.appendChild(verdictBadge(v.rationaleHash.verdict));
+  }
+
+  function verify() {
+    var jobId = document.getElementById("job-id").value.trim();
+    if (!jobId) return;
+    statusLine.className = "";
+    statusLine.textContent = "loading job " + jobId + "…";
+    results.style.display = "none";
+    fetch("dispute-packets/" + encodeURIComponent(jobId) + ".json", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(render)
+      .catch(function () {
+        statusLine.className = "error";
+        statusLine.textContent =
+          "No local snapshot for job " + jobId + " yet — see the footer below to generate one.";
+      });
+  }
+
+  document.getElementById("verify-btn").addEventListener("click", verify);
+  document.getElementById("job-id").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") verify();
+  });
+  verify();
+})();
+</script>
+</body>
+</html>

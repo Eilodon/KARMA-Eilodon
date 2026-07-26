@@ -37,6 +37,7 @@ import {
   type LoopState,
   type SkillCandidate,
   type EarningRecord,
+  type TickDecideFn,
 } from "../lib/autonomous_loop/loop.js";
 import {
   buildDryRunAdapter,
@@ -45,7 +46,9 @@ import {
   type LiveInvoke,
   type DashboardSink,
 } from "../lib/autonomous_loop/runner.js";
+import { decideWithReasoning, buildReasoningProviderFromEnv } from "../lib/autonomous_loop/llm_strategy.js";
 import { CasperX402Plugin } from "../plugins/x402_casper.js";
+import { CasperLiveClient } from "../lib/casper/live_client.js";
 import { keystoreManager } from "../lib/keystore.js";
 import type { PaymentRequest } from "../lib/payment/plugin.js";
 
@@ -72,12 +75,12 @@ function usd(stroops: bigint): string {
   return `$${(Number(stroops) / 1e7).toFixed(4)}`;
 }
 
-// Canned marketplace candidates — same acknowledged scope limitation as the Stellar script: in
-// --live these are the discovery seed (live discover_skills wiring is a follow-on), the x402
-// invoke leg is real on testnet. `rwa_price_oracle` matches the real skill name registered by
-// `register_rwa_oracle_skill.ts`; the other two are illustrative competing candidates so the
-// greedy-best / LLM-reasoning selection actually has something to weigh (mirrors
-// `demo_llm_agent_reasoning.ts`'s deliberately-adversarial market shape).
+// Dry-run-only candidates now (T12) — --live discovers real registered skills straight off the
+// registry via `makeLiveDiscover()` below instead of this canned list. Kept here deterministic
+// and network-free for dry-run, same acknowledged shape as the Stellar script. `rwa_price_oracle`
+// matches the real skill name registered by `register_rwa_oracle_skill.ts`; the other two are
+// illustrative competing candidates so the greedy-best / LLM-reasoning selection actually has
+// something to weigh (mirrors `demo_llm_agent_reasoning.ts`'s deliberately-adversarial market shape).
 const CANDIDATES: SkillCandidate[] = [
   { skillId: "rwa_price_oracle", name: "rwa_price_oracle", pricePerCallUsdc: 1_000_000n, expectedReturnUsdc: 1_400_000n, reputation: 82, payee: "account-hash-0000000000000000000000000000000000000000000000000000000000000000", network: "casper:testnet" },
   { skillId: "unaudited_yield_signal", name: "unaudited_yield_signal", pricePerCallUsdc: 1_000_000n, expectedReturnUsdc: 1_600_000n, reputation: 12, payee: "account-hash-1111111111111111111111111111111111111111111111111111111111111111", network: "casper:testnet" },
@@ -103,15 +106,36 @@ async function main(): Promise<void> {
 
   const adapter = live
     ? buildLiveAdapter(
-        { discover: async () => CANDIDATES, invoke: await makeLiveInvoke() },
+        { discover: await makeLiveDiscover(), invoke: await makeLiveInvoke() },
         sink,
         startingBudget,
       )
     : buildDryRunAdapter({ candidates: CANDIDATES, returnBps: 12_000 }, sink, startingBudget);
 
+  // Optional LLM-reasoned decision leg (T5.2) — same real Claude/Gemini wiring
+  // `demo_llm_agent_reasoning.ts` already exercises, just routed through the live tick loop
+  // here instead of a one-shot demo. `decide()`'s deterministic greedy pick is always the
+  // fallback (decideWithReasoning falls back to it on hallucination/API error), so this can
+  // never widen what's economically allowed — it only explains/reweighs among what already
+  // cleared the safety caps. Absent an API key, `tick()` behaves exactly as before.
+  const reasoningSelected = buildReasoningProviderFromEnv(process.env);
+  const decideFn: TickDecideFn | undefined = reasoningSelected
+    ? async (tickState, tickBudget, candidates, nextTickMs) => {
+        const reasoned = await decideWithReasoning(
+          tickState,
+          tickBudget,
+          candidates,
+          reasoningSelected.provider,
+          nextTickMs,
+        );
+        return { action: reasoned.action, rationale: reasoned.rationale };
+      }
+    : undefined;
+
   console.log("=".repeat(80));
   console.log(`KARMA autonomous economic loop (T5.1, Casper) — ${live ? "LIVE (testnet)" : "DRY-RUN"}`);
   console.log(`Budget cap ${usd(startingBudget)} · ticks ${ticks} · per-tx ${usd(budget.maxPerTxUsdc)} · hourly ${usd(budget.maxHourlyUsdc)}`);
+  console.log(`Decision leg     = ${reasoningSelected ? `LLM (${reasoningSelected.label}), greedy fallback` : "deterministic greedy (no ANTHROPIC_API_KEY/GEMINI_API_KEY set)"}`);
   console.log("=".repeat(80));
 
   const now0 = Date.now();
@@ -119,9 +143,10 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < ticks; i++) {
     const now = state.now + 60_000; // 1 simulated minute per tick
-    const { action, state: next } = await tick(state, budget, adapter, now, 60_000);
+    const { action, state: next, rationale } = await tick(state, budget, adapter, now, 60_000, decideFn);
     if (action.kind === "invoke" && action.skill) {
       console.log(`[tick ${String(i + 1).padStart(3)}] INVOKE ${action.skill.name.padEnd(24)} budget=${usd(next.budgetUsdc)} pnl=${usd(netPnl(next, startingBudget))}`);
+      if (rationale) console.log(`           rationale (${reasoningSelected?.label}): ${rationale}`);
     } else {
       console.log(`[tick ${String(i + 1).padStart(3)}] noop   ${action.reason}`);
     }
@@ -138,6 +163,45 @@ async function main(): Promise<void> {
     `viewer           = docs/media/autonomous-loop-dashboard.html (open locally, points at the JSON above)`,
   ]);
   console.log(`\n[loop] ${live ? "LIVE" : "DRY-RUN"} complete — net ${netPnl(state, startingBudget) >= 0n ? "PROFIT" : "LOSS"} ${usd(netPnl(state, startingBudget))}`);
+}
+
+/** Real registry discovery (T12) — iterates `1..=getSkillCount()`, keeping only `active` skills,
+ *  instead of the hard-coded `CANDIDATES` list above. Built once (not per-tick) so the RPC client
+ *  isn't reconstructed on every discovery call — same convention as `makeLiveInvoke`'s plugin.
+ *  `expectedReturnUsdc` has no on-chain source (there's no resale/return oracle yet) — same
+ *  acknowledged flat-markup estimate the old hard-coded `CANDIDATES` used for `rwa_price_oracle`
+ *  (40% over price), now applied to whatever's actually registered instead of three hand-picked
+ *  entries. `pricePerCallUsdc` reuses `pricePerCallMotes` verbatim — this whole loop already
+ *  treats "USDC stroops" as an abstract accounting unit rather than a literal currency conversion
+ *  (same simplification the Stellar sibling script makes), not a new one introduced here. */
+async function makeLiveDiscover(): Promise<() => Promise<SkillCandidate[]>> {
+  requireCasperTestnetEnv(process.env);
+  const client = new CasperLiveClient({
+    rpcUrl: process.env.CASPER_RPC_URL!,
+    contractHash: process.env.KARMA_ODRA_REGISTRY!,
+    chainName: process.env.CASPER_CHAIN_NAME ?? "casper-test",
+    rpcHeaders: process.env.CASPER_RPC_API_KEY ? { Authorization: process.env.CASPER_RPC_API_KEY } : undefined,
+  });
+  return async (): Promise<SkillCandidate[]> => {
+    const count = await client.getSkillCount();
+    const candidates: SkillCandidate[] = [];
+    for (let id = 1n; id <= count; id += 1n) {
+      const skill = await client.getSkill(id);
+      if (!skill || !skill.active) continue;
+      const payee =
+        skill.owner.kind === "Account" ? `account-hash-${skill.owner.hashHex}` : `hash-${skill.owner.hashHex}`;
+      candidates.push({
+        skillId: id.toString(),
+        name: skill.name,
+        pricePerCallUsdc: skill.pricePerCallMotes,
+        expectedReturnUsdc: (skill.pricePerCallMotes * 140n) / 100n,
+        reputation: skill.reputationScore,
+        payee,
+        network: "casper:testnet",
+      });
+    }
+    return candidates;
+  };
 }
 
 async function makeLiveInvoke(): Promise<LiveInvoke> {

@@ -41,7 +41,7 @@
     <g>
       <rect x="48" y="328" width="640" height="46" rx="23" fill="#0d2318" stroke="#1f4a30"/>
       <circle cx="74" cy="351" r="5.5" fill="#34c77b"/>
-      <text x="92" y="358" fill="#8ff0b6">155/155 Rust + 899 TypeScript tests passing</text>
+      <text x="92" y="358" fill="#8ff0b6">155/155 Rust + 939 TypeScript tests passing</text>
     </g>
     <g>
       <rect x="48" y="384" width="640" height="46" rx="23" fill="#0d2318" stroke="#1f4a30"/>

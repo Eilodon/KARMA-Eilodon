@@ -1,0 +1,34 @@
+{
+  "generatedAt": "2026-07-26T18:14:11.526Z",
+  "jobId": "5",
+  "found": true,
+  "job": {
+    "requester": "Account:5138f1fb575f9335e169c9a4fcddc8166fe6275a0e98d1a96dacb38515f4d1b2",
+    "provider": "Account:af8d4d9eab41442f3d2bfd47f0bac979270b831486401e9f87ef33ef7bc6ac14",
+    "skillId": "3",
+    "skillName": "rwa_price_oracle",
+    "escrowAmountMotes": "10000000",
+    "status": "Completed",
+    "createdAt": "1785076068780",
+    "completedAt": "1785076100785",
+    "evaluator": null,
+    "evaluatorFeeMotes": null,
+    "taskHashHex": "d568ff85fe7ad191a7984e43e6de00ab757b79a2a12d8a15833d205b74e33c27",
+    "resultHashHex": "ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5"
+  },
+  "dispute": null,
+  "attestedRationaleHash": "bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6",
+  "narrative": "No dispute — requester confirmed completion normally.",
+  "verification": {
+    "resultHash": {
+      "onChainHex": "ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5",
+      "recomputedHex": "ba299c51cd4cce8180785c0a3bf22f90d16293c5bee6360001558d65a95a0db5",
+      "verdict": "match"
+    },
+    "rationaleHash": {
+      "onChainHex": "bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6",
+      "recomputedHex": "bed49b6bbdd41dae532241948d564d9e7b930ff4acaf1a4aeff7ce4eb01e7fe6",
+      "verdict": "match"
+    }
+  }
+}

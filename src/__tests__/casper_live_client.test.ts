@@ -677,6 +677,30 @@ describe("CasperLiveClient governance-state getters (P0-B, bare Var<T> fields â€
     expect(await client.getTimelockDelayMs()).toBe(0n);
   });
 
+  it("getSkillCount decodes a plain u64 at field index 2, defaulting to 0n on a fresh contract", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(CLValue.newCLUint64("3").bytes()) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getSkillCount()).toBe(3n);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getSkillCount()).toBe(0n);
+  });
+
+  it("getJobCount decodes a plain u64 at field index 3, defaulting to 0n on a fresh contract", async () => {
+    const rpc = fakeSubmitter();
+    rpc.getDictionaryItemByIdentifier.mockResolvedValue({
+      storedValue: { clValue: newCLOdraStructBytes(CLValue.newCLUint64("5").bytes()) },
+    });
+    const client = new CasperLiveClient({ rpcUrl: "https://node.example", contractHash: CONTRACT_HASH }, rpc);
+    expect(await client.getJobCount()).toBe(5n);
+
+    rpc.getDictionaryItemByIdentifier.mockRejectedValue(new Error("state query failed: ValueNotFound"));
+    expect(await client.getJobCount()).toBe(0n);
+  });
+
   it("getArbiterPanel (P4-A) decodes a Vec<Address> at field index 26, empty until a SetArbiterPanel proposal has ever executed", async () => {
     const rpc = fakeSubmitter();
     const rawPanel = concat(u32(2), address("Account", SIGNER_A), address("Account", SIGNER_B));

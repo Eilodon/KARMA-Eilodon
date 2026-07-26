@@ -15,7 +15,12 @@
  * module rather than a one-line formatter.
  */
 
+import { createHash } from "node:crypto";
 import type { CasperAddress, DecodedDisputeInfo, DecodedJob, DecodedSkill } from "./odra_codec.js";
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
 
 export interface DisputeAuditPacketClient {
   getJob(jobId: bigint): Promise<DecodedJob | undefined>;
@@ -40,6 +45,8 @@ export interface DisputeAuditPacket {
     completedAt: string | null;
     evaluator: string | null;
     evaluatorFeeMotes: string | null;
+    taskHashHex: string;
+    resultHashHex: string;
   } | null;
   dispute: {
     disputeBondMotes: string;
@@ -124,6 +131,8 @@ export async function buildDisputeAuditPacket(
       completedAt: job.completedAt > 0n ? job.completedAt.toString() : null,
       evaluator: addr(job.evaluator),
       evaluatorFeeMotes: job.evaluatorFeeMotes > 0n ? job.evaluatorFeeMotes.toString() : null,
+      taskHashHex: Buffer.from(job.taskHash).toString("hex"),
+      resultHashHex: Buffer.from(job.resultHash).toString("hex"),
     },
     dispute: hasDispute
       ? {
@@ -138,6 +147,53 @@ export async function buildDisputeAuditPacket(
       : null,
     attestedRationaleHash: rationaleHash ?? null,
     narrative: narrate(job.status, hasDispute, providerResponded),
+  };
+}
+
+export interface ArtifactVerdict {
+  onChainHex: string | null;
+  recomputedHex: string | null;
+  verdict: "match" | "mismatch" | "not_checked";
+}
+
+export interface AuditPacketVerification {
+  resultHash: ArtifactVerdict;
+  rationaleHash: ArtifactVerdict;
+}
+
+/** The chain only ever stores hash *commitments* (`resultHash`, `rationale_hash`) — genuinely
+ *  verifying one means hashing the actual off-chain artifact (the signed receipt JSON, the
+ *  plain-text rationale) and comparing, not just reading the commitment back. `jobId` alone
+ *  is never enough for this; the artifact is a required second input. Same sha256 primitive
+ *  every `attest_rationale`/`deliver_result` caller in this repo already uses (see
+ *  `demo_casper_rwa_oracle_lifecycle_live.ts`) — not a new hashing convention. */
+export function verifyAuditPacketArtifacts(
+  packet: DisputeAuditPacket,
+  artifacts: { resultArtifactJson?: string; rationaleArtifactText?: string } = {},
+): AuditPacketVerification {
+  const resultOnChain = packet.job?.resultHashHex ?? null;
+  const resultRecomputed =
+    artifacts.resultArtifactJson !== undefined ? sha256Hex(artifacts.resultArtifactJson) : null;
+  const rationaleOnChain = packet.attestedRationaleHash;
+  const rationaleRecomputed =
+    artifacts.rationaleArtifactText !== undefined ? sha256Hex(artifacts.rationaleArtifactText) : null;
+  return {
+    resultHash: {
+      onChainHex: resultOnChain,
+      recomputedHex: resultRecomputed,
+      verdict:
+        resultRecomputed === null ? "not_checked" : resultOnChain === resultRecomputed ? "match" : "mismatch",
+    },
+    rationaleHash: {
+      onChainHex: rationaleOnChain,
+      recomputedHex: rationaleRecomputed,
+      verdict:
+        rationaleRecomputed === null
+          ? "not_checked"
+          : rationaleOnChain === rationaleRecomputed
+            ? "match"
+            : "mismatch",
+    },
   };
 }
 
@@ -156,6 +212,8 @@ export function renderAuditPacketMarkdown(packet: DisputeAuditPacket): string {
   lines.push(`- Provider: \`${j.provider}\``);
   lines.push(`- Escrow: ${j.escrowAmountMotes} motes`);
   lines.push(`- Status: **${j.status}**`);
+  lines.push(`- Task hash: \`${j.taskHashHex}\``);
+  lines.push(`- Result hash: \`${j.resultHashHex}\``);
   lines.push(`- Created at: ${j.createdAt}`);
   if (j.completedAt) lines.push(`- Completed/resolved at: ${j.completedAt}`);
   if (j.evaluator) lines.push(`- Neutral evaluator: \`${j.evaluator}\` (fee: ${j.evaluatorFeeMotes} motes)`);

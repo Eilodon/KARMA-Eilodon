@@ -232,21 +232,41 @@ export function netPnl(state: LoopState, startingBudgetUsdc: bigint): bigint {
   return state.budgetUsdc - startingBudgetUsdc;
 }
 
+/** Structural (not imported) shape of `llm_strategy.ts`'s `decideWithReasoning`, curried
+ *  over its `reasoning` argument. Declared locally rather than imported so `loop.ts` (the
+ *  safety kernel) stays dependency-free from `llm_strategy.ts` (the strategy layer built on
+ *  top of it) — the two modules would otherwise form a runtime import cycle, since
+ *  `llm_strategy.ts` already imports real values (`filterEligible`, `pickGreedyBest`) from
+ *  here. Any function matching this shape satisfies it structurally, no import required. */
+export type TickDecideFn = (
+  state: LoopState,
+  budget: LoopBudget,
+  candidates: readonly SkillCandidate[],
+  nextTickMs: number,
+) => Promise<{ action: LoopAction; rationale?: string }>;
+
 /** One iteration of the loop: pull adapter's candidate list, decide, optionally invoke,
- *  publish state. Returns { action, state } so the caller can observe both. */
+ *  publish state. Returns { action, state } so the caller can observe both.
+ *
+ *  `decideFn`, when supplied, replaces the deterministic `decide()` call below — e.g. to
+ *  route through `llm_strategy.ts`'s `decideWithReasoning` — and its `rationale` (if any)
+ *  is threaded through to the result. Omitted, `tick()`'s behavior is unchanged. */
 export async function tick(
   state: LoopState,
   budget: LoopBudget,
   adapter: LoopAdapter,
   nowMs: number,
   nextTickMs: number = 60_000,
-): Promise<{ action: LoopAction; state: LoopState }> {
+  decideFn?: TickDecideFn,
+): Promise<{ action: LoopAction; state: LoopState; rationale?: string }> {
   const paused = await adapter.isCircuitBreakerPaused();
   const liveBudget: LoopBudget = { ...budget, circuitBreakerPaused: paused };
   const tickedState: LoopState = { ...state, now: nowMs };
 
   const candidates = await adapter.discoverCandidates();
-  const action = decide(tickedState, liveBudget, candidates, nextTickMs);
+  const { action, rationale } = decideFn
+    ? await decideFn(tickedState, liveBudget, candidates, nextTickMs)
+    : { action: decide(tickedState, liveBudget, candidates, nextTickMs), rationale: undefined };
 
   let nextState: LoopState;
   if (action.kind === "invoke" && action.skill) {
@@ -256,5 +276,5 @@ export async function tick(
     nextState = applyNoop(tickedState, nowMs);
   }
   await adapter.publish(nextState);
-  return { action, state: nextState };
+  return { action, state: nextState, rationale };
 }
