@@ -662,7 +662,7 @@ cd contracts-odra
 # wasm engine rejects any bulk-memory instruction at preprocessing.
 
 casper-client put-deploy \
-  --node-address https://node.testnet.cspr.cloud \
+  --node-address https://node.testnet.cspr.cloud/rpc \
   --chain-name casper-test \
   --secret-key $DEPLOYER_KEY \
   --payment-amount 800000000000 \
@@ -714,7 +714,7 @@ casper-client put-deploy \
 ### Step 2 — Register the `rwa_price_oracle` skill
 
 ```bash
-export CASPER_RPC_URL=https://node.testnet.cspr.cloud
+export CASPER_RPC_URL=https://node.testnet.cspr.cloud/rpc
 export KARMA_ODRA_REGISTRY=hash-...                  # from Step 1
 export KEYSTORE_PATH=./keystore.json
 export KEYSTORE_PASSWORD=...

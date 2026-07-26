@@ -16,7 +16,7 @@
  *     CASPER_RPC_URL=*testnet* + KARMA_ODRA_REGISTRY). Owner-driven — needs a funded keystore.
  *
  * Live mode env vars (all required for --live unless marked optional):
- *   CASPER_RPC_URL                  — must contain "testnet" (e.g. "https://node.testnet.cspr.cloud"); mainnet rejected by DP-3 guard
+ *   CASPER_RPC_URL                  — must contain "testnet" (e.g. "https://node.testnet.cspr.cloud/rpc"); mainnet rejected by DP-3 guard
  *   KARMA_ODRA_REGISTRY             — deployed AgentSkillRegistry contract package hash
  *   KARMA_X402_CASPER_FACILITATOR_URL — x402 facilitator URL (same var `src/lib/payment/boot.ts` uses)
  *   KARMA_X402_CASPER_SETTLEMENT_TOKEN — optional: X402SettlementToken package hash, for real EIP-712/CEP-18 settlement (see docs/rfc/2026-07-21-x402-casper-eip712-interop.md)
