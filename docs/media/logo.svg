@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="75%">
+      <stop offset="0%" stop-color="#12141c"/>
+      <stop offset="100%" stop-color="#05060a"/>
+    </radialGradient>
+    <linearGradient id="stroke" gradientUnits="userSpaceOnUse" x1="90" y1="70" x2="310" y2="330">
+      <stop offset="0%" stop-color="#5be3ff"/>
+      <stop offset="50%" stop-color="#8b8bff"/>
+      <stop offset="100%" stop-color="#c56bff"/>
+    </linearGradient>
+    <filter id="glow" filterUnits="userSpaceOnUse" x="-60" y="-60" width="520" height="520">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur1"/>
+      <feMerge>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="glowSoft" filterUnits="userSpaceOnUse" x="-80" y="-80" width="560" height="560">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="13"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="400" height="400" rx="64" fill="url(#bg)"/>
+
+  <g fill="#3a4258" opacity="0.4">
+    <circle cx="48" cy="56" r="2"/>
+    <circle cx="80" cy="40" r="1.6"/>
+    <circle cx="352" cy="60" r="2"/>
+    <circle cx="322" cy="340" r="2"/>
+    <circle cx="356" cy="316" r="1.6"/>
+    <circle cx="44" cy="332" r="1.8"/>
+  </g>
+
+  <!-- K spine + arms, drawn once as soft halo underneath, then crisp on top -->
+  <g filter="url(#glowSoft)" opacity="0.7">
+    <path d="M 148 96 L 148 304" stroke="url(#stroke)" stroke-width="26" stroke-linecap="round" fill="none"/>
+    <path d="M 148 210 L 236 108" stroke="url(#stroke)" stroke-width="24" stroke-linecap="round" fill="none"/>
+    <path d="M 176 246 L 264 300" stroke="url(#stroke)" stroke-width="20" stroke-linecap="round" fill="none"/>
+    <circle cx="252" cy="94" r="26" stroke="url(#stroke)" stroke-width="20" fill="none"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <path d="M 148 96 L 148 304" stroke="url(#stroke)" stroke-width="18" stroke-linecap="round" fill="none"/>
+    <path d="M 148 210 L 220 122" stroke="url(#stroke)" stroke-width="16" stroke-linecap="round" fill="none"/>
+    <path d="M 176 246 L 258 296" stroke="url(#stroke)" stroke-width="14" stroke-linecap="round" fill="none"/>
+    <circle cx="252" cy="94" r="24" stroke="url(#stroke)" stroke-width="14" fill="none"/>
+  </g>
+
+  <circle cx="148" cy="210" r="7" fill="#eafcff" filter="url(#glow)"/>
+  <circle cx="286" cy="296" r="6" fill="none" stroke="url(#stroke)" stroke-width="4" filter="url(#glow)"/>
+</svg>

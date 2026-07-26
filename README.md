@@ -1,7 +1,12 @@
+<p align="center">
+  <img src="docs/media/logo.png" width="112" height="112" alt="KARMA — a neon cyan-to-violet K mark">
+</p>
+
 # KARMA
 
 [![CI](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/ci.yml/badge.svg)](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/codeql.yml/badge.svg)](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/codeql.yml)
+[![Casper registry](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FEilodon%2FKARMA-Eilodon%2Fmain%2Fdocs%2Fmedia%2Fdashboard%2Fcasper_status.json&query=%24.lockStatus&label=casper%20registry&color=brightgreen)](docs/media/dashboard/casper_status.json)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 **[→ Judge walkthrough, live status strip, no clone needed](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)**
@@ -13,14 +18,36 @@ KARMA is the identity, reputation, and dispute layer that makes that safe — sp
 deployed live on three independent chains, with a neutral on-chain arbiter for when someone
 cheats anyway.
 
+![KARMA on-chain status: Casper registry Locked, 2-of-2 multisig + 30-min timelock, N-of-M panel live-disputed, 155/155 Rust + 899 TypeScript tests, 50+ real transactions, one spec across Casper/Stellar/Pharos](docs/media/readme-status-card.png)
+
+<sub>Every line in that card is a real tx hash or a real test run (see [Live deployment](#live-deployment)
+for the links) — the badge above stays current automatically; the card itself is a snapshot,
+refreshed by hand alongside this README. Prefer moving pictures? [2:18 narrated Casper demo](docs/media/casper-demo-video.mp4) ·
+[live Stellar terminal session](docs/media/stellar-live-evidence.gif) · [judge walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html).</sub>
+
+---
+
+## Contents
+
+[What it does](#what-it-does) &middot; [How it works](#how-it-works) &middot;
+[Try it](#try-it--no-wallet-needed) &middot; [For builders](#for-builders) &middot;
+[Live deployment](#live-deployment) &middot; [Architecture](#architecture) &middot;
+[Full setup](#full-setup--all-chains-keystore-on-chain-demos) &middot; [Tools](#tools) &middot;
+[Testing](#testing) &middot; [Known limitations](#known-limitations) &middot;
+[Project layout](#project-layout) &middot; [Roadmap & team](#roadmap--team) &middot;
+[Security notes](#security-notes) &middot; [License](#license)
+
 ---
 
 ## What it does
 
 An agent registers a skill, another agent pays for it over a signed x402 envelope or on-chain
 escrow, and the job settles on `AgentSkillRegistry` — trust that comes from cryptography and a
-neutral arbiter, not a server anyone has to take on faith. This is real data, read live off Casper
-Testnet right now by a scheduled job, not typed in:
+neutral arbiter, not a server anyone has to take on faith. Real data, one capture of it — a
+scheduled job reads this straight off Casper Testnet every 30 minutes into
+[`docs/media/dashboard/casper_status.json`](docs/media/dashboard/casper_status.json); the "casper
+registry" badge at the top of this page always reflects that file's current value, the block below
+is a snapshot of it, not typed in:
 
 ```json
 {
@@ -319,7 +346,7 @@ same skill/identity/reputation model settle across chains.
 | AgentCredentialProof / ReputationAggregationProof (Groth16, native BN254) | **live on Testnet** |
 | N-of-M panel arbitration | **live on Testnet, activated + disputed 2026-07-25** |
 | Skill composition (weighted revenue split) | Odra + in-process, tested |
-| Autonomous economic loop (budget-capped, LLM reasoning, hidden-answer-key eval) | dry-run tested both chains; `--live` owner-driven |
+| Autonomous economic loop (budget-capped, LLM reasoning, hidden-answer-key eval) — [dashboard viewer](docs/media/autonomous-loop-dashboard.html) (open locally, point it at a run's JSON output) | dry-run tested both chains; `--live` owner-driven |
 | Dispute audit-packet export (a job's full history as JSON/Markdown) | in-repo, tested |
 
 ```bash
