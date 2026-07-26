@@ -126,7 +126,7 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 
 | Final Round judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 155/155 Rust tests (`contracts-odra`, incl. 4 property-based invariant tests), 844/846 TypeScript tests (2 known failures, both from an optional peer dependency not installed in this environment — see [Testing](#testing)), clean typecheck/lint |
+| Technical Execution | 155/155 Rust tests (`contracts-odra`, incl. 4 property-based invariant tests), 899 TypeScript tests (2 occasionally environment-flaky, needing a local `dist/` build first — see [Testing](#testing)), clean typecheck/lint |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope; verdict + payout are one atomic call, not a separate verify-then-act step — see [RFC §11](docs/rfc/2026-06-24-symmetric-dispute-bond.md#11-atomicity-vs-quorum--why-the-verify-then-act-critique-doesnt-apply-here). An opt-in N-of-M panel mode adds a majority-of-independent-arbiters option on top, without giving up that atomicity — see **What KARMA actually builds** below |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination, scored against a hidden answer key by `eval_harness.ts` (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
@@ -134,6 +134,25 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Working Smart Contracts | `hash-2262a0a9…`, custody-hardened + panel-enabled redeploy (Locked on-chain, verified), N-of-M panel arbitration activated and live-disputed same day, 44+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) — solo builder, real community presence: [X](https://x.com/MathEnemy) · [Telegram](https://t.me/HoaTrungBinh) · Discord `mathenemy` |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
+
+### Composability with the Casper AI Toolkit, piece by piece
+
+The Toolkit ([casper.network/ai](https://www.casper.network/ai)) is 7 building blocks. Rather than
+leave a judge to infer which ones KARMA touches and why, here's every one of them:
+
+| Toolkit piece | KARMA | Why |
+|---|---|---|
+| **x402 Facilitator** | Used directly | `x402_casper.ts` — wire-compatible with the official `make-software/casper-x402` reference (see below) |
+| **Odra** | Used directly | `contracts-odra/` — `AgentSkillRegistry` + `X402SettlementToken`, 155 tests |
+| **`casper-ecosystem/casper-eip-712`** | Used directly | Same typed-data signing the official x402 reference uses — `x402_casper.ts`'s EIP-712 `TransferWithAuthorization` digest, cross-checked byte-for-byte against `CEP3009`'s own hardcoded typehash |
+| **Casper MCP Server** (community, `msanlisavas/casper-mcp`) | Referenced, not embedded | Different problem (raw chain-data reads) and a disjoint tool namespace (`Casper*` PascalCase vs. `casper_*` snake_case) — the two run side by side in the same MCP client with zero collisions, see **Tools → Casper skill registry** below |
+| **CSPR.trade MCP** | Not used | DeFi (swap/liquidity/portfolio) — a different layer entirely from identity/escrow/dispute. KARMA is infrastructure underneath a DeFi agent's trades, not a trading agent itself; nothing here needed it |
+| **CSPR.click Skill** | Not used | Solves wallet-connect + SSO for a human end user signing occasionally. KARMA's signers are governance/agent keys operating unattended inside an MCP server (`KeystoreManager`, secp256k1) — a different problem than onboarding a person to a wallet |
+| **CSPR.cloud Skills** (REST/Streaming/Node APIs) | Not used directly | KARMA talks to a public Casper RPC node directly (`casper-js-sdk`); `casper_health`/the dashboard snapshot script could point at CSPR.cloud's node API instead, but nothing here depends on its REST/Streaming layer specifically |
+
+Two of seven aren't a gap — they're a different layer. CSPR.trade and CSPR.click both assume a
+human or a DeFi-trading agent is on the other end of the call; KARMA's job is what happens
+*before* either of those is safe to trust, not the trading or the onboarding itself.
 
 ### Why KARMA is a different kind of submission
 
@@ -515,7 +534,7 @@ is pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 844/846 passed — 2 known failures from an optional peer dependency not installed here
+pnpm test          # 899 tests — 2 occasionally environment-flaky, need a local dist/ build first
 pnpm build
 ```
 
@@ -636,7 +655,7 @@ it stays single-process and restart-volatile until a Redis-backed version lands 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 155/155 Rust tests
-pnpm test          # full Vitest suite — 844/846 passed, incl. casper.tool.ts/indexer/codec
+pnpm test          # full Vitest suite — 899 tests, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
@@ -649,10 +668,12 @@ for both the single-arbiter and panel-arbiter paths, randomized over 64 cases ea
 actually catch a regression by deliberately breaking each invariant and confirming the test fails
 before reverting).
 
-The 2 TypeScript failures are both environment gaps, not code regressions: `x402_casper.test.ts`
-(and the `payment_boot.test.ts` file that imports it) needs `@casper-ecosystem/casper-eip-712`,
-which isn't installed here, and one `plugin_external_runner.test.ts` pair needs a local `tsc`
-compile step this sandbox doesn't run. Neither touches any dispute, panel, or composition code.
+The 2 occasionally-failing TypeScript tests are both environment gaps, not code regressions: a
+`plugin_external_runner.test.ts` pair needs a local `dist/` build (`pnpm build`) to exist first —
+pass once it does, which is why a full `pnpm build && pnpm test` run is more reliable than `pnpm
+test` alone in a fresh checkout. Neither touches any dispute, panel, or composition code.
+(`@casper-ecosystem/casper-eip-712` — previously the other named cause here — is a normal
+`dependencies` entry now, not an uninstalled optional peer; that failure mode is gone.)
 
 **Zero-knowledge proof verification (proven on Stellar):**
 

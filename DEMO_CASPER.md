@@ -412,6 +412,59 @@ state instead of an in-memory VM.
 the panel-arbitration mechanism (proposed 2026-07-22, live-demoed 2026-07-25) went from "155/155
 unit tests pass" to "actually settled a real dispute on-chain" in the same Buildathon window.
 
+**4d. Streaming/chunked payment via N linked escrow jobs — DONE live, `2026-07-26`, `skill_id=2`,
+`job_id=2/3/4`, zero new contract code (`src/scripts/demo_casper_streaming_installments.ts`):**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `register_skill` (provider = signer 1) | `cae7b0e96ebedac54d4744f12d98210e14101f0ddc8e1cde3636b84c13185812` | success — `skill_id=2` |
+| chunk 1 `create_job` (requester = signer 2, escrows 0.1 CSPR) | `0c2dcecdeec43fad46cb1ae33d512fe802a8eb8d1b8f1d83c831689879664543` | success — `job_id=2` |
+| chunk 1 `deliver_result` | `463b6cddde67949e030c1c59b71cf5240283f42c09ca38389ad195d356da6704` | success |
+| chunk 1 `confirm_completion` | `dc16d19e85e43680e3312d8f5a45df5b8274cbbbcbf7e715a90a8416947693f6` | success |
+| chunk 2 `create_job` | `62abb7e385473b67d107af39ecb599c3500688de9bc012c53bc16747f2aaff33` | success — `job_id=3` |
+| chunk 2 `deliver_result` | `fa04c72e1b7747816b8f07780a7990128b6586befb01d835d0efdef6d0ed4690` | success |
+| chunk 2 `confirm_completion` | `7d3078e0525d5ed8e07023bdd2a435c8247bdf879620b5ad1141aa031672321e` | success |
+| chunk 3 `create_job` | `c3cba29592114e3b51eb2fb02ee32ee080fc174240145d8a126b163e18e13c95` | success — `job_id=4` |
+| chunk 3 `deliver_result` | `c7847ca8aa91802ae266d3cfe818e10356ced08c11d95d4ad1018fbabd4ef641` | success |
+| chunk 3 `confirm_completion` | `4a1db82a2829e5f8ac1cd29a4b0e15e5ad6d26b2dc83fee40058995d9d2c6e65` | success |
+
+All 10 `error_message: null`, independently re-verified per transaction via a raw
+`info_get_transaction` RPC call, not just the script's own polling (which, on this run, had a bug
+of its own — see below). Final on-chain read: `getSkill(2).totalInvocations` 0→3,
+`reputationScore` 50→65 (+5/completed job, same mechanism as the single-job flow above), jobs
+2/3/4 all `status: "Completed"`. Real gas consumed, summed from the raw RPC re-check:
+**12.72 CSPR total** (register_skill 1.03 + the three chunks) — at ~$0.0015/CSPR, ~$0.02 for the
+whole 3-chunk series. No new entry point, no new struct field, no new test — every transaction
+above calls `register_skill`/`create_job`/`deliver_result`/`confirm_completion` exactly as the
+full-job-lifecycle flow does, just N times with a client-derived `task_hash` per chunk.
+
+This run also caught and fixed two real bugs, neither of which is specific to streaming:
+
+1. **`casper-js-sdk@5.0.12`'s `CLValue.newCLString()` mis-encodes non-ASCII strings.** The wire
+   length prefix is written from the JS string's UTF-16 `.length`, not the actual UTF-8 byte
+   length — desynced by this script's own em-dash in its skill description (13 UTF-16 units vs.
+   15 UTF-8 bytes for `"hello — world"`, confirmed by reproducing the exact mismatch in
+   isolation). The first live attempt reverted every transaction with a low-level Odra error
+   (`User error: 64649`) instead of a clear one, traced to this corrupted arg. Fixed in
+   `src/lib/casper/live_client.ts` (`newCLStringUtf8Safe`, overriding the affected `CLValue`
+   instance's own `.bytes()` rather than touching the vendored SDK) — used by every
+   `CLValue::String` arg this file sends, unit-tested, then confirmed fixed by re-running this
+   exact demo live.
+2. **`waitForFinalization`'s "truthy means final" check was wrong**, in both this script and
+   `demo_casper_full_job_lifecycle.ts` (copied from). The SDK can return `executionInfo` present
+   but `executionResult.errorMessage`/`.consumed` both `undefined` for a transaction that already
+   succeeded — three legs of this exact run hit it, each misreported as
+   `errorMessage: undefined, consumed: 0` until a raw RPC re-query for the same hash showed
+   `error_message: null` and real non-zero `consumed`. Fixed in both scripts to only accept once
+   `errorMessage` is unambiguously `null` or a string, never `undefined`.
+
+Known open gap, not blocking: `register_skill`'s own transaction still fails this script's
+polling with a `casper-js-sdk` internal parse error ("invalid transaction hash") on every
+attempt, unrelated to either fix above — the script tolerates it and moves on (confirming the
+skill registered indirectly, once `create_job` against it stops reverting with `SkillNotFound`)
+rather than blocking, but `register_skill`'s own real cost isn't captured in the script's own
+running total because of it; the 12.72 CSPR figure above is from the raw RPC re-check.
+
 ## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
 
 > **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `proposal_id=1`
