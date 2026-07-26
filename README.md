@@ -25,6 +25,20 @@ for the links) — the badge above stays current automatically; the card itself 
 refreshed by hand alongside this README. Prefer moving pictures? [2:18 narrated Casper demo](docs/media/casper-demo-video.mp4) ·
 [live Stellar terminal session](docs/media/stellar-live-evidence.gif) · [judge walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html).</sub>
 
+**CI & security, at a glance** — every row below is a real, currently-running check, not a claim:
+
+| Check | Scope | Enforced by |
+|---|---|---|
+| TypeScript tests | 899 tests | [`ci.yml`](.github/workflows/ci.yml) `verify` job, blocking |
+| Rust tests — Casper (Odra) | 155/155, incl. 4 property-based invariant tests | [`ci.yml`](.github/workflows/ci.yml) `rust-odra` job, blocking |
+| Rust tests — Stellar (Soroban) | 12/12 + 19/19, real Groth16 proof verification | [`ci.yml`](.github/workflows/ci.yml) `rust-soroban` job, blocking |
+| Solidity tests — Pharos (Foundry) | 96 tests | [`ci.yml`](.github/workflows/ci.yml) `foundry` job, blocking |
+| Type & lint gate | `pnpm typecheck` + `pnpm lint` | [`ci.yml`](.github/workflows/ci.yml) `verify` job, blocking |
+| Known-vuln audit | `pnpm audit --audit-level high` | [`ci.yml`](.github/workflows/ci.yml) `verify` job, blocking |
+| Static analysis (SAST) | CodeQL, javascript-typescript | [`codeql.yml`](.github/workflows/codeql.yml) — every push/PR + weekly cron |
+| Dependency updates | npm, cargo (`contracts-odra`), github-actions | [`dependabot.yml`](.github/dependabot.yml) — weekly |
+| Contract upgradability | Both Casper contracts `Locked` (non-upgradable) | on-chain, verified — [Security notes](#security-notes) |
+
 ---
 
 ## Contents
@@ -135,7 +149,7 @@ which ones KARMA touches:
 | `casper-ecosystem/casper-eip-712` | Used directly | The same typed-data signing the official x402 reference uses |
 | Casper MCP Server (`msanlisavas/casper-mcp`) | Referenced, not embedded | Different problem (raw chain reads), disjoint namespace — see [Tools](#tools) |
 | CSPR.trade MCP | Not used | DeFi trading is a different layer; KARMA is infrastructure underneath it |
-| CSPR.click Skill | Not used | Solves wallet-connect for a human; KARMA's signers are unattended agent/governance keys |
+| CSPR.click Skill | Used, additive | [Human-as-x402-payer flow](docs/media/casper_human_payer.html) — a human can pay for a skill invocation with their own wallet, alongside (not instead of) KARMA's unattended agent/governance keys — see [Roadmap & team](#roadmap--team) |
 | CSPR.cloud Skills | Not used directly | KARMA talks to a public RPC node directly via `casper-js-sdk` |
 
 ### Live deployment
@@ -392,9 +406,16 @@ The 2 occasionally-flaky TypeScript tests need a local `dist/` build to exist fi
 ## Known limitations
 
 - **x402 Casper interop is proven against KARMA's own settlement, not the external hosted
-  `make-software/casper-x402` facilitator.** The wire format and on-chain settlement are real and
-  live-verified either way; proving against that specific third-party facilitator is a non-blocking
-  open item ([RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md) §7-9).
+  `make-software/casper-x402` facilitator — and that facilitator's own dependency has a real bug
+  that blocks it.** The wire format and on-chain settlement are real and live-verified either way.
+  Self-hosting the official, unmodified Go facilitator and probing it with a real EIP-712-signed
+  payload traced a signature-verification failure to `casper-go-sdk` (the facilitator's own
+  dependency): its `secp256k1.PublicKey.VerifySignature` silently re-hashes the message with
+  SHA-256 before checking the signature, which is correct for Casper's native deploy-signing
+  convention but wrong for an EIP-712 digest (already a final hash, must be verified as-is) — root
+  cause confirmed by direct source comparison plus an empirical Node-side reproduction, not left as
+  an unexplained mismatch. Not fixable from this repo. Full evidence trail:
+  [RFC](docs/rfc/2026-07-21-x402-casper-eip712-interop.md) §10.
 - **Streaming via N linked escrow jobs needs the payer to co-sign every chunk.** `create_job` is
   native-CSPR payable with no relay/session-key path — fine for an autonomous requester agent that
   stays online for the task, a poor fit for a human wallet expected to sign per chunk. The
@@ -413,6 +434,11 @@ The 2 occasionally-flaky TypeScript tests need a local `dist/` build to exist fi
 - **Pharos's `IPaymentPlugin` conformance wrapper is pending.** Escrow and settlement work today;
   the wrapper bringing it to the same v1.0 status as Stellar and Casper isn't shipped.
 - **2 TypeScript tests need a local `dist/` build first** — see [Testing](#testing).
+- **The CSPR.click human-payer flow's crypto and build are verified; a live browser click-through
+  is not.** The digest equivalence, the browser bundle, and the relay script's signature
+  verification are all tested (see the paragraph on this above). Actually connecting a real
+  CSPR.click wallet and clicking "sign" in a browser hasn't happened — this environment has neither
+  a browser nor a funded wallet to do that with.
 
 ## Project layout
 
@@ -460,11 +486,32 @@ the remaining budget correctly reverts (`InsufficientAllowance`), ~$0.005 total.
 independently re-verified per transaction via raw RPC, not just script output; see
 [Known limitations](#known-limitations) for the trade-off between the two.
 
+**Human-as-payer, additive to the agent-key architecture.** Every other payment path in this repo
+is an unattended agent or governance key signing from KARMA's own keystore. `docs/media/casper_human_payer.html`
+adds an optional, separate path: a human connects their own wallet via **CSPR.click**, signs the
+same EIP-712 `TransferWithAuthorization` `X402SettlementToken` already accepts, and
+[`relay_casper_x402_envelope.ts`](src/scripts/relay_casper_x402_envelope.ts) verifies that
+signature (`verifyCasperExactPayload`, real cryptography, not a shape check) before relaying it
+on-chain with KARMA's own gas — the human never needs testnet CSPR, and the flow never calls any
+`AgentSkillRegistry` method (governance-gated or otherwise), enforced by an automated test, not
+just a claim. A dedicated cross-check test
+([`x402_casper_human_payer.test.ts`](src/__tests__/x402_casper_human_payer.test.ts)) independently
+rebuilds the digest via the generic, schema-driven `hashTypedData` — the same code path CSPR.click's
+`signTypedData` uses internally — and asserts KARMA's own signature verifies against it; that test
+caught and fixed a real bug before any human could hit it (the EIP-712 domain's `chain_name` had
+been conflated with the unrelated CAIP-2 `network` id). What's verified: the crypto is proven
+equivalent end-to-end in Node, the browser bundle builds and typechecks, and the relay script's
+verify step is real. What's *not* independently verified: an actual click-through in a live browser
+with a funded CSPR.click wallet — this sandbox has neither, so that last step is a documented gap,
+not a claimed proof.
+
 **What's next, concretely** (no mainnet date, on purpose — see [Security notes](#security-notes)):
 
 - Standardize the interface, not just this deployment: pull `docs/standards/` into a standalone
   package, get a second independently authored implementation, then submit `CEP-0000` upstream to
-  `casper-network/ceps`.
+  `casper-network/ceps`. First concrete step: [`demo_casper_independent_integrator.ts`](src/scripts/demo_casper_independent_integrator.ts)
+  — a client using a freshly generated identity with zero relationship to KARMA's own keystore,
+  proving the deployed registry's public interface is independently discoverable and callable.
 - v2 settlement rail: a subscription rail (time-windowed unlocks), a Pharos `IPaymentPlugin`
   wrapper, multi-hop revenue-split composition beyond today's single-level fan-out.
 - Cross-chain reputation verified on-chain instead of governed, in the spirit of the Stellar ZK

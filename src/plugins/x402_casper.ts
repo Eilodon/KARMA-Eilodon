@@ -26,6 +26,28 @@ import type {
   PaymentReceipt,
   PaymentRequest,
 } from "../lib/payment/plugin.js";
+import {
+  CASPER_TESTNET_CAIP2,
+  CASPER_MAINNET_CAIP2,
+  SETTLEMENT_TOKEN_NAME,
+  DOMAIN_VERSION,
+  DEFAULT_DOMAIN_CHAIN_NAME,
+  TRANSFER_WITH_AUTHORIZATION_TYPE_STRING,
+  TRANSFER_WITH_AUTHORIZATION_TYPES,
+  type CasperExactAuthorization,
+  type CasperX402SignedPayload,
+} from "./x402_casper_shared.js";
+export {
+  CASPER_TESTNET_CAIP2,
+  CASPER_MAINNET_CAIP2,
+  SETTLEMENT_TOKEN_NAME,
+  DOMAIN_VERSION,
+  DEFAULT_DOMAIN_CHAIN_NAME,
+  TRANSFER_WITH_AUTHORIZATION_TYPE_STRING,
+  TRANSFER_WITH_AUTHORIZATION_TYPES,
+  type CasperExactAuthorization,
+  type CasperX402SignedPayload,
+};
 const { PublicKey, Args, CLValue, CLTypeUInt8, Key, HttpHandler, RpcClient, ContractCallBuilder } = casperSdk;
 
 /**
@@ -63,21 +85,11 @@ const { PublicKey, Args, CLValue, CLTypeUInt8, Key, HttpHandler, RpcClient, Cont
  *      package's docstring alone).
  */
 
-/** Real CAIP-2 network ids (not the placeholder `casper:testnet` this plugin used before RFC
- *  2026-07-21's research) — matches `make-software/casper-x402`'s own `constants.ts`. */
-export const CASPER_TESTNET_CAIP2 = "casper:casper-test";
-export const CASPER_MAINNET_CAIP2 = "casper:casper";
-
 const CASPER_NETWORKS: readonly string[] = [CASPER_TESTNET_CAIP2, CASPER_MAINNET_CAIP2];
 
 const CSPR_DECIMALS = 9;
 const DEFAULT_ASSET = "KX402";
 
-/** Must match `contracts-odra/src/x402_settlement_token.rs`'s `TOKEN_NAME` exactly — it's part of
- *  the EIP-712 domain, so a mismatch here silently produces a digest the contract never signed. */
-const SETTLEMENT_TOKEN_NAME = "KARMA x402 Settlement Token";
-/** `CEP3009`'s hardcoded `DOMAIN_VERSION` — not configurable on the contract side, don't change. */
-const DOMAIN_VERSION = "1";
 /** `KeyTag::Account` (`casper-types` 6.1.0) — tags an `Address::Account` before the
  *  `encodeAddress` keccak256 step. `0x01` (`KeyTag::Hash`) would tag a contract address instead;
  *  every x402 payer/payee here is a keystore-held account, never a contract. */
@@ -85,12 +97,11 @@ const ACCOUNT_KEY_TAG = "00";
 
 /** `CEP3009`'s own hardcoded EIP-712 typehash for `transfer_with_authorization` —
  *  `odra-modules-2.8.2/src/cep3009.rs`'s `TRANSFER_WITH_AUTHORIZATION_TYPEHASH` constant, computed
- *  from the literal ERC-3009 type string below (comment-verified in that same source file).
- *  Computing it here (rather than deriving it from a generic type-definitions object) matches how
- *  the contract itself builds it: a fixed constant, not something re-derived per call. Cross-checked
- *  byte-for-byte against the Rust constant in `src/__tests__/x402_casper.test.ts`. */
-const TRANSFER_WITH_AUTHORIZATION_TYPE_STRING =
-  "TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
+ *  from the literal ERC-3009 type string (`TRANSFER_WITH_AUTHORIZATION_TYPE_STRING`, imported from
+ *  `x402_casper_shared.ts`, comment-verified in that same source file). Computing it here (rather
+ *  than deriving it from a generic type-definitions object) matches how the contract itself builds
+ *  it: a fixed constant, not something re-derived per call. Cross-checked byte-for-byte against the
+ *  Rust constant in `src/__tests__/x402_casper.test.ts`. */
 const TRANSFER_WITH_AUTHORIZATION_TYPEHASH = computeTypeHash(TRANSFER_WITH_AUTHORIZATION_TYPE_STRING);
 
 /** Concatenate `Uint8Array`s — small enough not to need a dependency for it. */
@@ -155,37 +166,10 @@ export function encodeCasperAccountForEip712(accountHashPrefixed: string): strin
   return toHex(encodeAddress("0x" + ACCOUNT_KEY_TAG + bareAccountHashHex(accountHashPrefixed)));
 }
 
-/** Wire-format "exact" payment authorization — the EIP-712-signed struct, matching
- *  `make-software/casper-x402`'s `ExactCasperAuthorization` field names/units exactly
- *  (`validAfter`/`validBefore` in **seconds**, not this plugin's old milliseconds). */
-export interface CasperExactAuthorization {
-  /** Payer account-hash, `account-hash-<hex>` prefixed (display form — the signed struct itself
-   *  carries the EIP-712-encoded form, see `encodeCasperAccountForEip712`). */
-  from: string;
-  to: string;
-  /** Atomic token amount (settlement-token units, 9 decimals — motes-equivalent), decimal string. */
-  value: string;
-  /** Unix seconds — authorization not valid at or before this instant. */
-  validAfter: number;
-  /** Unix seconds — authorization expires at or after this instant. */
-  validBefore: number;
-  /** 32-byte hex nonce (random per `pay()` call), no `0x` prefix. */
-  nonce: string;
-}
-
-/** Signed payload — what travels in the `PAYMENT-SIGNATURE` header to the resource server /
- *  facilitator. `x402Version: 2` matches the official reference's current wire version. */
-export interface CasperX402SignedPayload {
-  x402Version: 2;
-  scheme: "exact";
-  network: string;
-  payload: CasperExactAuthorization;
-  publicKeyHex: string;
-  /** 65-byte Casper-native signature (`[1 algorithm byte | 64 raw bytes]`) over the EIP-712
-   *  digest, hex string. NOT DER — the official reference's on-chain verifier expects this exact
-   *  tagged form (`casper_types::PublicKey`-paired `verify_signature`), not an ASN.1 envelope. */
-  signature: string;
-}
+// `CasperExactAuthorization` / `CasperX402SignedPayload` now live in `x402_casper_shared.ts`
+// (imported + re-exported above) — see that file for the field docs. `from`/`to` there are
+// `account-hash-<hex>`-prefixed display form; the signed struct itself carries the EIP-712-encoded
+// form, see `encodeCasperAccountForEip712` below.
 
 /** Random hex nonce. Exposed for tests / determinism overrides. */
 export function makeNonce(rng: () => Uint8Array = () => {
@@ -490,11 +474,13 @@ function bareHash(hash: string): string {
   return hash.replace(/^(hash-|contract-package-wasm|contract-)/, "");
 }
 
-/** `CEP3009`'s domain `chain_name` — the CAIP-2 chain id set on `X402SettlementToken::init`.
- *  Fixed per deployment (this plugin only ever runs against one deployed settlement token), so
- *  it's a constant rather than a per-call parameter. Matches the chain the demo/deploy scripts
- *  actually initialized the contract with. */
-const domainChainName = process.env.CASPER_CHAIN_NAME ?? "casper-test";
+/** `CEP3009`'s domain `chain_name` — Casper's own bare chain name set on
+ *  `X402SettlementToken::init` (NOT a CAIP-2 id — see `DEFAULT_DOMAIN_CHAIN_NAME`'s doc comment
+ *  in `x402_casper_shared.ts` for why that distinction matters). Fixed per deployment (this
+ *  plugin only ever runs against one deployed settlement token), so it's a constant rather than a
+ *  per-call parameter. Matches the chain the demo/deploy scripts actually initialized the
+ *  contract with. */
+const domainChainName = process.env.CASPER_CHAIN_NAME ?? DEFAULT_DOMAIN_CHAIN_NAME;
 
 /**
  * The real, cryptographic check a resource server (or a self-hosted facilitator, same pattern

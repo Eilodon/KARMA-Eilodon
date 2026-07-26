@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KARMA — pay a skill invocation with your own wallet (CSPR.click)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+      h1 { font-size: 1.4rem; }
+      .note { background: #f4f4f4; border-left: 4px solid #888; padding: 12px 16px; margin: 16px 0; font-size: 0.92rem; }
+      label { display: block; margin-top: 14px; font-weight: 600; font-size: 0.9rem; }
+      input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; font-family: monospace; font-size: 0.9rem; }
+      button { margin-top: 18px; padding: 10px 20px; font-size: 1rem; cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: 0.5; }
+      #connected { margin-top: 10px; font-family: monospace; font-size: 0.85rem; color: #333; }
+      #status { white-space: pre-wrap; margin-top: 14px; font-family: monospace; font-size: 0.85rem; color: #444; }
+      #envelope-output { width: 100%; height: 220px; margin-top: 10px; font-family: monospace; font-size: 0.8rem; box-sizing: border-box; }
+      #csprclick-ui { margin-bottom: 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <h1>KARMA — pay for a skill invocation with your own wallet</h1>
+      <div class="note">
+        This page is a human-facing, <strong>additive</strong> payment path: connect a Casper wallet
+        via <a href="https://docs.cspr.click" target="_blank" rel="noopener">CSPR.click</a>, sign an
+        EIP-712 <code>TransferWithAuthorization</code> for KARMA's <code>X402SettlementToken</code>,
+        and get back a signed payment envelope. Signing here never touches KARMA's own agent keystore,
+        and never calls any <code>AgentSkillRegistry</code> method (governance-gated or otherwise) — it
+        only produces a signed authorization for the relay script
+        (<code>src/scripts/relay_casper_x402_envelope.ts</code>) to verify and submit on-chain. Your
+        wallet never needs testnet CSPR for gas — only KARMA's relayer key pays gas; your signature is
+        what authorizes the transfer (CEP-3009 / EIP-3009).
+      </div>
+
+      <div id="csprclick-ui"></div>
+      <div id="connected">Not connected.</div>
+
+      <label for="pay-to">Pay to (skill payee account-hash, e.g. <code>account-hash-...</code>)</label>
+      <input id="pay-to" type="text" placeholder="account-hash-..." />
+
+      <label for="value-motes">Value (settlement-token atomic units / motes-equivalent)</label>
+      <input id="value-motes" type="text" placeholder="1000000" value="1000000" />
+
+      <label for="token-hash">X402SettlementToken package hash</label>
+      <input id="token-hash" type="text" value="hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310" />
+
+      <button id="sign-btn">Sign payment authorization</button>
+      <pre id="status"></pre>
+
+      <label for="envelope-output">Signed envelope (copy into a file, then relay it)</label>
+      <textarea id="envelope-output" readonly placeholder="Signed envelope JSON will appear here…"></textarea>
+      <button id="copy-btn">Copy envelope JSON</button>
+    </div>
+
+    <script>
+      // CSPR.click UI + SDK config — read by the CDN script below by convention (global vars),
+      // same pattern as the official make-software/casper-x402 `csprclick-x402` reference example.
+      const uiContainer = "csprclick-ui";
+      const clickUIOptions = { uiContainer, rootAppElement: "#app", defaultTheme: "light", accountMenuItems: ["AccountCardMenuItem"] };
+      const clickSDKOptions = {
+        appName: "KARMA human-as-x402-payer",
+        appId: "karma-x402-human-payer",
+        providers: ["casper-wallet", "ledger", "metamask-snap", "csprclick-w3a-google"],
+      };
+      const script = document.createElement("script");
+      script.id = "csprclick-script";
+      script.src = "https://cdn.cspr.click/ui/v2.1.0/csprclick-client-2.1.0.js";
+      script.defer = true;
+      document.head.appendChild(script);
+    </script>
+    <script type="module" src="./casper_human_payer.bundle.js"></script>
+  </body>
+</html>

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "build:human-payer-page": "esbuild src/web/casper_human_payer_entry.ts --bundle --minify --format=esm --platform=browser --outfile=docs/media/casper_human_payer.bundle.js",
     "start": "node dist/index.js",
     "test": "vitest run src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -79,6 +80,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.0",
+    "esbuild": "^0.28.1",
     "eslint": "^10.6.0",
     "eslint-plugin-n": "^18.2.1",
     "eslint-plugin-security": "^4.0.1",

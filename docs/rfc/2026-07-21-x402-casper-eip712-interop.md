@@ -1,5 +1,13 @@
 # RFC — x402 Casper: EIP-712 / CEP-18 interop with the official reference
 
+> **Status update (2026-07-26):** §7's last-row item (proof against the *external* hosted
+> `make-software/casper-x402` facilitator) was attempted — self-hosted the official, unmodified Go
+> facilitator in Docker, wired against KARMA's own live `X402SettlementToken`. Hit a real
+> `invalid_exact_casper_invalid_signature` on `/verify`. Root-caused conclusively (not left as an
+> open mismatch) — see §10. Short version: it's a bug in how the official facilitator's own
+> dependency, `casper-go-sdk`, implements secp256k1 signature verification — not a KARMA-side bug.
+> §5.0-§5.5 below are unaffected and remain proven live exactly as documented.
+
 > **Status (2026-07-21):** §5.0-§5.5 all done and proven for real, end-to-end. `X402SettlementToken`
 > is live on Casper Testnet at `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`
 > (install tx `f9656962176de5034accbaf5ee7e9aca03d792aa93bd67fb05b92ea85ab321db`, block `8574201`,
@@ -238,3 +246,65 @@ and it is not required for the interop claim to be true and verifiable end-to-en
 - Remaining open call, not blocking: whether to also pursue proof against the *external* hosted
   `make-software/casper-x402` facilitator (§7's last row) once §5.0–§5.5 are live — time-boxed,
   attempted only after the self-contained path is verified end-to-end.
+
+## 10. External-facilitator interop attempt (2026-07-26) — root cause found
+
+Self-hosted the official, unmodified `make-software/casper-x402` Go facilitator (built from source,
+Docker) configured against KARMA's own live `X402SettlementToken`. Built a real, EIP-712-signed
+payment authorization using `CasperX402Plugin.payWithEnvelope` (KARMA's own, already-proven-live
+signing code, no shortcuts), reshaped it into the facilitator's wire format, and POSTed it to its
+`/verify` endpoint. Result: `{"isValid": false, "invalidReason": "invalid_exact_casper_invalid_signature"}`.
+
+**Eliminated by direct source comparison** (not assumption) across four codebases —
+`make-software/casper-x402` (Go), `x402-foundation/x402/go` (Go), `casper-ecosystem/casper-eip-712`
+(Go + JS, the same npm package this plugin imports), and this repo's own `x402_casper.ts`:
+- EIP-712 domain fields (`name`, `version`, `chain_name`, `contract_package_hash`) — byte-identical
+  construction on both sides.
+- The `TransferWithAuthorization` typehash — byte-identical to the npm package's own cross-language
+  test vectors.
+- Casper account-address encoding (`keccak256(tag ++ accountHash)`, `KeyTag::Account = 0x00`) —
+  byte-identical between the Go and JS implementations of the *same* shared npm package.
+- The facilitator's own "happy path" unit test (`scheme_test.go`) mocks signature verification
+  entirely (hardcoded `true`, fake signature bytes) — it never exercises the real crypto, so it
+  provided no working reference vector.
+
+**Root cause, confirmed empirically, not guessed:**
+1. Read the facilitator's real verification call site directly:
+   `go/x402/signers/casper/facilitator.go`'s `VerifyEIP712Signature` calls
+   `pk.VerifySignature(digest[:], sig[:])` — passing the raw 32-byte EIP-712 digest as the
+   "message."
+2. Read `casper-go-sdk`'s actual implementation (pinned commit `8416e84e4256`,
+   `types/keypair/secp256k1/public_key.go`):
+   ```go
+   func (v PublicKey) VerifySignature(msg []byte, sigStr []byte) bool {
+       ...
+       hash := sha256.Sum256(msg)
+       return signature.Verify(hash[:], v.key)
+   }
+   ```
+   It silently re-hashes `msg` with SHA-256 before checking the ECDSA signature — a convention
+   that fits Casper's *native* deploy-signing flow (where "sign a message" conventionally means
+   "sign sha256(message)"), but is wrong for an EIP-712 digest, which is already the final 32-byte
+   hash and must be verified *as-is*, with no additional hashing.
+3. Confirmed empirically, in Node, using the same `@noble/curves` secp256k1 primitives both SDKs
+   ultimately wrap: `casper-js-sdk`'s `PrivateKey.signAndAddAlgorithmBytes()` signs the **raw**
+   EIP-712 digest directly (verifies `true` against the raw digest, `false` against
+   `sha256(digest)`) — the correct, standard EIP-712 behavior, and the same behavior the on-chain
+   Rust `CEP3009` verifier already accepts in `demo_casper_x402_settlement_live.ts`'s proven-live
+   settlement.
+
+**Conclusion:** this is a real bug in how `make-software/casper-x402`'s Go facilitator uses
+`casper-go-sdk` for EIP-712 verification — `casper-go-sdk`'s generic `VerifySignature` was not
+designed for pre-hashed digests, and the facilitator passes one anyway. It is not a KARMA-side
+encoding, domain, or signing bug; KARMA's signature is correct by the on-chain verifier's own
+standard. **Not fixable from this repo** without either an upstream fix to
+`make-software/casper-x402` / `casper-go-sdk` (verify the raw digest without the internal SHA-256
+step for EIP-712 payloads specifically), or KARMA re-signing `sha256(digest)` instead of `digest`
+— which is not a viable local workaround, since it would break compatibility with the
+already-proven-live on-chain `CEP3009` verifier, which expects the raw-digest signature.
+
+This keeps §8's original recommendation intact: the self-hosted-facilitator interop row was
+"not required for the interop claim to be true and verifiable end-to-end," and that claim already
+stands on §5.0–§5.5 (real EIP-712 signing, real CEP-18 settlement, proven live on-chain). What
+changed is that the external-facilitator gap is now root-caused with evidence, not left as an
+unexplained mismatch — and the evidence points outward, not inward.
