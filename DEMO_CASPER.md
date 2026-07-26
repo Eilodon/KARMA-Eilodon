@@ -412,6 +412,86 @@ state instead of an in-memory VM.
 the panel-arbitration mechanism (proposed 2026-07-22, live-demoed 2026-07-25) went from "155/155
 unit tests pass" to "actually settled a real dispute on-chain" in the same Buildathon window.
 
+**4d. Streaming/chunked payment via N linked escrow jobs — DONE live, `2026-07-26`, `skill_id=2`,
+`job_id=2/3/4`, zero new contract code (`src/scripts/demo_casper_streaming_installments.ts`):**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `register_skill` (provider = signer 1) | `cae7b0e96ebedac54d4744f12d98210e14101f0ddc8e1cde3636b84c13185812` | success — `skill_id=2` |
+| chunk 1 `create_job` (requester = signer 2, escrows 0.1 CSPR) | `0c2dcecdeec43fad46cb1ae33d512fe802a8eb8d1b8f1d83c831689879664543` | success — `job_id=2` |
+| chunk 1 `deliver_result` | `463b6cddde67949e030c1c59b71cf5240283f42c09ca38389ad195d356da6704` | success |
+| chunk 1 `confirm_completion` | `dc16d19e85e43680e3312d8f5a45df5b8274cbbbcbf7e715a90a8416947693f6` | success |
+| chunk 2 `create_job` | `62abb7e385473b67d107af39ecb599c3500688de9bc012c53bc16747f2aaff33` | success — `job_id=3` |
+| chunk 2 `deliver_result` | `fa04c72e1b7747816b8f07780a7990128b6586befb01d835d0efdef6d0ed4690` | success |
+| chunk 2 `confirm_completion` | `7d3078e0525d5ed8e07023bdd2a435c8247bdf879620b5ad1141aa031672321e` | success |
+| chunk 3 `create_job` | `c3cba29592114e3b51eb2fb02ee32ee080fc174240145d8a126b163e18e13c95` | success — `job_id=4` |
+| chunk 3 `deliver_result` | `c7847ca8aa91802ae266d3cfe818e10356ced08c11d95d4ad1018fbabd4ef641` | success |
+| chunk 3 `confirm_completion` | `4a1db82a2829e5f8ac1cd29a4b0e15e5ad6d26b2dc83fee40058995d9d2c6e65` | success |
+
+All 10 `error_message: null`, independently re-verified per transaction via a raw
+`info_get_transaction` RPC call, not just the script's own polling (which, on this run, had a bug
+of its own — see below). Final on-chain read: `getSkill(2).totalInvocations` 0→3,
+`reputationScore` 50→65 (+5/completed job, same mechanism as the single-job flow above), jobs
+2/3/4 all `status: "Completed"`. Real gas consumed, summed from the raw RPC re-check:
+**12.72 CSPR total** (register_skill 1.03 + the three chunks) — at ~$0.0015/CSPR, ~$0.02 for the
+whole 3-chunk series. No new entry point, no new struct field, no new test — every transaction
+above calls `register_skill`/`create_job`/`deliver_result`/`confirm_completion` exactly as the
+full-job-lifecycle flow does, just N times with a client-derived `task_hash` per chunk.
+
+This run also caught and fixed two real bugs, neither of which is specific to streaming:
+
+1. **`casper-js-sdk@5.0.12`'s `CLValue.newCLString()` mis-encodes non-ASCII strings.** The wire
+   length prefix is written from the JS string's UTF-16 `.length`, not the actual UTF-8 byte
+   length — desynced by this script's own em-dash in its skill description (13 UTF-16 units vs.
+   15 UTF-8 bytes for `"hello — world"`, confirmed by reproducing the exact mismatch in
+   isolation). The first live attempt reverted every transaction with a low-level Odra error
+   (`User error: 64649`) instead of a clear one, traced to this corrupted arg. Fixed in
+   `src/lib/casper/live_client.ts` (`newCLStringUtf8Safe`, overriding the affected `CLValue`
+   instance's own `.bytes()` rather than touching the vendored SDK) — used by every
+   `CLValue::String` arg this file sends, unit-tested, then confirmed fixed by re-running this
+   exact demo live.
+2. **`waitForFinalization`'s "truthy means final" check was wrong**, in both this script and
+   `demo_casper_full_job_lifecycle.ts` (copied from). The SDK can return `executionInfo` present
+   but `executionResult.errorMessage`/`.consumed` both `undefined` for a transaction that already
+   succeeded — three legs of this exact run hit it, each misreported as
+   `errorMessage: undefined, consumed: 0` until a raw RPC re-query for the same hash showed
+   `error_message: null` and real non-zero `consumed`. Fixed in both scripts to only accept once
+   `errorMessage` is unambiguously `null` or a string, never `undefined`.
+
+Known open gap, not blocking: `register_skill`'s own transaction still fails this script's
+polling with a `casper-js-sdk` internal parse error ("invalid transaction hash") on every
+attempt, unrelated to either fix above — the script tolerates it and moves on (confirming the
+skill registered indirectly, once `create_job` against it stops reverting with `SkillNotFound`)
+rather than blocking, but `register_skill`'s own real cost isn't captured in the script's own
+running total because of it; the 12.72 CSPR figure above is from the raw RPC re-check.
+
+**4e. Streaming payment via CEP-18 `approve`/`transfer_from` — DONE live, `2026-07-26`, zero new
+contract code, no dispute protection by design (the complementary "Design A" from the same
+research — see 4d above for the escrow-protected alternative)
+(`src/scripts/demo_casper_x402_allowance_streaming.ts`):**
+
+| Step | Tx hash | Result |
+|---|---|---|
+| `deposit` (requester wraps 0.5 CSPR into KX402) | `3554ed1609e2c1906e7a8d8f8521d870d22c8da88efa64b30a6e9518fa0025c2` | success |
+| `approve` (requester authorizes provider for 0.3 KX402, once) | `6be343824c2ea21015781943445648f9bf3e2ec8a728d22a191b09842c8ebb35` | success |
+| `transfer_from` chunk 1/3 (provider pulls, no requester signature) | `c186b58e20a05aa7ffc00070f05523ae4d63cf4827c33e31af0151f21b713184` | success |
+| `transfer_from` chunk 2/3 | `399a757ee353241e1640aed1e81a4133e06473a1550994e2f9012199c9cb837f` | success |
+| `transfer_from` chunk 3/3 | `f54bb162faa16ad0c96bc0442e06e972e15abe8accfdff0147e4f826a9279019` | success |
+| `transfer_from` — deliberate over-limit pull (0.1 KX402, 0 left in the allowance) | `c141d477db298114921b90230e57b92de29e4c7c59a89bceec552976b34eac6d` | **error, `User error: 60002`** — `odra-modules`' `cep18::errors::Error::InsufficientAllowance`, expected/correct rejection |
+
+All 6 independently re-verified via raw `info_get_transaction`, not just the script's own output.
+The first 5 prove the mechanism (payer signs once, provider pulls N times unattended, no per-chunk
+signature); the 6th proves the ceiling is real contract-level enforcement, not just a documented
+intention — the same pattern this repo's other demos use to prove a boundary (the courtroom
+flow's double-attest revert, the governance flow's `TimelockNotElapsed` revert). Real gas: 3.28
+CSPR total for the whole run (deposit 0.97 + approve 0.35 + 3×~0.64 pulls + the reverted 6th call's
+partial charge ~0.03) — at ~$0.0015/CSPR, ~$0.005. `approve`/`transfer_from` are plain
+(non-payable) calls, cheaper per call than `create_job`'s payable proxy-session (4d's escrow path)
+— consistent with why this design trades away dispute protection for a cheaper, unattended pull
+model. No bugs found on this run — the fixes from 4d (`newCLStringUtf8Safe`, the
+`waitForFinalization` `errorMessage !== undefined` check) were reused directly, both already
+correct going in.
+
 ## Cross-chain-rep governance chain — propose + approve DONE live, execute pending timelock (2026-07-07, re-run 2026-07-21)
 
 > **Re-run 2026-07-21 against the attestation-hardened contract** (`hash-42f6945f…`, `proposal_id=1`
@@ -861,19 +941,29 @@ trusted intermediary. That's the closing argument of synthesis §5 + plan §1B.
   cross-checked byte-for-byte in `src/__tests__/x402_casper.test.ts`, not assumed equal from
   matching source strings — against a real CEP-18 asset: `X402SettlementToken`
   (`contracts-odra/src/x402_settlement_token.rs`, composed from `odra-modules`' official
-  `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet at
-  `hash-b3387d595fa53045f42b350907a68f3a0b95cc983c056fd9d71d26f776c1d310`** at the time this demo
-  ran (2026-07-21). That contract was redeployed 2026-07-25, Locked, now at
-  `hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a` — this specific demo has
-  not been re-run against the new hash yet; the mechanism it proves is unchanged (same source,
-  recompiled), but re-running it for fresh evidence against the current deployment is still open.
-  `demo_casper_x402_settlement_live.ts` proves the full path for real: deposits CSPR into the
-  token, signs a `transfer_with_authorization` authorization, submits it via
-  `settleTransferWithAuthorization`, and confirms `errorMessage: null` + a real `Transfer` event
-  on-chain — this caught two real bugs a unit test alone could not have (a wire-arg name
-  mismatch, and a wrong typehash from a generic npm preset instead of `CEP3009`'s own hardcoded
-  constant). Proving interop against the *external* hosted `make-software/casper-x402`
-  facilitator (as opposed to this settlement path, which KARMA deploys and controls itself) is
-  the one remaining open, non-blocking step — see the RFC's §7-§9.
+  `Cep18` + `CEP3009` submodules, not hand-rolled), **live on Casper Testnet, currently at
+  `hash-6667f2d01cbf2af3b8ddca847c4e4294ea623f8bdc3dfe588af47ba56fc4cf3a`** (redeployed 2026-07-25,
+  Locked — supersedes `hash-b3387d595f…`, the hash this demo originally ran against on 2026-07-21).
+  **Re-run against the current hash, 2026-07-26** — no longer open:
+
+  | Step | Tx hash | Result |
+  |---|---|---|
+  | `deposit` (wrap 0.05 CSPR into KX402) | `7582373f5d24225b4b4b5b70ab149ec0aa85ffdb233b83384754b1b69e2ca2cf` | success, consumed 3.65 CSPR |
+  | `transfer_with_authorization` (EIP-712, self-transfer proof) | `6deed93fd624009a3766aa9c0d04fc58151063db477de22eca757cecac84ca64` | success, consumed 1.02 CSPR |
+
+  Both `error_message: null`, independently re-verified via raw `info_get_transaction`, not just
+  the script's own output. `demo_casper_x402_settlement_live.ts` proves the full path for real:
+  deposits CSPR into the token, signs a `transfer_with_authorization` authorization, submits it
+  via `settleTransferWithAuthorization`, and confirms `errorMessage: null` — this caught two real
+  bugs a unit test alone could not have, on 2026-07-21 (a wire-arg name mismatch, and a wrong
+  typehash from a generic npm preset instead of `CEP3009`'s own hardcoded constant) and one more
+  on this 2026-07-26 re-run: `waitForExecution` accepted a present-but-incompletely-populated SDK
+  response as final (`errorMessage` `undefined`, not `null` — the same bug class found and fixed
+  in `demo_casper_streaming_installments.ts`'s `waitForFinalization` the day before), fixed the
+  same way here too. Script also gained a raw-hex signer path
+  (`CASPER_GOV_SIGNER_1_SECRET_HEX`, no keystore needed), matching
+  `deploy_x402_settlement_token.ts`'s existing convention. Proving interop against the *external*
+  hosted `make-software/casper-x402` facilitator (as opposed to this settlement path, which KARMA
+  deploys and controls itself) is the one remaining open, non-blocking step — see the RFC's §7-§9.
 - **Nightly Rust required.** `odra-macros 2.x` uses `#![feature(box_patterns)]`.
   Documented in `contracts-odra/README.md` and the plan's done-state notes.

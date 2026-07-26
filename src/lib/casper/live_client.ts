@@ -94,6 +94,24 @@ const PROXY_CALLER_WASM_PATH = fileURLToPath(new URL("./resources/proxy_caller_w
  * requester's refund path for a job whose provider never delivered before the deadline.
  */
 
+/** Correctly UTF-8-byte-length-prefixed `CLValue::String` — works around a real bug in
+ *  `casper-js-sdk@5.0.12`'s `CLValueString.bytes()`, confirmed by broadcasting a real transaction
+ *  against the live contract: it writes the JS string's `.length` (UTF-16 code units) as the
+ *  4-byte length prefix instead of the actual UTF-8 byte length. Any non-ASCII character (an
+ *  em-dash, an accent, an emoji, CJK) desyncs the two — e.g. "hello — world" is 13 UTF-16 code
+ *  units but 15 UTF-8 bytes — corrupting the on-chain arg and reverting with a low-level Odra
+ *  deserialization error (seen live: `User error: 64649`) instead of a clear message. Every
+ *  `CLValue::String` arg this file sends goes through this, not the SDK's own `newCLString`. */
+function newCLStringUtf8Safe(value: string): InstanceType<typeof CLValue> {
+  const cl = CLValue.newCLString(value);
+  const utf8 = Buffer.from(value, "utf8");
+  const correctBytes = new Uint8Array(4 + utf8.length);
+  new DataView(correctBytes.buffer).setUint32(0, utf8.length, true);
+  correctBytes.set(utf8, 4);
+  cl.bytes = () => correctBytes;
+  return cl;
+}
+
 export interface CasperLiveClientOpts {
   rpcUrl: string;
   contractHash: string;
@@ -228,7 +246,10 @@ export interface CasperTransactionSubmitter {
     path: string[],
   ): Promise<{
     storedValue: {
-      contractPackage?: { versions: Array<{ contractHash: { hash: { toHex(): string } } }> };
+      contractPackage?: {
+        versions: Array<{ contractHash: { hash: { toHex(): string } } }>;
+        lockStatus?: string;
+      };
       clValue?: InstanceType<typeof CLValue>;
     };
   }>;
@@ -260,9 +281,9 @@ export class CasperLiveClient {
     paymentMotes?: bigint,
   ): Promise<{ txHash: string }> {
     const args = Args.fromMap({
-      name: CLValue.newCLString(s.name),
-      description: CLValue.newCLString(s.description),
-      mcp_endpoint: CLValue.newCLString(s.mcpEndpoint),
+      name: newCLStringUtf8Safe(s.name),
+      description: newCLStringUtf8Safe(s.description),
+      mcp_endpoint: newCLStringUtf8Safe(s.mcpEndpoint),
       price_per_call: CLValue.newCLUInt512(s.pricePerCallMotes.toString()),
       min_reputation_to_invoke: CLValue.newCLUInt32(s.minReputationToInvoke),
       identity_policy: CLValue.newCLUint8(s.identityPolicy),
@@ -320,9 +341,9 @@ export class CasperLiveClient {
     paymentMotes?: bigint,
   ): Promise<{ txHash: string }> {
     const args = Args.fromMap({
-      name: CLValue.newCLString(c.name),
-      description: CLValue.newCLString(c.description),
-      mcp_endpoint: CLValue.newCLString(c.mcpEndpoint),
+      name: newCLStringUtf8Safe(c.name),
+      description: newCLStringUtf8Safe(c.description),
+      mcp_endpoint: newCLStringUtf8Safe(c.mcpEndpoint),
       price_per_call: CLValue.newCLUInt512(c.pricePerCallMotes.toString()),
       min_reputation_to_invoke: CLValue.newCLUInt32(c.minReputationToInvoke),
       identity_policy: CLValue.newCLUint8(c.identityPolicy),
@@ -770,7 +791,7 @@ export class CasperLiveClient {
     const args = Args.fromMap({
       agent: addressKeyArg(agentAccountHash),
       score: CLValue.newCLUInt32(score),
-      source_chain: CLValue.newCLString(sourceChain),
+      source_chain: newCLStringUtf8Safe(sourceChain),
     });
     return this.submit(signer, "propose_set_cross_chain_rep", args, paymentMotes);
   }
@@ -845,6 +866,17 @@ export class CasperLiveClient {
       if (/not found|ValueNotFound/i.test(msg) || (detail && /not found/i.test(detail))) return undefined;
       throw e;
     }
+  }
+
+  /** Reads the contract *package's* own `lock_status` ("Locked" / "Unlocked") directly via
+   *  `query_global_state` on the package key — a platform-level field on `ContractPackage`
+   *  itself, not an Odra `Mapping`/`Var` (so `readMapping`/`resolveEntityHash`'s dictionary-item
+   *  path doesn't apply here). Mirrors the manual check `DEMO_CASPER.md`'s redeploy verification
+   *  did by hand; this is that same read, made reusable. */
+  async getLockStatus(): Promise<string | undefined> {
+    const packageKey = this.contractHash.startsWith("hash-") ? this.contractHash : `hash-${stripHashPrefix(this.contractHash)}`;
+    const { storedValue } = await this.rpc.queryLatestGlobalState(packageKey, []);
+    return storedValue.contractPackage?.lockStatus;
   }
 
   /** `this.contractHash` is the *package* hash (stable across upgrades — what
@@ -924,7 +956,7 @@ export class CasperLiveClient {
     const packageHashBytes = hexToBytes(stripHashPrefix(this.contractHash));
     const proxyArgs = Args.fromMap({
       package_hash: CLValue.newCLByteArray(packageHashBytes),
-      entry_point: CLValue.newCLString(entryPoint),
+      entry_point: newCLStringUtf8Safe(entryPoint),
       args: bytesToCLList(innerArgs.toBytes()),
       attached_value: CLValue.newCLUInt512(attachedValueMotes.toString()),
       amount: CLValue.newCLUInt512(attachedValueMotes.toString()),

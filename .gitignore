@@ -19,8 +19,10 @@ keystore.*.bak
 !.claude/hooks/
 !.claude/settings.json
 
-# Autonomous-loop runtime dashboard output (T5.1 runner)
-dashboard/
+# Autonomous-loop runtime dashboard output (T5.1 runner) — root-anchored so it doesn't also
+# swallow docs/media/dashboard/ (the tracked, CI-refreshed Casper status snapshot for the judge
+# walkthrough page).
+/dashboard/
 .codeindex/
 .calm/
 

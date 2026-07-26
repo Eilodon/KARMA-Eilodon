@@ -34,8 +34,13 @@ async function waitForFinalization(rpc: InstanceType<typeof casperSdk.RpcClient>
     try {
       const info = await rpc.getTransactionByTransactionHash(txHash);
       const exec = info.executionInfo;
-      if (exec) {
-        const err = exec.executionResult?.errorMessage;
+      // `exec.executionResult` can come back present-but-incompletely-populated on this SDK
+      // version (errorMessage/consumed both undefined even though the tx is real and finalized
+      // — confirmed live: a raw RPC query for the same tx hash showed errorMessage: null and a
+      // real non-zero consumed). Only accept once errorMessage is unambiguously null (success)
+      // or a string (revert) — undefined means "not really ready yet," keep polling.
+      if (exec && exec.executionResult?.errorMessage !== undefined) {
+        const err = exec.executionResult.errorMessage;
         console.log(`  [${label}] finalized. errorMessage: ${err === null ? "null (success)" : err}`);
         return;
       }

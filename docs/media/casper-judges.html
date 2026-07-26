@@ -205,7 +205,7 @@
   </p>
 
   <div class="stamp-row">
-    <span class="stamp good"><span class="dot"></span>131/131 Odra contract tests passing (incl. property-based invariants)</span>
+    <span class="stamp good"><span class="dot"></span>155/155 Odra contract tests passing (incl. property-based invariants)</span>
     <span class="stamp good"><span class="dot"></span>Real ECDSA/SHA-256 payment verification</span>
     <span class="stamp good"><span class="dot"></span>Casper-native secp256k1 keystore</span>
     <span class="stamp good"><span class="dot"></span>Real ~538KB compiled wasm, verified</span>
@@ -213,6 +213,48 @@
     <span class="stamp good"><span class="dot"></span>Real dispute ruled live — reputation slashed 50→40</span>
     <span class="stamp good"><span class="dot"></span>A real LLM reasons over the safety-checked candidates, not just a formula</span>
   </div>
+
+  <div class="section" id="live-status" style="margin:0 0 40px;">
+    <h2 style="font-size:15px;">Live right now <span id="live-dot" class="stamp" style="padding:3px 9px;font-size:11px;vertical-align:middle;">checking…</span></h2>
+    <p class="deck" style="margin:0 0 14px;">
+      Read directly off Casper Testnet by a scheduled job (not typed in) — same contract as every
+      link below. <code>docs/media/dashboard/casper_status.json</code>, refreshed every ~30 min;
+      <a href="https://testnet.cspr.live/contract-package/2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384">verify directly on testnet.cspr.live</a>.
+    </p>
+    <div class="archetype" id="live-grid">
+      <div class="card"><span class="num">—</span><h3>Lock status</h3><p id="live-lock">loading…</p></div>
+      <div class="card"><span class="num">—</span><h3>Governance</h3><p id="live-gov">loading…</p></div>
+      <div class="card"><span class="num">—</span><h3>Timelock</h3><p id="live-timelock">loading…</p></div>
+      <div class="card"><span class="num">—</span><h3>Arbiter panel</h3><p id="live-panel">loading…</p></div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    var dot = document.getElementById("live-dot");
+    fetch("dashboard/casper_status.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (s) {
+        document.getElementById("live-lock").textContent = s.lockStatus + " — " + s.contractHash.slice(0, 14) + "…";
+        document.getElementById("live-gov").textContent =
+          s.governance.threshold + "-of-" + s.governance.signerCount + " multisig";
+        document.getElementById("live-timelock").textContent =
+          (s.governance.timelockDelayMs / 60000) + " min delay";
+        document.getElementById("live-panel").textContent =
+          s.arbiterPanel.size + " arbiters, " + s.arbiterPanel.threshold + " to settle";
+        var ageMin = Math.round((Date.now() - new Date(s.generatedAt).getTime()) / 60000);
+        dot.textContent = "refreshed " + ageMin + "m ago";
+        dot.className = "stamp good";
+        dot.style.padding = "3px 9px"; dot.style.fontSize = "11px"; dot.style.verticalAlign = "middle";
+      })
+      .catch(function (e) {
+        ["live-lock", "live-gov", "live-timelock", "live-panel"].forEach(function (id) {
+          document.getElementById(id).textContent = "unavailable — read live instead ↴";
+        });
+        dot.textContent = "snapshot unavailable";
+        dot.style.padding = "3px 9px"; dot.style.fontSize = "11px"; dot.style.verticalAlign = "middle";
+      });
+  })();
+  </script>
 
   <div class="plainhero">
     <p class="tag">Start here if you're not a blockchain person</p>
@@ -433,7 +475,7 @@
       <div class="bar"><span></span><span></span><span></span></div>
       <pre>$ cargo +nightly test --manifest-path contracts-odra/Cargo.toml
 ...
-<span class="ok">test result: ok. 131 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</span></pre>
+<span class="ok">test result: ok. 155 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out</span></pre>
     </div>
     <p class="cap">Reproduce both yourself — no funded wallet needed for either command above. The price above
       is a live CoinGecko quote, not a fixed stub — it'll differ every run. There's also a real
@@ -511,7 +553,7 @@
     <div class="twrap">
       <table class="status">
         <tr><th>Layer</th><th>Status</th><th>Detail</th></tr>
-        <tr><td>Odra <code>AgentSkillRegistry</code> logic</td><td><span class="pill real">real</span></td><td>1659 LoC, 131 tests: escrow, dispute, evaluator, identity gate, Sybil bond, governance, rationale attestation, x402 settlement token, plus 2 property-based invariant tests (escrow conservation, reputation bounds).</td></tr>
+        <tr><td>Odra <code>AgentSkillRegistry</code> logic</td><td><span class="pill real">real</span></td><td>2063 LoC, 155 tests: escrow, dispute, evaluator, identity gate, Sybil bond, governance, rationale attestation, N-of-M panel arbitration, x402 settlement token, plus 4 property-based invariant tests (escrow conservation + reputation bounds, each proven for both the single-arbiter and panel-arbiter paths).</td></tr>
         <tr><td>x402 payment envelope</td><td><span class="pill real">real</span></td><td>secp256k1/SHA-256/DER signed and independently re-verified — not a structural stub.</td></tr>
         <tr><td>HTTP 402 → pay → verify loop</td><td><span class="pill real">real</span></td><td>Runs against a live local server, shown above verbatim.</td></tr>
         <tr><td>Casper keystore</td><td><span class="pill real">real</span></td><td>Same secp256k1 key already signing Ethereum/Stellar — one backup, three chains.</td></tr>

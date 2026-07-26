@@ -3,7 +3,12 @@
 > 🤖 **Judging this for the Casper Agentic Buildathon?** Start with
 > [DEMO_CASPER.md](DEMO_CASPER.md), or the
 > [90-second walkthrough](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html) if you
-> want the short version first — no clone needed.
+> want the short version first — no clone needed. That page now opens with a **live status strip**
+> (lock status, governance, timelock, arbiter panel) read directly off Casper Testnet by a
+> scheduled job and refreshed every ~30 min — not typed in, not a screenshot; verify it against
+> [testnet.cspr.live](https://testnet.cspr.live/contract-package/2262a0a9e683640a350c2c444501bbde04797458d8abcdada9fbfa49bdbb7384)
+> yourself. It's a status strip, not a full dashboard app — reproducing it locally is
+> `pnpm exec tsx src/scripts/export_casper_dashboard_snapshot.ts`, read-only, no funded key needed.
 
 > [![KARMA on Casper — judge walkthrough: real x402 payment verification, 155/155 Odra contract tests, RWA-oracle archetype](docs/media/casper-judges-hero.png)](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)
 >
@@ -121,7 +126,7 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 
 | Final Round judging criterion | Where in this repo |
 |---|---|
-| Technical Execution | 155/155 Rust tests (`contracts-odra`, incl. 4 property-based invariant tests), 844/846 TypeScript tests (2 known failures, both from an optional peer dependency not installed in this environment — see [Testing](#testing)), clean typecheck/lint |
+| Technical Execution | 155/155 Rust tests (`contracts-odra`, incl. 4 property-based invariant tests), 899 TypeScript tests (2 occasionally environment-flaky, needing a local `dist/` build first — see [Testing](#testing)), clean typecheck/lint |
 | Innovation & Originality | Symmetric dispute-bond arbitration — both sides bond, a neutral on-chain arbiter rules, loser pays both bonds + escrow, not a simple escrow-and-hope; verdict + payout are one atomic call, not a separate verify-then-act step — see [RFC §11](docs/rfc/2026-06-24-symmetric-dispute-bond.md#11-atomicity-vs-quorum--why-the-verify-then-act-critique-doesnt-apply-here). An opt-in N-of-M panel mode adds a majority-of-independent-arbiters option on top, without giving up that atomicity — see **What KARMA actually builds** below |
 | Use of AI / Agentic Systems | `src/lib/autonomous_loop/llm_strategy.ts` — real Claude tool-use reasoning over safety-checked candidates, deterministic fallback on hallucination, scored against a hidden answer key by `eval_harness.ts` (see [DEMO_CASPER.md](DEMO_CASPER.md)) |
 | Real-World Applicability | The RWA price-oracle flow above, live on Casper Testnet |
@@ -129,6 +134,25 @@ layers the brief doesn't ask for but a real trust layer needs anyway.
 | Working Smart Contracts | `hash-2262a0a9…`, custody-hardened + panel-enabled redeploy (Locked on-chain, verified), N-of-M panel arbitration activated and live-disputed same day, 44+ real transactions — [Live deployment](#live-deployment) |
 | Long-Term Launch Plans | [Roadmap & team](#roadmap--team) — solo builder, real community presence: [X](https://x.com/MathEnemy) · [Telegram](https://t.me/HoaTrungBinh) · Discord `mathenemy` |
 | Potential for Long-Term Impact | [`CEP-0000`](docs/standards/CEP-0000-agent-skill-trust-registry.md) drafts this interface as a reusable Casper standard; see the composability note in **Tools → Casper skill registry** below |
+
+### Composability with the Casper AI Toolkit, piece by piece
+
+The Toolkit ([casper.network/ai](https://www.casper.network/ai)) is 7 building blocks. Rather than
+leave a judge to infer which ones KARMA touches and why, here's every one of them:
+
+| Toolkit piece | KARMA | Why |
+|---|---|---|
+| **x402 Facilitator** | Used directly | `x402_casper.ts` — wire-compatible with the official `make-software/casper-x402` reference (see below) |
+| **Odra** | Used directly | `contracts-odra/` — `AgentSkillRegistry` + `X402SettlementToken`, 155 tests |
+| **`casper-ecosystem/casper-eip-712`** | Used directly | Same typed-data signing the official x402 reference uses — `x402_casper.ts`'s EIP-712 `TransferWithAuthorization` digest, cross-checked byte-for-byte against `CEP3009`'s own hardcoded typehash |
+| **Casper MCP Server** (community, `msanlisavas/casper-mcp`) | Referenced, not embedded | Different problem (raw chain-data reads) and a disjoint tool namespace (`Casper*` PascalCase vs. `casper_*` snake_case) — the two run side by side in the same MCP client with zero collisions, see **Tools → Casper skill registry** below |
+| **CSPR.trade MCP** | Not used | DeFi (swap/liquidity/portfolio) — a different layer entirely from identity/escrow/dispute. KARMA is infrastructure underneath a DeFi agent's trades, not a trading agent itself; nothing here needed it |
+| **CSPR.click Skill** | Not used | Solves wallet-connect + SSO for a human end user signing occasionally. KARMA's signers are governance/agent keys operating unattended inside an MCP server (`KeystoreManager`, secp256k1) — a different problem than onboarding a person to a wallet |
+| **CSPR.cloud Skills** (REST/Streaming/Node APIs) | Not used directly | KARMA talks to a public Casper RPC node directly (`casper-js-sdk`); `casper_health`/the dashboard snapshot script could point at CSPR.cloud's node API instead, but nothing here depends on its REST/Streaming layer specifically |
+
+Two of seven aren't a gap — they're a different layer. CSPR.trade and CSPR.click both assume a
+human or a DeFi-trading agent is on the other end of the call; KARMA's job is what happens
+*before* either of those is safe to trust, not the trading or the onboarding itself.
 
 ### Why KARMA is a different kind of submission
 
@@ -510,7 +534,7 @@ is pending. Full details: [DEMO.md](DEMO.md).
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test          # 844/846 passed — 2 known failures from an optional peer dependency not installed here
+pnpm test          # 899 tests — 2 occasionally environment-flaky, need a local dist/ build first
 pnpm build
 ```
 
@@ -631,7 +655,7 @@ it stays single-process and restart-volatile until a Redis-backed version lands 
 
 ```bash
 cargo +nightly test --manifest-path contracts-odra/Cargo.toml   # 155/155 Rust tests
-pnpm test          # full Vitest suite — 844/846 passed, incl. casper.tool.ts/indexer/codec
+pnpm test          # full Vitest suite — 899 tests, incl. casper.tool.ts/indexer/codec
 pnpm typecheck
 ```
 
@@ -644,10 +668,12 @@ for both the single-arbiter and panel-arbiter paths, randomized over 64 cases ea
 actually catch a regression by deliberately breaking each invariant and confirming the test fails
 before reverting).
 
-The 2 TypeScript failures are both environment gaps, not code regressions: `x402_casper.test.ts`
-(and the `payment_boot.test.ts` file that imports it) needs `@casper-ecosystem/casper-eip-712`,
-which isn't installed here, and one `plugin_external_runner.test.ts` pair needs a local `tsc`
-compile step this sandbox doesn't run. Neither touches any dispute, panel, or composition code.
+The 2 occasionally-failing TypeScript tests are both environment gaps, not code regressions: a
+`plugin_external_runner.test.ts` pair needs a local `dist/` build (`pnpm build`) to exist first —
+pass once it does, which is why a full `pnpm build && pnpm test` run is more reliable than `pnpm
+test` alone in a fresh checkout. Neither touches any dispute, panel, or composition code.
+(`@casper-ecosystem/casper-eip-712` — previously the other named cause here — is a normal
+`dependencies` entry now, not an uninstalled optional peer; that failure mode is gone.)
 
 **Zero-knowledge proof verification (proven on Stellar):**
 
@@ -726,9 +752,33 @@ below for why that's the responsible call before an audit happens):
 - **v2 settlement rail extensions**, tracked in
   [`IPaymentPlugin-v1.md`](docs/standards/IPaymentPlugin-v1.md) and
   [`reference-implementations.md`](docs/standards/reference-implementations.md): a subscription
-  rail (time-windowed unlocks), streaming/chunked payments for long-running tasks, a Pharos
-  `IPaymentPlugin` wrapper, and multi-hop revenue-split composition beyond today's single-level
-  fan-out.
+  rail (time-windowed unlocks), a Pharos `IPaymentPlugin` wrapper, and multi-hop revenue-split
+  composition beyond today's single-level fan-out.
+  Streaming/chunked payments for long-running tasks turned out not to need a v2 at all — neither
+  rail has a native batch/channel primitive (`X402SettlementToken` has no entry point that settles
+  more than one authorization per call; `escrow_amount` is set once at `create_job` and never
+  incremented), but chunking a task into N ordinary escrow jobs, linked by a client-derived
+  `task_hash`, reuses the existing lifecycle verbatim — full dispute-bond + reputation protection
+  per chunk, zero new contract code. **Proven live, 2026-07-26**
+  (`src/scripts/demo_casper_streaming_installments.ts`): 3 chunks against a fresh skill on
+  `hash-2262a0a9…`, 10/10 transactions `error_message: null`, `totalInvocations` 0→3,
+  `reputationScore` 50→65, all 3 jobs `Completed` — 12.72 CSPR total (~$0.02) for the whole
+  3-chunk series, independently re-verified per-transaction via raw RPC, not just the script's own
+  output. That same run caught and fixed two real bugs along the way (both documented in the
+  script's own header): `casper-js-sdk@5.0.12`'s `CLValue.newCLString()` mis-encodes any non-ASCII
+  character's length prefix (UTF-16 code units instead of UTF-8 bytes), corrupting the arg and
+  reverting with a cryptic low-level error — worked around in `live_client.ts`
+  (`newCLStringUtf8Safe`); and this script's (and `demo_casper_full_job_lifecycle.ts`'s)
+  `waitForFinalization` could accept an incompletely-populated SDK response as final, misreporting
+  a genuinely successful transaction — now fixed in both. A separate, complementary option for
+  payment that doesn't need dispute protection, **also proven live, 2026-07-26**
+  (`src/scripts/demo_casper_x402_allowance_streaming.ts`): `X402SettlementToken`'s already-deployed
+  CEP-18 `approve`/`transfer_from` lets a payer authorize a budget once and a provider pull chunks
+  unattended, no per-chunk signature — deposit, one `approve`, 3 unattended `transfer_from` pulls,
+  all 5 `error_message: null`; a 6th pull deliberately sized past what's left in the budget
+  correctly reverted with the contract's own `InsufficientAllowance` (60002), proving the ceiling
+  is real enforcement, not just a documented intention. 3.28 CSPR total (~$0.005) for the whole
+  run, all 6 transactions independently re-verified via raw RPC.
 - **Cross-chain reputation, verified on-chain instead of governed.** `propose_set_cross_chain_rep`
   is a governance-attested value today; replacing that attestation with an on-chain-verifiable
   proof, in the spirit of the Stellar ZK track, is on the table for later.

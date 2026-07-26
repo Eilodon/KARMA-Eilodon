@@ -8,11 +8,14 @@
  * plugin builds matches what `odra-modules`' `CEP3009` verifies on-chain (a passing unit test
  * only proves internal sign/verify consistency, not agreement with the deployed Rust contract).
  *
- * Needs CASPER_RPC_URL (defaults to the public Testnet node), KEYSTORE_PATH/KEYSTORE_PASSWORD,
- * and KARMA_X402_CASPER_SETTLEMENT_TOKEN (defaults to the real Testnet deployment).
+ * Needs CASPER_RPC_URL (defaults to the public Testnet node) and KARMA_X402_CASPER_SETTLEMENT_TOKEN
+ * (defaults to the real Testnet deployment) — plus either CASPER_GOV_SIGNER_1_SECRET_HEX (raw
+ * key, no keystore/agentId needed — same dual-path convention as `deploy_x402_settlement_token.ts`)
+ * or KEYSTORE_PATH/KEYSTORE_PASSWORD + an agentId arg.
  *
- *   KEYSTORE_PATH=./keystore.json KEYSTORE_PASSWORD=... \
- *   pnpm exec tsx src/scripts/demo_casper_x402_settlement_live.ts x402-deployer
+ *   CASPER_GOV_SIGNER_1_SECRET_HEX=... pnpm exec tsx src/scripts/demo_casper_x402_settlement_live.ts
+ *   # or: KEYSTORE_PATH=./keystore.json KEYSTORE_PASSWORD=... \
+ *   #     pnpm exec tsx src/scripts/demo_casper_x402_settlement_live.ts x402-deployer
  */
 import { readFileSync } from "node:fs";
 import "dotenv/config";
@@ -21,7 +24,7 @@ import { keystoreManager } from "../lib/keystore.js";
 import { casperAccountHash } from "../lib/casper/keypair.js";
 import { CasperX402Plugin, settleTransferWithAuthorization } from "../plugins/x402_casper.js";
 
-const { RpcClient, HttpHandler, SessionBuilder, ContractCallBuilder, Args, CLValue, CLTypeUInt8 } = casperSdk;
+const { RpcClient, HttpHandler, SessionBuilder, ContractCallBuilder, Args, CLValue, CLTypeUInt8, PrivateKey, KeyAlgorithm } = casperSdk;
 
 /** `casper_types::bytesrepr::Bytes`'s `CLTyped` impl is `CLType::List(U8)` — same encoding
  *  `CasperLiveClient`'s private `bytesToCLList` uses for the proxy-caller's `args` field. */
@@ -56,14 +59,21 @@ async function waitForExecution(txHash: string, label: string): Promise<void> {
     try {
       const info = await rpc.getTransactionByTransactionHash(txHash);
       const exec = info.executionInfo;
-      if (exec) {
+      // `errorMessage` lives under `executionResult`, NOT on `exec` directly — confirmed the
+      // hard way (a first version of this check read `exec.errorMessage`, which is always
+      // undefined, so a real on-chain revert silently printed [PASS]). Also: `exec` can be
+      // truthy while `executionResult` is present-but-incompletely-populated (errorMessage
+      // itself undefined, not null) for a transaction that already succeeded — confirmed live
+      // in demo_casper_streaming_installments.ts's own run, where a raw RPC re-query for the
+      // same hash showed errorMessage: null once fully populated. Only accept once errorMessage
+      // is unambiguously null (success) or a string (revert), never undefined.
+      const executionResult = (
+        exec as { executionResult?: { errorMessage?: string | null; consumed?: string | number } } | undefined
+      )?.executionResult;
+      if (executionResult?.errorMessage !== undefined) {
         console.log(`[${label}] execution result:`, JSON.stringify(exec, null, 2));
-        // `errorMessage` lives under `executionResult`, NOT on `exec` directly — confirmed the
-        // hard way (a first version of this check read `exec.errorMessage`, which is always
-        // undefined, so a real on-chain revert silently printed [PASS]).
-        const errorMessage = (exec as { executionResult?: { errorMessage?: string | null } }).executionResult
-          ?.errorMessage;
-        if (errorMessage) throw new Error(`[${label}] on-chain execution failed: ${errorMessage}`);
+        if (executionResult.errorMessage) throw new Error(`[${label}] on-chain execution failed: ${executionResult.errorMessage}`);
+        console.log(`[${label}] consumed: ${executionResult.consumed} motes`);
         return;
       }
       console.log(`[${label}] attempt ${attempt + 1}: not finalized yet...`);
@@ -76,14 +86,23 @@ async function waitForExecution(txHash: string, label: string): Promise<void> {
 }
 
 async function main() {
-  const keystorePath = process.env.KEYSTORE_PATH ?? "./keystore.json";
-  const password = process.env.KEYSTORE_PASSWORD;
-  if (!password) throw new Error("[x402-settlement-live] KEYSTORE_PASSWORD not set");
-  const agentId = process.argv[2];
-  if (!agentId) throw new Error("[x402-settlement-live] usage: demo_casper_x402_settlement_live.ts <agentId>");
-
-  await keystoreManager.load(keystorePath, password);
-  const payerSigner = keystoreManager.getCasperKeypair(agentId);
+  const rawHex = process.env.CASPER_GOV_SIGNER_1_SECRET_HEX;
+  let payerSigner: InstanceType<typeof PrivateKey>;
+  let agentId: string;
+  if (rawHex) {
+    payerSigner = PrivateKey.fromHex(rawHex, KeyAlgorithm.SECP256K1);
+    agentId = "x402-deployer"; // label only — the raw-hex lookup below ignores it
+    console.log("signing with CASPER_GOV_SIGNER_1_SECRET_HEX (raw key)");
+  } else {
+    const keystorePath = process.env.KEYSTORE_PATH ?? "./keystore.json";
+    const password = process.env.KEYSTORE_PASSWORD;
+    if (!password) throw new Error("[x402-settlement-live] set either CASPER_GOV_SIGNER_1_SECRET_HEX or KEYSTORE_PASSWORD");
+    const argAgentId = process.argv[2];
+    if (!argAgentId) throw new Error("[x402-settlement-live] usage: demo_casper_x402_settlement_live.ts <agentId>");
+    agentId = argAgentId;
+    await keystoreManager.load(keystorePath, password);
+    payerSigner = keystoreManager.getCasperKeypair(agentId);
+  }
   const payer = casperAccountHash(payerSigner);
   console.log("payer / relayer account:", payer);
   console.log("settlement token:", settlementTokenHash);
