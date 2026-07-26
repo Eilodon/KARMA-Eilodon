@@ -495,7 +495,7 @@ this file's structure per category.
   version should require an on-chain-verifiable proof rather than a governed attestation is open.
 - **Independent second implementation.** A CEP with exactly one implementation is a library, not
   yet a standard the ecosystem can be said to have adopted — see the roadmap note in
-  [README.md](../../README.md#why-karma). This draft should not be submitted upstream until either
+  [README.md](../../README.md#why-the-tech-holds-up). This draft should not be submitted upstream until either
   a second, independently authored Casper contract implements it, or the submission explicitly
   frames single-implementation status as a known gap for reviewers to weigh.
 
