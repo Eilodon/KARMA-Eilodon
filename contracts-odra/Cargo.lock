@@ -1394,9 +1394,9 @@ dependencies = [
 
 [[package]]
 name = "odra-build"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0545a3f910b557436245227e09b38d3ac52bd6bcc4135ce031c0e791e7029cb7"
+checksum = "bf7a889155bd5652a938229bc1ef602ba7068f9794049cbfed77fc522546c20d"
 dependencies = [
  "serde",
  "serde_json",
