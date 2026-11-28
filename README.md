@@ -8,6 +8,7 @@
 [![CodeQL](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/codeql.yml/badge.svg)](https://github.com/Eilodon/KARMA-Eilodon/actions/workflows/codeql.yml)
 [![Casper registry](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FEilodon%2FKARMA-Eilodon%2Fmain%2Fdocs%2Fmedia%2Fdashboard%2Fcasper_status.json&query=%24.lockStatus&label=casper%20registry&color=brightgreen)](docs/media/dashboard/casper_status.json)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![KARMA on StartupScores](https://startupscores.com/badge/karma-eilodon-github-io.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/karma-eilodon-github-io)
 
 **[→ Judge walkthrough, live status strip, no clone needed](https://eilodon.github.io/KARMA-Eilodon/media/casper-judges.html)**
 — or jump straight to [DEMO_CASPER.md](DEMO_CASPER.md) for the full tx-by-tx evidence.
